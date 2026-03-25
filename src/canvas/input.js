@@ -1,18 +1,36 @@
 /**
- * input.js — Mouse, keyboard, and pointer input on the infinite canvas
+ * input.js — Mouse, touch, pen, and keyboard input on the infinite canvas
  *
- * Handles four interaction modes:
+ * Uses the Pointer Events API so the same code handles mouse, touch, and
+ * stylus without special-casing. Native touch events are only used for
+ * pinch-to-zoom (two simultaneous pointers).
  *
- *   Pan   — Middle-mouse drag OR Space + left-drag
- *           Moves the viewport by the drag delta in screen pixels.
+ * Interaction model (no tool active / pan-mode):
  *
- *   Zoom  — Scroll wheel (toward cursor)
- *           Ctrl + scroll (trackpad pinch, same handling)
- *           Keyboard +/- (toward canvas centre)
+ *   Touch / stylus
+ *   ─────────────
+ *   1 finger drag          → pan
+ *   2 finger pinch         → zoom toward pinch midpoint
  *
- * After each viewport change, fires a 'viewport-changed' CustomEvent on
- * #canvas-container so other modules (PDF renderer, annotation overlays)
- * can react.
+ *   Mouse
+ *   ─────
+ *   Middle-button drag     → pan
+ *   Space + left drag      → pan
+ *   Scroll wheel           → zoom toward cursor
+ *   Shift + scroll         → horizontal pan
+ *   Ctrl + scroll (pinch)  → zoom toward cursor (trackpad)
+ *
+ *   Keyboard
+ *   ────────
+ *   + / -                  → zoom toward canvas centre
+ *   Ctrl+0                 → reset viewport
+ *
+ * When annotation tools are added in Phase 4, a single-pointer drag will
+ * annotate instead of pan. Two-finger drag will always pan regardless of
+ * the active tool.
+ *
+ * After every viewport change, fires 'viewport-changed' CustomEvent on
+ * #canvas-container so downstream modules can reposition their content.
  *
  * Exports: init()
  */
@@ -36,15 +54,20 @@ const SCROLL_ZOOM_SENSITIVITY = 0.8;
 // Module state
 // ---------------------------------------------------------------------------
 
-/** True while the spacebar is held down (pan mode) */
+/** True while the spacebar is held down */
 let spaceDown = false;
 
-/** True while a pan drag is in progress */
-let isPanning = false;
+/**
+ * All currently active pointers, keyed by pointerId.
+ * Each entry: { x, y } in container-relative coordinates.
+ */
+const activePointers = new Map();
 
-/** Screen position where the current drag started */
-let dragStartX = 0;
-let dragStartY = 0;
+/**
+ * Distance between the two touch points at the start of the current pinch.
+ * Updated each move event so we can compute the incremental zoom factor.
+ */
+let lastPinchDistance = 0;
 
 /** The container element we listen on */
 let container = null;
@@ -60,153 +83,162 @@ let container = null;
 function init() {
   container = document.getElementById('canvas-container');
 
-  // Mouse
-  container.addEventListener('mousedown',  onMouseDown);
-  container.addEventListener('mousemove',  onMouseMove);
-  container.addEventListener('mouseup',    onMouseUp);
-  container.addEventListener('mouseleave', onMouseLeave);
-  container.addEventListener('wheel',      onWheel, { passive: false });
+  // Pointer events handle mouse, touch, and pen uniformly
+  container.addEventListener('pointerdown',   onPointerDown);
+  container.addEventListener('pointermove',   onPointerMove);
+  container.addEventListener('pointerup',     onPointerEnd);
+  container.addEventListener('pointercancel', onPointerEnd);
 
-  // Keyboard (attached to window so it works regardless of focus)
+  // Scroll wheel (mouse zoom + trackpad pinch)
+  container.addEventListener('wheel', onWheel, { passive: false });
+
+  // Keyboard
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup',   onKeyUp);
 
-  // Prevent context menu on right-click (we may use right-click for tools later)
+  // Suppress browser context menu — we may use right-click for tools later
   container.addEventListener('contextmenu', e => e.preventDefault());
+
+  // Prevent browser default touch actions (scroll, pinch-zoom the page)
+  // so our canvas gestures take over.
+  container.style.touchAction = 'none';
 }
 
 // ---------------------------------------------------------------------------
-// Pan — mouse drag
+// Pointer down
 // ---------------------------------------------------------------------------
 
-function onMouseDown(e) {
-  // Middle mouse button (button 1) always pans
-  // Left mouse button (button 0) only pans when space is held
-  const isMiddle = e.button === 1;
-  const isSpacePan = e.button === 0 && spaceDown;
+function onPointerDown(e) {
+  // Capture the pointer so we keep receiving events even if the cursor
+  // leaves the container element during a fast drag.
+  container.setPointerCapture(e.pointerId);
 
-  if (isMiddle || isSpacePan) {
-    startPan(e.clientX, e.clientY);
-    e.preventDefault();
+  activePointers.set(e.pointerId, pointerPos(e));
+
+  if (activePointers.size === 2) {
+    // Second finger down — initialise pinch distance
+    lastPinchDistance = getPinchDistance();
   }
-}
 
-function onMouseMove(e) {
-  if (!isPanning) return;
-
-  const dx = e.clientX - dragStartX;
-  const dy = e.clientY - dragStartY;
-
-  applyPan(dx, dy);
-  requestRender();
-  emitViewportChanged();
-
-  // Update start position for the next move delta
-  dragStartX = e.clientX;
-  dragStartY = e.clientY;
-}
-
-function onMouseUp(e) {
-  if (isPanning) {
-    stopPan();
-  }
-}
-
-function onMouseLeave() {
-  // Stop panning if the cursor leaves the canvas area
-  if (isPanning) {
-    stopPan();
-  }
-}
-
-function startPan(x, y) {
-  isPanning  = true;
-  dragStartX = x;
-  dragStartY = y;
-  container.style.cursor = 'grabbing';
-}
-
-function stopPan() {
-  isPanning = false;
-  // Restore cursor: grab if space still held, default otherwise
-  container.style.cursor = spaceDown ? 'grab' : '';
+  e.preventDefault();
 }
 
 // ---------------------------------------------------------------------------
-// Zoom — scroll wheel
+// Pointer move
+// ---------------------------------------------------------------------------
+
+function onPointerMove(e) {
+  if (!activePointers.has(e.pointerId)) return;
+
+  const prev = activePointers.get(e.pointerId);
+  const curr = pointerPos(e);
+  activePointers.set(e.pointerId, curr);
+
+  if (activePointers.size === 1) {
+    // ── Single pointer ───────────────────────────────────────────────────
+    // Touch/pen: always pan.
+    // Mouse: pan only when middle button or space is held.
+    const isMouse = e.pointerType === 'mouse';
+    const isMiddle = isMouse && e.buttons === 4; // middle button bitmask
+    const isSpacePan = isMouse && spaceDown && (e.buttons & 1); // left + space
+
+    if (!isMouse || isMiddle || isSpacePan) {
+      const dx = curr.x - prev.x;
+      const dy = curr.y - prev.y;
+      applyPan(dx, dy);
+      emitAndRender();
+    }
+
+  } else if (activePointers.size === 2) {
+    // ── Pinch (two-finger zoom + pan) ────────────────────────────────────
+    const newDistance = getPinchDistance();
+
+    if (lastPinchDistance > 0) {
+      // Zoom: ratio of new distance to previous distance
+      const zoomFactor = newDistance / lastPinchDistance - 1;
+      const mid = getPinchMidpoint();
+      applyZoom(zoomFactor, mid.x, mid.y);
+    }
+
+    lastPinchDistance = newDistance;
+    emitAndRender();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pointer up / cancel
+// ---------------------------------------------------------------------------
+
+function onPointerEnd(e) {
+  activePointers.delete(e.pointerId);
+  lastPinchDistance = 0;
+
+  if (activePointers.size === 0 && !spaceDown) {
+    container.style.cursor = '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scroll wheel (mouse zoom + trackpad pinch)
 // ---------------------------------------------------------------------------
 
 function onWheel(e) {
-  e.preventDefault(); // Prevent page scroll
+  e.preventDefault();
 
-  // Determine the container-relative position of the cursor
   const rect = container.getBoundingClientRect();
   const originX = e.clientX - rect.left;
   const originY = e.clientY - rect.top;
 
-  // Ctrl key (or pinch on trackpad which sets ctrlKey=true) → zoom
-  // Plain scroll → zoom (common convention for canvas tools like Figma)
-  // Shift + scroll → horizontal pan
   if (e.shiftKey && !e.ctrlKey) {
-    // Horizontal pan
+    // Shift+scroll → horizontal pan
     applyPan(-e.deltaY, 0);
   } else {
-    // Zoom toward cursor
-    // deltaY is positive when scrolling down (zoom out), negative for up (zoom in)
-    // We negate it so scrolling up zooms in.
+    // Plain scroll or ctrl+scroll (trackpad pinch) → zoom toward cursor
+    // Negate deltaY: scrolling up (negative delta) = zoom in (positive factor)
     const delta = -e.deltaY * ZOOM_FACTOR * SCROLL_ZOOM_SENSITIVITY;
     applyZoom(delta, originX, originY);
   }
 
-  requestRender();
-  emitViewportChanged();
+  emitAndRender();
 }
 
 // ---------------------------------------------------------------------------
-// Zoom — keyboard
+// Keyboard
 // ---------------------------------------------------------------------------
 
 function onKeyDown(e) {
-  // Ignore if focus is in an input/textarea/contenteditable
   if (isEditableTarget(e.target)) return;
 
   const rect = container.getBoundingClientRect();
-  // Keyboard zoom is toward the centre of the canvas
   const centreX = rect.width  / 2;
   const centreY = rect.height / 2;
 
   switch (e.key) {
     case ' ':
-      // Space = pan mode
       if (!e.repeat) {
         spaceDown = true;
         container.style.cursor = 'grab';
       }
-      // Prevent page scroll from spacebar
-      e.preventDefault();
+      e.preventDefault(); // Stop page scroll
       break;
 
     case '+':
-    case '=': // = is the un-shifted + on most keyboards
+    case '=':
       applyZoom(KEYBOARD_ZOOM_STEP, centreX, centreY);
-      requestRender();
-      emitViewportChanged();
+      emitAndRender();
       e.preventDefault();
       break;
 
     case '-':
       applyZoom(-KEYBOARD_ZOOM_STEP, centreX, centreY);
-      requestRender();
-      emitViewportChanged();
+      emitAndRender();
       e.preventDefault();
       break;
 
     case '0':
       if (e.ctrlKey || e.metaKey) {
-        // Ctrl+0 — reset to 100% zoom, pan back to origin
         reset();
-        requestRender();
-        emitViewportChanged();
+        emitAndRender();
         e.preventDefault();
       }
       break;
@@ -216,7 +248,7 @@ function onKeyDown(e) {
 function onKeyUp(e) {
   if (e.key === ' ') {
     spaceDown = false;
-    if (!isPanning) {
+    if (activePointers.size === 0) {
       container.style.cursor = '';
     }
   }
@@ -227,28 +259,55 @@ function onKeyUp(e) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Returns container-relative {x, y} for a pointer event.
+ * @param {PointerEvent} e
+ * @returns {{ x: number, y: number }}
+ */
+function pointerPos(e) {
+  const rect = container.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+/**
+ * Euclidean distance between the two currently active pointers.
+ * Only valid when activePointers.size === 2.
+ * @returns {number}
+ */
+function getPinchDistance() {
+  const [p1, p2] = activePointers.values();
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/**
+ * Midpoint between the two currently active pointers, in container coords.
+ * Only valid when activePointers.size === 2.
+ * @returns {{ x: number, y: number }}
+ */
+function getPinchMidpoint() {
+  const [p1, p2] = activePointers.values();
+  return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+}
+
+/**
  * Returns true if the event target is an element where keyboard input
  * should take precedence over canvas shortcuts.
- *
  * @param {EventTarget} target
  * @returns {boolean}
  */
 function isEditableTarget(target) {
   if (!target || !(target instanceof Element)) return false;
   const tag = target.tagName;
-  return (
-    tag === 'INPUT' ||
-    tag === 'TEXTAREA' ||
-    target.isContentEditable
-  );
+  return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
 }
 
 /**
- * Dispatches a 'viewport-changed' CustomEvent on the container.
- * Other modules (PDF page renderer, annotation overlays) listen to this
- * to know when to reposition their content.
+ * Requests a canvas redraw and dispatches 'viewport-changed' so downstream
+ * modules (PDF pages, annotation overlays) can reposition their content.
  */
-function emitViewportChanged() {
+function emitAndRender() {
+  requestRender();
   container.dispatchEvent(new CustomEvent('viewport-changed', { bubbles: true }));
 }
 
