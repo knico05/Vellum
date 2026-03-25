@@ -937,7 +937,7 @@ Run through this at the start and end of every coding session:
 
 > Update this section at the end of every session.
 
-**Last updated:** —  
-**Current phase:** Not started  
-**Next task:** Task 1.1 — Initialise the project  
-**Notes:** —
+**Last updated:** 2026-03-25
+**Current phase:** Phase 2 complete — starting Phase 3 next session
+**Next task:** Task 3.1 — Install and configure PDF.js
+**Notes:** Phases 1 and 2 are fully committed and tagged (phase-1-complete, phase-2-complete). App runs via `npm start` from a normal terminal (not VS Code integrated terminal — run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` in PowerShell first if not done). Touch/stylus pan and pinch-zoom are implemented. ELECTRON_RUN_AS_NODE quirk is handled by launch.js.
