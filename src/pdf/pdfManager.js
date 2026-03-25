@@ -80,15 +80,13 @@ function init() {
  * @returns {Promise<void>}
  */
 async function openPDF(filePath) {
-  // Tear down the previous document first
   tearDown();
-
   currentPath = filePath;
 
-  // Read bytes via the IPC bridge (renderer can't access the filesystem directly)
   const bytes = await window.api.readFile(filePath);
-  // PDF.js needs an ArrayBuffer; IPC bridge delivers a Uint8Array
-  pdfDoc = await loadPDF(bytes.buffer);
+
+  // Pass Uint8Array directly — avoids byteOffset issues with .buffer
+  pdfDoc = await loadPDF(bytes);
 
   const numPages = pdfDoc.numPages;
 

@@ -40,8 +40,9 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
  * @param {ArrayBuffer} arrayBuffer — Raw PDF file bytes
  * @returns {Promise<import('pdfjs-dist').PDFDocumentProxy>}
  */
-async function loadPDF(arrayBuffer) {
-  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+async function loadPDF(data) {
+  // data can be Uint8Array or ArrayBuffer — PDF.js accepts both via 'data'
+  const loadingTask = pdfjsLib.getDocument({ data });
   return loadingTask.promise;
 }
 

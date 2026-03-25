@@ -57,7 +57,7 @@ async function handleOpen() {
     updateStatusBar();
   } catch (err) {
     console.error('Failed to open PDF:', err);
-    alert(`Could not open PDF:\n${err.message}`);
+    alert(`Could not open PDF:\n${err?.message ?? String(err)}`);
   } finally {
     btnOpen.disabled = false;
     btnOpen.textContent = 'Open';

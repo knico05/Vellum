@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(node -e \"const e = require\\(''c:/Users/nkued/dev/QuickNotes/node_modules/electron''\\); console.log\\(typeof e, Object.keys\\(e || {}\\)\\)\")",
+      "Bash(c:/Users/nkued/dev/QuickNotes/node_modules/electron/dist/electron.exe --version)"
+    ]
+  }
+}
