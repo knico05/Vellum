@@ -1,0 +1,25 @@
+{
+  "name": "pdf-annotator",
+  "version": "1.0.0",
+  "description": "A personal desktop app for annotating PDFs and taking notes",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux"
+  },
+  "keywords": [],
+  "author": "Marco",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^41.0.4",
+    "electron-builder": "^26.8.1"
+  },
+  "build": {
+    "appId": "com.marco.pdf-annotator",
+    "productName": "PDF Annotator",
+    "directories": { "output": "dist" },
+    "win": { "target": "nsis", "icon": "assets/icon.ico" },
+    "linux": { "target": "AppImage", "icon": "assets/icon.png" }
+  }
+}
