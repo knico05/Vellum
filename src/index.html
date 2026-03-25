@@ -12,7 +12,7 @@
     This is belt-and-suspenders alongside contextIsolation and nodeIntegration:false.
   -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src blob: file:;" />
+        content="default-src 'self' file:; script-src 'self' file:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; worker-src blob: file:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PDF Annotator</title>
   <link rel="stylesheet" href="style.css" />

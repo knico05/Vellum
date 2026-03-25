@@ -16,7 +16,7 @@
 
 'use strict';
 
-import * as pdfjsLib from '../../node_modules/pdfjs-dist/pdf.mjs';
+import * as pdfjsLib from '../../node_modules/pdfjs-dist/build/pdf.mjs';
 
 // ---------------------------------------------------------------------------
 // Worker configuration
@@ -25,7 +25,7 @@ import * as pdfjsLib from '../../node_modules/pdfjs-dist/pdf.mjs';
 // Construct the absolute file:// URL for the worker using import.meta.url
 // as the base. This works in Electron's renderer without __dirname.
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  '../../node_modules/pdfjs-dist/pdf.worker.mjs',
+  '../../node_modules/pdfjs-dist/build/pdf.worker.mjs',
   import.meta.url
 ).href;
 

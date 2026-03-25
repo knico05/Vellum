@@ -7,6 +7,7 @@
 
 'use strict';
 
+
 import { init as initRenderer, requestRender } from './canvas/renderer.js';
 import { init as initInput }                   from './canvas/input.js';
 import { state as viewport }                   from './canvas/viewport.js';
