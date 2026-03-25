@@ -29,5 +29,8 @@
       "target": "AppImage",
       "icon": "assets/icon.png"
     }
+  },
+  "dependencies": {
+    "pdfjs-dist": "^5.5.207"
   }
 }

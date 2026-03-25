@@ -311,3 +311,24 @@ button:focus-visible {
   min-width: 40px;
   text-align: center;
 }
+
+/* Primary toolbar button (e.g. Open) */
+.toolbar-btn {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  transition: background 150ms ease;
+  flex-shrink: 0;
+}
+
+.toolbar-btn:hover {
+  background: var(--surface-3);
+}
+
+.toolbar-btn:active {
+  background: var(--surface-1);
+}
