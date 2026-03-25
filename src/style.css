@@ -1,0 +1,313 @@
+/**
+ * style.css — Global styles and design system
+ *
+ * All colours, spacing, and typography are defined as CSS custom properties
+ * at the top of this file. No component-level CSS should hard-code any value
+ * that belongs here — always reference a variable.
+ *
+ * See CLAUDE.md §3 for the full design rationale.
+ */
+
+/* ---------------------------------------------------------------------------
+   CSS Custom Properties (Design Tokens)
+--------------------------------------------------------------------------- */
+
+:root {
+  /* Backgrounds */
+  --bg-app:        #0f0f0f;
+  --bg-sidebar:    #141414;
+  --bg-panel:      #1a1a1a;
+  --bg-toolbar:    #141414;
+  --bg-canvas:     #111111;
+
+  /* Surface colours (cards, dropdowns, modals) */
+  --surface-1:     #1f1f1f;
+  --surface-2:     #262626;
+  --surface-3:     #2e2e2e;
+
+  /* Borders */
+  --border-subtle: #2a2a2a;
+  --border-strong: #3a3a3a;
+
+  /* Text */
+  --text-primary:  #f0f0f0;
+  --text-secondary:#a0a0a0;
+  --text-muted:    #5a5a5a;
+
+  /* Accent */
+  --accent:        #5b8af5;
+  --accent-hover:  #7ba3ff;
+  --accent-dim:    rgba(91, 138, 245, 0.15);
+
+  /* Annotation colours */
+  --anno-yellow:   rgba(255, 213, 79, 0.35);
+  --anno-green:    rgba(72, 199, 116, 0.35);
+  --anno-pink:     rgba(255, 99, 132, 0.35);
+  --anno-blue:     rgba(91, 138, 245, 0.35);
+
+  /* Border radii */
+  --radius-sm:     4px;
+  --radius-md:     8px;
+  --radius-lg:     12px;
+
+  /* Layout dimensions */
+  --titlebar-height: 32px;
+  --toolbar-height:  44px;
+  --sidebar-width:   240px;
+  --panel-width:     300px;
+
+  /* Typography scale */
+  --text-xs:   11px;
+  --text-sm:   12px;
+  --text-base: 13px;
+  --text-md:   14px;
+  --text-lg:   16px;
+}
+
+/* ---------------------------------------------------------------------------
+   Reset
+--------------------------------------------------------------------------- */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Base
+--------------------------------------------------------------------------- */
+
+html, body {
+  height: 100%;
+  overflow: hidden; /* The app never scrolls at the page level */
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  background: var(--bg-app);
+  line-height: 1.5;
+  /* Prevent text selection on UI chrome (not on PDF content) */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Re-enable text selection inside editable areas */
+[contenteditable], input, textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+button {
+  font-family: inherit;
+  font-size: var(--text-base);
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+   Scrollbar styling
+   Thin, dark scrollbars that match the design aesthetic.
+--------------------------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------------------
+   App layout — CSS Grid
+   The app is a 3-row grid: titlebar / toolbar / main content
+   Main content is a 3-column grid: sidebar / canvas / panel
+--------------------------------------------------------------------------- */
+
+#app {
+  display: grid;
+  grid-template-rows: var(--titlebar-height) var(--toolbar-height) 1fr;
+  grid-template-columns: 1fr;
+  height: 100vh;
+  background: var(--bg-app);
+}
+
+/* ---------------------------------------------------------------------------
+   Title bar (frameless window custom chrome)
+--------------------------------------------------------------------------- */
+
+#titlebar {
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border-subtle);
+  /* -webkit-app-region: drag makes the title bar draggable to move the window */
+  -webkit-app-region: drag;
+  height: var(--titlebar-height);
+}
+
+#titlebar-title {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+#titlebar-controls {
+  display: flex;
+  gap: 4px;
+  /* Controls must NOT be draggable — they need to receive click events */
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-btn {
+  width: 24px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.titlebar-btn:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+#btn-close:hover {
+  background: rgba(255, 99, 99, 0.2);
+  color: #ff6363;
+}
+
+/* ---------------------------------------------------------------------------
+   Toolbar
+--------------------------------------------------------------------------- */
+
+#toolbar {
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border-subtle);
+  gap: 8px;
+  height: var(--toolbar-height);
+}
+
+/* ---------------------------------------------------------------------------
+   Main content area
+--------------------------------------------------------------------------- */
+
+#main {
+  grid-row: 3;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr var(--panel-width);
+  grid-template-rows: 1fr;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   Sidebar
+--------------------------------------------------------------------------- */
+
+#sidebar {
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   Canvas container
+--------------------------------------------------------------------------- */
+
+#canvas-container {
+  position: relative; /* Anchor for absolutely-positioned annotation overlays */
+  background: var(--bg-canvas);
+  overflow: hidden;   /* Clipping boundary for the infinite canvas */
+}
+
+/* ---------------------------------------------------------------------------
+   Notes panel
+--------------------------------------------------------------------------- */
+
+#notes-panel {
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-subtle);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   Shared interactive component patterns
+   These classes are used across toolbar buttons, sidebar items, etc.
+--------------------------------------------------------------------------- */
+
+/* A button row item in the toolbar or sidebar */
+.icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  transition: background 150ms ease, color 150ms ease;
+  flex-shrink: 0;
+}
+
+.icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.icon-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Vertical separator between toolbar sections */
+.toolbar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* Spacer that pushes subsequent items to the right */
+.toolbar-spacer {
+  flex: 1;
+}
+
+/* Small label used for zoom percentage, page count, etc. */
+.toolbar-label {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  min-width: 40px;
+  text-align: center;
+}

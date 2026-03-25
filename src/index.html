@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!--
+    Content-Security-Policy: restricts what the renderer page can load.
+    - default-src 'self'        only load resources from app bundle
+    - script-src 'self'         no inline scripts (XSS prevention)
+    - style-src 'self' 'unsafe-inline'  allow inline styles for dynamic theming
+    - img-src 'self' data: blob:        allow canvas blob URLs for PDF rendering
+    - worker-src blob:          allow PDF.js web worker (loaded as blob URL)
+    This is belt-and-suspenders alongside contextIsolation and nodeIntegration:false.
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; worker-src blob:;" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Annotator</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Title bar — rendered by us because window is frameless -->
+    <div id="titlebar">
+      <span id="titlebar-title">PDF Annotator</span>
+      <div id="titlebar-controls">
+        <button class="titlebar-btn" id="btn-minimise" title="Minimise">&#x2212;</button>
+        <button class="titlebar-btn" id="btn-maximise" title="Maximise">&#x25A1;</button>
+        <button class="titlebar-btn" id="btn-close"    title="Close">&#x2715;</button>
+      </div>
+    </div>
+
+    <!-- Top toolbar -->
+    <div id="toolbar"></div>
+
+    <!-- Main content area -->
+    <div id="main">
+      <div id="sidebar"></div>
+      <div id="canvas-container">
+        <!-- PDF pages and annotation overlays are mounted here -->
+      </div>
+      <div id="notes-panel"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
