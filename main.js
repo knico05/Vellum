@@ -69,7 +69,6 @@ function createWindow() {
   // This eliminates the white/blank flash that would otherwise appear.
   win.once('ready-to-show', () => {
     win.show();
-  });
 
   // Wire up IPC handlers that need the window reference
   setupIPC(win);
