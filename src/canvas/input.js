@@ -5,10 +5,10 @@
  * stylus without special-casing. Native touch events are only used for
  * pinch-to-zoom (two simultaneous pointers).
  *
- * Interaction model (no tool active / pan-mode):
+ * Interaction model:
  *
- *   Touch / stylus
- *   ─────────────
+ *   Touch (fingers)
+ *   ───────────────
  *   1 finger drag          → pan
  *   2 finger pinch         → zoom toward pinch midpoint
  *
@@ -19,6 +19,11 @@
  *   Scroll wheel           → zoom toward cursor
  *   Shift + scroll         → horizontal pan
  *   Ctrl + scroll (pinch)  → zoom toward cursor (trackpad)
+ *
+ *   Pen / stylus
+ *   ────────────
+ *   Completely ignored here — pen is exclusively for annotation tools
+ *   (draw, highlight, eraser, select). Panning is done with fingers.
  *
  *   Keyboard
  *   ────────
@@ -109,6 +114,11 @@ function init() {
 // ---------------------------------------------------------------------------
 
 function onPointerDown(e) {
+  // Pen is handled exclusively by annotation tools — never pan with pen.
+  // Letting input.js capture pen pointers would prevent draw.js / highlight.js
+  // from receiving clean events, making it impossible to annotate.
+  if (e.pointerType === 'pen') return;
+
   // Capture the pointer so we keep receiving events even if the cursor
   // leaves the container element during a fast drag.
   container.setPointerCapture(e.pointerId);
@@ -189,14 +199,17 @@ function onWheel(e) {
   const originX = e.clientX - rect.left;
   const originY = e.clientY - rect.top;
 
-  if (e.shiftKey && !e.ctrlKey) {
-    // Shift+scroll → horizontal pan
-    applyPan(-e.deltaY, 0);
-  } else {
-    // Plain scroll or ctrl+scroll (trackpad pinch) → zoom toward cursor
+  if (e.ctrlKey) {
+    // Ctrl+scroll or trackpad pinch → zoom toward cursor
     // Negate deltaY: scrolling up (negative delta) = zoom in (positive factor)
     const delta = -e.deltaY * ZOOM_FACTOR * SCROLL_ZOOM_SENSITIVITY;
     applyZoom(delta, originX, originY);
+  } else if (e.shiftKey) {
+    // Shift+scroll → horizontal pan
+    applyPan(-e.deltaY, 0);
+  } else {
+    // Plain scroll → vertical pan
+    applyPan(0, -e.deltaY);
   }
 
   emitAndRender();

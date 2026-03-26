@@ -41,17 +41,29 @@ const MIN_DOT_SPACING_PX = 4;
 // Module state
 // ---------------------------------------------------------------------------
 
-/** The <canvas> element we own */
+/** Background <canvas> — sits behind PDF pages, draws dot grid */
 let canvas = null;
 
-/** 2D rendering context for the canvas */
+/** 2D context for the background canvas */
 let ctx = null;
+
+/**
+ * Foreground <canvas> — sits in FRONT of PDF pages (z-index: 1), draws
+ * annotations and tool previews so they appear on top of page content.
+ */
+let fgCanvas = null;
+
+/** 2D context for the foreground canvas */
+let fgCtx = null;
 
 /** True when something has changed and a redraw is needed */
 let dirty = true;
 
-/** Functions registered by other modules to draw their content each frame */
+/** Draw functions for background layer (dot grid helpers, page positioning) */
 const drawCallbacks = [];
+
+/** Draw functions for foreground layer (annotations, tool previews) */
+const overlayCallbacks = [];
 
 /** Cached dot colour — read once from CSS, avoids getComputedStyle every frame */
 let dotColour = null;
@@ -69,15 +81,25 @@ let dotColour = null;
 function init() {
   const container = document.getElementById('canvas-container');
 
+  // Background canvas — behind PDF pages (no z-index, natural DOM order)
   canvas = document.createElement('canvas');
   canvas.id = 'main-canvas';
   canvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
   container.appendChild(canvas);
+  ctx = canvas.getContext('2d');
+
+  // Foreground canvas — in front of PDF pages (z-index:1 overrides DOM order)
+  // PDF page canvases have no z-index, so they sit below z-index:1 elements.
+  fgCanvas = document.createElement('canvas');
+  fgCanvas.id = 'annotation-canvas';
+  fgCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:1;';
+  container.appendChild(fgCanvas);
+  fgCtx = fgCanvas.getContext('2d');
 
   // Read the dot colour from the CSS variable once
   dotColour = getComputedStyle(document.documentElement)
-    .getPropertyValue('--border-subtle')
-    .trim() || '#2a2a2a';
+    .getPropertyValue('--canvas-dot')
+    .trim() || '#ccc8bf';
 
   // Match canvas size to container, re-match on resize
   resizeToContainer();
@@ -92,15 +114,30 @@ function init() {
 }
 
 /**
- * Sizes the canvas to exactly fill its container.
- * Must be called whenever the container resizes; drawing to a mis-sized
- * canvas produces blurry or clipped output.
+ * Sizes the canvas to exactly fill its container at the device's native
+ * pixel density. Without this, every canvas pixel covers multiple physical
+ * pixels on HiDPI screens (Retina, Surface, etc.) — visibly blurry.
+ *
+ * The canvas buffer is DPR × CSS size; CSS display size stays unchanged
+ * so layout is unaffected.
  */
 function resizeToContainer() {
   const container = document.getElementById('canvas-container');
   const { width, height } = container.getBoundingClientRect();
-  canvas.width  = Math.floor(width);
-  canvas.height = Math.floor(height);
+  const dpr = window.devicePixelRatio || 1;
+
+  const pw = Math.floor(width  * dpr);
+  const ph = Math.floor(height * dpr);
+
+  canvas.width        = pw;
+  canvas.height       = ph;
+  canvas.style.width  = `${Math.floor(width)}px`;
+  canvas.style.height = `${Math.floor(height)}px`;
+
+  fgCanvas.width        = pw;
+  fgCanvas.height       = ph;
+  fgCanvas.style.width  = `${Math.floor(width)}px`;
+  fgCanvas.style.height = `${Math.floor(height)}px`;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,30 +180,50 @@ function requestRender() {
 function render() {
   if (!ctx) return;
 
-  const W = canvas.width;
-  const H = canvas.height;
+  const dpr = window.devicePixelRatio || 1;
+  const W   = canvas.width;    // physical pixels
+  const H   = canvas.height;
+  const cssW = W / dpr;        // CSS pixels — what toCanvas() expects
+  const cssH = H / dpr;
 
-  // 1. Clear
+  // 1. Clear (use physical pixel dimensions)
   ctx.clearRect(0, 0, W, H);
 
-  // 2. Apply viewport transform
-  //    ctx.setTransform(scaleX, skewY, skewX, scaleY, translateX, translateY)
-  //    This maps canvas-space coordinates to screen pixels automatically,
-  //    so everything drawn after this is in canvas space.
-  ctx.setTransform(viewport.scale, 0, 0, viewport.scale, viewport.panX, viewport.panY);
+  // 2. Apply viewport transform, scaled to physical pixels.
+  //    Multiplying by DPR maps canvas-space coords to physical pixels,
+  //    eliminating the blurriness caused by drawing at CSS-pixel resolution.
+  ctx.setTransform(
+    viewport.scale * dpr, 0,
+    0, viewport.scale * dpr,
+    viewport.panX * dpr, viewport.panY * dpr,
+  );
 
-  // 3. Draw dot grid
-  drawGrid(W, H);
+  // 3. Draw dot grid (pass CSS dimensions — toCanvas() uses CSS pixel coords)
+  drawGrid(cssW, cssH);
 
-  // 4. Call registered draw functions (PDF pages, annotations, etc.)
+  // 4. Call background draw functions (page positioning, etc.)
   for (const fn of drawCallbacks) {
     ctx.save();
     fn(ctx, viewport);
     ctx.restore();
   }
 
-  // Reset transform for any subsequent screen-space drawing
+  // Reset background transform
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  // 5. Draw foreground (annotation) layer on the canvas that sits above pages
+  fgCtx.clearRect(0, 0, W, H);
+  fgCtx.setTransform(
+    viewport.scale * dpr, 0,
+    0, viewport.scale * dpr,
+    viewport.panX * dpr, viewport.panY * dpr,
+  );
+  for (const fn of overlayCallbacks) {
+    fgCtx.save();
+    fn(fgCtx, viewport);
+    fgCtx.restore();
+  }
+  fgCtx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
 /**
@@ -229,6 +286,16 @@ function register(fn) {
   drawCallbacks.push(fn);
 }
 
+/**
+ * Registers a function to be called every frame on the foreground canvas,
+ * which sits in front of PDF pages. Use this for annotations and tool previews.
+ *
+ * @param {function(CanvasRenderingContext2D, object): void} fn
+ */
+function registerOverlay(fn) {
+  overlayCallbacks.push(fn);
+}
+
 // Expose the canvas element for input.js to attach events to
 function getCanvas() {
   return canvas;
@@ -238,4 +305,4 @@ function getCanvas() {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init, requestRender, register, getCanvas };
+export { init, requestRender, register, registerOverlay, getCanvas };
