@@ -168,6 +168,50 @@ function setupIPC(win) {
   });
 
   /**
+   * capture-screen — captures the entire renderer window as a PNG.
+   * The renderer is responsible for cropping to the desired region client-side,
+   * which avoids coordinate-space ambiguity (logical vs physical pixels) that
+   * arises when passing a rect directly to capturePage on HiDPI screens.
+   * Returns a Uint8Array of PNG bytes.
+   */
+  ipcMain.handle('capture-screen', async () => {
+    const image = await win.webContents.capturePage();
+    return new Uint8Array(image.toPNG());
+  });
+
+  /**
+   * library-load — reads the library JSON from userData.
+   * Returns the parsed object, or null if the file doesn't exist yet.
+   * userData is the OS-appropriate app data directory (e.g. %APPDATA% on Windows).
+   */
+  ipcMain.handle('library-load', async () => {
+    const libPath = path.join(app.getPath('userData'), 'library.json');
+    try {
+      if (!fs.existsSync(libPath)) return null;
+      const text = fs.readFileSync(libPath, 'utf8');
+      return JSON.parse(text);
+    } catch (err) {
+      // Corrupt file — treat as empty rather than crashing
+      console.error('library-load failed:', err.message);
+      return null;
+    }
+  });
+
+  /**
+   * library-save — writes the library object to userData/library.json.
+   * @param {object} data — serialisable library object
+   */
+  ipcMain.handle('library-save', async (_event, data) => {
+    const libPath = path.join(app.getPath('userData'), 'library.json');
+    try {
+      fs.writeFileSync(libPath, JSON.stringify(data, null, 2), 'utf8');
+      return true;
+    } catch (err) {
+      throw new Error(`Could not save library: ${err.message}`);
+    }
+  });
+
+  /**
    * window-control — handles frameless window controls (minimise, maximise, close).
    * The renderer renders these buttons; they send actions here.
    */

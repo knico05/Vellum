@@ -20,6 +20,8 @@
  *   writeFile(path, data)          → Promise<true>
  *   fileExists(path)               → Promise<boolean>
  *   getFingerprint(path)           → Promise<string>
+ *   loadLibrary()                  → Promise<object|null>
+ *   saveLibrary(data)              → Promise<true>
  *   windowControl(action)          → void
  */
 
@@ -70,6 +72,30 @@ contextBridge.exposeInMainWorld('api', {
    */
   getFingerprint: (filePath) =>
     ipcRenderer.invoke('get-fingerprint', filePath),
+
+  /**
+   * Captures the entire window as a PNG.
+   * Cropping to a region is done client-side to avoid logical/physical pixel
+   * coordinate ambiguity on HiDPI screens.
+   * @returns {Promise<Uint8Array>} PNG bytes of the full window
+   */
+  captureScreen: () =>
+    ipcRenderer.invoke('capture-screen'),
+
+  /**
+   * Loads the persistent file library from userData/library.json.
+   * @returns {Promise<object|null>} Parsed library object, or null if not yet created.
+   */
+  loadLibrary: () =>
+    ipcRenderer.invoke('library-load'),
+
+  /**
+   * Saves the file library to userData/library.json.
+   * @param {object} data — serialisable library object
+   * @returns {Promise<true>}
+   */
+  saveLibrary: (data) =>
+    ipcRenderer.invoke('library-save', data),
 
   /**
    * Sends a window control action to the main process.

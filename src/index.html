@@ -31,11 +31,38 @@
 
     <!-- Top toolbar -->
     <div id="toolbar">
+      <button class="tool-btn" id="btn-library" title="File Library">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="1.5" y="2" width="4" height="10" rx="0.8" stroke="currentColor" stroke-width="1.3"/>
+          <rect x="7"   y="2" width="5.5" height="4.5" rx="0.8" stroke="currentColor" stroke-width="1.3"/>
+          <rect x="7"   y="8" width="5.5" height="4" rx="0.8" stroke="currentColor" stroke-width="1.3"/>
+        </svg>
+      </button>
       <button class="toolbar-btn" id="btn-open" title="Open PDF (Ctrl+O)">Open</button>
       <div class="toolbar-sep"></div>
-      <span class="toolbar-label" id="lbl-page"></span>
+      <div id="tool-group" style="display:flex;gap:2px;align-items:center;"></div>
+      <div id="colour-picker" style="display:none;align-items:center;gap:6px;margin-left:8px;"></div>
+      <div id="stroke-picker" style="display:none;align-items:center;gap:4px;margin-left:4px;"></div>
+      <div class="toolbar-sep" id="colour-sep" style="display:none;"></div>
       <div class="toolbar-spacer"></div>
+      <span class="toolbar-label" id="lbl-save-status"></span>
+      <span class="toolbar-label" id="lbl-page"></span>
       <span class="toolbar-label" id="lbl-zoom"></span>
+      <div class="toolbar-sep"></div>
+      <button class="tool-btn" id="btn-screenshot" title="Screenshot to clipboard (Ctrl+Shift+S)">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="1.5" y="3" width="11" height="8.5" rx="1.2" stroke="currentColor" stroke-width="1.3"/>
+          <circle cx="7" cy="7.2" r="2" stroke="currentColor" stroke-width="1.3"/>
+          <path d="M5 3L5.8 1.5H8.2L9 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <div class="toolbar-sep"></div>
+      <button class="tool-btn" id="btn-fit-page" title="Fit page (F)">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="3" y="2" width="8" height="10" rx="1" stroke="currentColor" stroke-width="1.4"/>
+          <line x1="1" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
     </div>
 
     <!-- Main content area -->
@@ -45,6 +72,28 @@
         <!-- PDF pages and annotation overlays are mounted here -->
       </div>
       <div id="notes-panel"></div>
+    </div>
+  </div>
+
+  <!-- Library panel — slide-in drawer from the left -->
+  <div id="library-panel">
+    <div id="library-inner">
+      <div id="library-header">
+        <span class="library-title">Files</span>
+        <button class="modal-close" id="btn-library-close" title="Close">&#x2715;</button>
+      </div>
+      <div id="library-list"></div>
+    </div>
+  </div>
+
+  <!-- Shortcuts help modal — populated by shortcuts.js -->
+  <div id="shortcuts-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span class="modal-title">Keyboard Shortcuts</span>
+        <button class="modal-close" id="btn-shortcuts-close">&#x2715;</button>
+      </div>
+      <div class="modal-body" id="shortcuts-list"></div>
     </div>
   </div>
 
