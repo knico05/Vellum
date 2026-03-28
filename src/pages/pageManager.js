@@ -249,7 +249,7 @@ function loadPageList(savedPages) {
  */
 function addBlankPage(template = 'plain') {
   if (pages.length === 0) {
-    _insertBlankPageAt(0, template);
+    _insertBlankPageAt(0, template, BLANK_WIDTH, BLANK_HEIGHT);
     return;
   }
 
@@ -264,7 +264,9 @@ function addBlankPage(template = 'plain') {
     if (d < bestDist) { bestDist = d; bestIdx = i; }
   }
 
-  _insertBlankPageAt(bestIdx + 1, template);
+  // Match the nearest page's dimensions so blank pages align with PDF pages
+  const nearest = pages[bestIdx];
+  _insertBlankPageAt(bestIdx + 1, template, nearest.width, nearest.height);
 }
 
 /**
@@ -302,15 +304,17 @@ function removePage(id) {
  *
  * @param {number} listIndex — Index at which to splice in the new page
  * @param {string} [template='plain'] — Template to apply to the blank page
+ * @param {number} [width]   — Page width in canvas units (defaults to nearest page or A4)
+ * @param {number} [height]  — Page height in canvas units
  */
-function _insertBlankPageAt(listIndex, template = 'plain') {
+function _insertBlankPageAt(listIndex, template = 'plain', width = BLANK_WIDTH, height = BLANK_HEIGHT) {
   const id   = `blank-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const page = {
     id,
     kind:     'blank',
     template,
-    width:    BLANK_WIDTH,
-    height:   BLANK_HEIGHT,
+    width,
+    height,
     canvasX:  0,
     canvasY:  0,
   };
