@@ -35,6 +35,7 @@ const SHORTCUT_DOCS = [
   { key: 'E',           description: 'Eraser tool'             },
   { key: '[ / ]',       description: 'Previous / next page'    },
   { key: 'F',           description: 'Fit page to window'      },
+  { key: 'P',           description: 'Toggle pages panel'      },
   { key: 'Escape',      description: 'Deselect / cancel'       },
   { key: 'Ctrl+Shift+S', description: 'Screenshot to clipboard' },
   { key: 'Ctrl + O',    description: 'Open file'               },
@@ -68,11 +69,11 @@ let modalEl = null;
  *   setTool  — (toolName: string|null) => void, called for tool shortcuts
  *   undo     — called when Ctrl+Z is pressed
  */
-function init({ openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot }) {
+function init({ openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot, togglePanel }) {
   buildModal();
 
   window.addEventListener('keydown', (e) => {
-    handleKeyDown(e, { openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot });
+    handleKeyDown(e, { openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot, togglePanel });
   });
 }
 
@@ -86,7 +87,7 @@ function init({ openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot
  * @param {KeyboardEvent} e
  * @param {{ openFile: Function, setTool: Function, undo: Function }} callbacks
  */
-function handleKeyDown(e, { openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot }) {
+function handleKeyDown(e, { openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot, togglePanel }) {
   // Ctrl+O: open file (fires regardless of editable target)
   if (e.ctrlKey && !e.shiftKey && e.key === 'o') {
     e.preventDefault();
@@ -161,6 +162,11 @@ function handleKeyDown(e, { openFile, setTool, undo, fitPage, prevPage, nextPage
 
     case 'Escape':
       setTool(null);
+      break;
+
+    case 'p':
+    case 'P':
+      togglePanel();
       break;
 
     case '?':

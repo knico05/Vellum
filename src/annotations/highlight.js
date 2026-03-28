@@ -19,7 +19,7 @@
 import { toCanvas }                        from '../canvas/viewport.js';
 import { registerOverlay, requestRender }  from '../canvas/renderer.js';
 import { add, getAll }                     from './manager.js';
-import { getPages }                        from '../pdf/pdfManager.js';
+import { resolvePageId }                   from '../pages/pageManager.js';
 import { getDragOffset }                   from './select.js';
 
 // ---------------------------------------------------------------------------
@@ -173,9 +173,14 @@ function onCancel() {
 function commitStroke() {
   if (livePoints.length < 2) return;
 
+  let cx = 0, cy = 0;
+  for (const p of livePoints) { cx += p.x; cy += p.y; }
+  cx /= livePoints.length;
+  cy /= livePoints.length;
+
   add({
     type:        'highlight',
-    pageIndex:   resolvePageIndex(livePoints),
+    pageId:      resolvePageId(cx, cy),
     points:      livePoints.slice(),
     strokeWidth: currentWidth,
     colour:      currentColourCss, // Store resolved CSS string directly
@@ -287,21 +292,6 @@ function makePoint(e) {
   const rect     = container.getBoundingClientRect();
   const { x, y } = toCanvas(e.clientX - rect.left, e.clientY - rect.top);
   return { x, y };
-}
-
-function resolvePageIndex(points) {
-  let cx = 0, cy = 0;
-  for (const p of points) { cx += p.x; cy += p.y; }
-  cx /= points.length;
-  cy /= points.length;
-
-  for (const page of getPages()) {
-    if (
-      cx >= page.canvasX && cx <= page.canvasX + page.width &&
-      cy >= page.canvasY && cy <= page.canvasY + page.height
-    ) return page.pageIndex;
-  }
-  return 0;
 }
 
 // ---------------------------------------------------------------------------

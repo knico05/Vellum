@@ -22,7 +22,7 @@
 import { toCanvas, state as viewport }    from '../canvas/viewport.js';
 import { registerOverlay, requestRender } from '../canvas/renderer.js';
 import { add, getAll }                    from './manager.js';
-import { getPages }                       from '../pdf/pdfManager.js';
+import { resolvePageId }                  from '../pages/pageManager.js';
 import { getDragOffset }                  from './select.js';
 
 // ---------------------------------------------------------------------------
@@ -30,10 +30,16 @@ import { getDragOffset }                  from './select.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Minimum canvas-space distance between consecutive recorded points.
- * Points closer than this are skipped to keep path arrays small.
+ * Returns the minimum canvas-space distance between consecutive recorded points.
+ * Scales with stroke width: thinner strokes need more points for smooth curves.
+ * A fine pen (width 1) uses 0.5; a brush (width 8) uses 2.
+ *
+ * @param {number} strokeWidth
+ * @returns {number}
  */
-const MIN_POINT_DISTANCE = 2;
+function minPointDistance(strokeWidth) {
+  return Math.max(0.5, strokeWidth * 0.5);
+}
 
 /** Base stroke width in canvas units at pressure 1.0 */
 const BASE_STROKE_WIDTH = 2;
@@ -128,10 +134,11 @@ function onMove(e) {
   const pt   = makePoint(e);
   const last = livePoints[livePoints.length - 1];
 
-  // Only record if the pointer has moved far enough — prevents point bloat
+  // Only record if the pointer has moved far enough — prevents point bloat.
+  // Threshold scales with stroke width so thin pens record more points.
   const dx = pt.x - last.x;
   const dy = pt.y - last.y;
-  if (Math.sqrt(dx * dx + dy * dy) >= MIN_POINT_DISTANCE) {
+  if (Math.sqrt(dx * dx + dy * dy) >= minPointDistance(currentWidth)) {
     livePoints.push(pt);
     requestRender();
   }
@@ -164,9 +171,15 @@ function onCancel() {
 function commitStroke() {
   if (livePoints.length < 2) return; // Tap with no drag — ignore
 
+  // Compute centroid to resolve which page the stroke belongs to
+  let cx = 0, cy = 0;
+  for (const p of livePoints) { cx += p.x; cy += p.y; }
+  cx /= livePoints.length;
+  cy /= livePoints.length;
+
   add({
     type:        'draw',
-    pageIndex:   resolvePageIndex(livePoints),
+    pageId:      resolvePageId(cx, cy),
     points:      livePoints.slice(),
     strokeWidth: currentWidth,
     colour:      currentColour,
@@ -272,26 +285,6 @@ function makePoint(e) {
   return { x, y, pressure };
 }
 
-/**
- * Resolves the page index for a stroke using the centroid of its points.
- *
- * @param {Array<{x:number, y:number}>} points
- * @returns {number} pageIndex
- */
-function resolvePageIndex(points) {
-  let cx = 0, cy = 0;
-  for (const p of points) { cx += p.x; cy += p.y; }
-  cx /= points.length;
-  cy /= points.length;
-
-  for (const page of getPages()) {
-    if (
-      cx >= page.canvasX && cx <= page.canvasX + page.width &&
-      cy >= page.canvasY && cy <= page.canvasY + page.height
-    ) return page.pageIndex;
-  }
-  return 0;
-}
 
 // ---------------------------------------------------------------------------
 // Exports

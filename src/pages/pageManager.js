@@ -1,0 +1,585 @@
+/**
+ * pageManager.js — Unified page manager (single source of truth for page layout)
+ *
+ * Owns the ordered page list for the current document. Both PDF pages and blank
+ * pages are first-class entries. Canvas Y positions are DERIVED from list order
+ * via recomputeLayout() — they are never stored independently or mutated directly.
+ *
+ * Insert = splice into pages[] + recomputeLayout()
+ * Delete = splice out of pages[] + recomputeLayout()
+ * No manual "shiftPagesAfter" needed anywhere.
+ *
+ * Page IDs:
+ *   PDF pages:   "pdf-{pdfPageIndex}"           — stable, tied to PDF page number
+ *   Blank pages: "blank-{timestamp}-{random}"   — stable, generated at creation
+ *
+ * Events dispatched on document:
+ *   'pages-changed' — fired when a page is inserted or removed
+ *
+ * Exports:
+ *   initPageManager, openPDF, loadPageList, getPageList,
+ *   addBlankPage, removePage, resolvePageId, recomputeLayout,
+ *   getCurrentPageId, getCurrentPageListIndex,
+ *   goToPage, goToPageIndex, fitPage, getPageCount,
+ *   getCurrentPdfPath, getCurrentFingerprint,
+ *   triggerLazyRender, spliceBlankPagesFromMigration, tearDown
+ */
+
+'use strict';
+
+import { loadPDF, getPageDimensions }                          from '../pdf/loader.js';
+import { PDFPage, PAGE_GAP }                                   from '../pdf/page.js';
+import { BlankPage }                                           from './blankPage.js';
+import { centreOn, toCanvas, toScreen, state as viewportState } from '../canvas/viewport.js';
+import { register, requestRender }                             from '../canvas/renderer.js';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Default dimensions for a new blank page (A4 at 72 dpi, same as PDF.js default) */
+const BLANK_WIDTH  = 595;
+const BLANK_HEIGHT = 842;
+
+// ---------------------------------------------------------------------------
+// Module state
+// ---------------------------------------------------------------------------
+
+/**
+ * Ordered list of page descriptors — the canonical document structure.
+ * Each entry: { id, kind, width, height, canvasX, canvasY, pdfPageIndex? }
+ * canvasX/canvasY are computed by recomputeLayout(), not stored in save files.
+ */
+let pages = [];
+
+/** Map of page id → PDFPage | BlankPage instance (owns the DOM canvas) */
+const pageInstances = new Map();
+
+/** Cached PDF page dimensions keyed by pdfPageIndex. Set during openPDF(). */
+const pdfPageDims = new Map();
+
+/** PDF.js document proxy for the currently loaded PDF */
+let pdfDoc = null;
+
+/** Absolute path of the currently loaded PDF */
+let currentPath = null;
+
+/** SHA-256 fingerprint of the first 8KB of the current PDF */
+let currentFingerprint = null;
+
+/** #canvas-container DOM element */
+let container = null;
+
+// ---------------------------------------------------------------------------
+// Initialisation
+// ---------------------------------------------------------------------------
+
+/**
+ * Must be called once after DOM is ready.
+ * Registers the per-frame position-update callback and viewport-changed listener.
+ */
+function init() {
+  container = document.getElementById('canvas-container');
+
+  // Reposition all page canvases every frame
+  register(() => {
+    for (const inst of pageInstances.values()) inst.updatePosition();
+  });
+
+  // Trigger lazy PDF page rendering whenever the viewport moves
+  container.addEventListener('viewport-changed', () => {
+    triggerLazyRender();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Layout
+// ---------------------------------------------------------------------------
+
+/**
+ * Recomputes canvasX/canvasY for every page in pages[] based on list order.
+ * Also syncs the values onto the corresponding instances so updatePosition()
+ * uses the correct coordinates immediately.
+ *
+ * Must be called after any insert, delete, or page list replacement.
+ */
+function recomputeLayout() {
+  let y = 0;
+  for (const page of pages) {
+    page.canvasX = -page.width / 2;
+    page.canvasY = y;
+
+    const inst = pageInstances.get(page.id);
+    if (inst) {
+      inst.canvasX = page.canvasX;
+      inst.canvasY = page.canvasY;
+      inst.updatePosition();
+    }
+
+    y += page.height + PAGE_GAP;
+  }
+  requestRender();
+}
+
+// ---------------------------------------------------------------------------
+// PDF loading
+// ---------------------------------------------------------------------------
+
+/**
+ * Opens a PDF file and builds the default page list (all PDF pages in order).
+ * Called by app.js before loadPageList() — loadPageList() may then override
+ * the default order with a saved order that includes blank pages.
+ *
+ * @param {string} filePath — Absolute path to the PDF file
+ * @returns {Promise<void>}
+ */
+async function openPDF(filePath) {
+  tearDown();
+  currentPath = filePath;
+
+  const [bytes, fingerprint] = await Promise.all([
+    window.api.readFile(filePath),
+    window.api.getFingerprint(filePath),
+  ]);
+  currentFingerprint = fingerprint;
+
+  pdfDoc = await loadPDF(bytes);
+
+  const numPages = pdfDoc.numPages;
+  const dims     = await Promise.all(
+    Array.from({ length: numPages }, (_, i) => getPageDimensions(pdfDoc, i))
+  );
+
+  // Cache dimensions for use by loadPageList()
+  pdfPageDims.clear();
+  dims.forEach((d, i) => pdfPageDims.set(i, d));
+
+  // Build default page list — PDF pages only, in document order
+  pages = dims.map((d, i) => ({
+    id:           `pdf-${i}`,
+    kind:         'pdf',
+    pdfPageIndex: i,
+    width:        d.width,
+    height:       d.height,
+    canvasX:      0,
+    canvasY:      0,
+  }));
+
+  recomputeLayout();
+  _mountAllPages();
+
+  // Centre viewport on page 1
+  if (pages.length > 0) {
+    const first = pages[0];
+    const { width: sw, height: sh } = container.getBoundingClientRect();
+    centreOn(first.canvasX, first.canvasY, first.width, first.height, sw, sh);
+  }
+
+  triggerLazyRender();
+  requestRender();
+  document.dispatchEvent(new CustomEvent('pages-changed'));
+}
+
+// ---------------------------------------------------------------------------
+// Page list persistence
+// ---------------------------------------------------------------------------
+
+/**
+ * Replaces the current page list with one restored from a v2 save file.
+ * Must be called after openPDF() so that pdfPageDims is populated.
+ *
+ * @param {Array} savedPages — The pages[] array from the v2 JSON file
+ */
+function loadPageList(savedPages) {
+  if (!Array.isArray(savedPages) || savedPages.length === 0) return;
+
+  // Tear down all current instances (pdfDoc remains — needed for lazy render)
+  for (const inst of pageInstances.values()) inst.destroy();
+  pageInstances.clear();
+
+  pages = savedPages.map(p => {
+    if (p.kind === 'pdf') {
+      // Dimensions come from pdfPageDims (fetched during openPDF)
+      const dims = pdfPageDims.get(p.pdfPageIndex) ?? { width: BLANK_WIDTH, height: BLANK_HEIGHT };
+      return {
+        id:           p.id,
+        kind:         'pdf',
+        pdfPageIndex: p.pdfPageIndex,
+        width:        dims.width,
+        height:       dims.height,
+        canvasX:      0,
+        canvasY:      0,
+      };
+    } else {
+      return {
+        id:      p.id,
+        kind:    'blank',
+        width:   p.width,
+        height:  p.height,
+        canvasX: 0,
+        canvasY: 0,
+      };
+    }
+  });
+
+  recomputeLayout();
+  _mountAllPages();
+  triggerLazyRender();
+  requestRender();
+  document.dispatchEvent(new CustomEvent('pages-changed'));
+}
+
+// ---------------------------------------------------------------------------
+// Page operations
+// ---------------------------------------------------------------------------
+
+/**
+ * Inserts a new blank page immediately after the page currently nearest the
+ * viewport centre. Falls back to appending if no pages exist.
+ * Dispatches 'pages-changed'.
+ */
+function addBlankPage() {
+  if (pages.length === 0) {
+    _insertBlankPageAt(0);
+    return;
+  }
+
+  // Find the page whose vertical centre is nearest the viewport centre
+  const { width: sw, height: sh } = container.getBoundingClientRect();
+  const centre  = toCanvas(sw / 2, sh / 2);
+  let bestIdx   = 0;
+  let bestDist  = Infinity;
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i];
+    const d = Math.abs((p.canvasY + p.height / 2) - centre.y);
+    if (d < bestDist) { bestDist = d; bestIdx = i; }
+  }
+
+  _insertBlankPageAt(bestIdx + 1);
+}
+
+/**
+ * Removes a page by ID. Only blank pages can be removed — PDF pages are
+ * immutable (they come from the source PDF file).
+ * Dispatches 'pages-changed'.
+ *
+ * @param {string} id — Page ID to remove
+ */
+function removePage(id) {
+  const idx = pages.findIndex(p => p.id === id);
+  if (idx === -1) return;
+  if (pages[idx].kind === 'pdf') return; // PDF pages cannot be removed
+
+  const inst = pageInstances.get(id);
+  if (inst) {
+    inst.destroy();
+    pageInstances.delete(id);
+  }
+
+  pages.splice(idx, 1);
+  recomputeLayout();
+
+  document.dispatchEvent(new CustomEvent('pages-changed'));
+  requestRender();
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Inserts a new blank page at position listIndex in pages[].
+ * Mounts a BlankPage instance and dispatches 'pages-changed'.
+ *
+ * @param {number} listIndex — Index at which to splice in the new page
+ */
+function _insertBlankPageAt(listIndex) {
+  const id   = `blank-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const page = {
+    id,
+    kind:    'blank',
+    width:   BLANK_WIDTH,
+    height:  BLANK_HEIGHT,
+    canvasX: 0,
+    canvasY: 0,
+  };
+
+  pages.splice(listIndex, 0, page);
+  recomputeLayout(); // sets page.canvasX/canvasY
+
+  const inst = new BlankPage(page.width, page.height);
+  inst.canvasX = page.canvasX;
+  inst.canvasY = page.canvasY;
+  inst.mount(container);
+  pageInstances.set(id, inst);
+
+  document.dispatchEvent(new CustomEvent('pages-changed'));
+  requestRender();
+}
+
+/**
+ * Creates and mounts instances for all entries in pages[].
+ * Called after any full page list replacement (openPDF, loadPageList, migration).
+ * Assumes pages[] has been set and recomputeLayout() has been called.
+ */
+function _mountAllPages() {
+  for (const page of pages) {
+    let inst;
+    if (page.kind === 'pdf') {
+      inst = new PDFPage(page.pdfPageIndex, page.canvasX, page.canvasY, page.width, page.height);
+    } else {
+      inst = new BlankPage(page.width, page.height);
+      inst.canvasX = page.canvasX;
+      inst.canvasY = page.canvasY;
+    }
+    inst.mount(container);
+    pageInstances.set(page.id, inst);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Lazy PDF rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * Renders PDF pages that are near the viewport and haven't been rendered yet.
+ * Blank pages are already rendered (white fill at mount time) — no-op for them.
+ */
+function triggerLazyRender() {
+  if (!pdfDoc || pages.length === 0) return;
+
+  const { width: sw, height: sh } = container.getBoundingClientRect();
+
+  for (const page of pages) {
+    if (page.kind !== 'pdf') continue;
+    const inst = pageInstances.get(page.id);
+    if (inst && !inst.rendered && !inst.rendering && inst.isNearViewport(sw, sh)) {
+      inst.render(pdfDoc); // async; handles its own errors
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
+
+/**
+ * Centres the viewport on the page with the given ID.
+ * @param {string} id
+ */
+function goToPage(id) {
+  const page = pages.find(p => p.id === id);
+  if (!page) return;
+  const { width: sw, height: sh } = container.getBoundingClientRect();
+  centreOn(page.canvasX, page.canvasY, page.width, page.height, sw, sh);
+  requestRender();
+}
+
+/**
+ * Centres the viewport on the page at list position n.
+ * Clamps to valid range.
+ * @param {number} n — 0-based list index
+ */
+function goToPageIndex(n) {
+  const clamped = Math.max(0, Math.min(pages.length - 1, n));
+  const page    = pages[clamped];
+  if (page) goToPage(page.id);
+}
+
+/**
+ * Fits the most-visible page into the viewport (centres + scales to fill).
+ */
+function fitPage() {
+  if (pages.length === 0) return;
+
+  const { width: sw, height: sh } = container.getBoundingClientRect();
+  const screenCentreY = sh / 2;
+
+  let bestPage = pages[0];
+  let bestDist = Infinity;
+
+  for (const page of pages) {
+    const { y: sy } = toScreen(page.canvasX, page.canvasY + page.height / 2);
+    const dist = Math.abs(sy - screenCentreY);
+    if (dist < bestDist) { bestDist = dist; bestPage = page; }
+  }
+
+  centreOn(bestPage.canvasX, bestPage.canvasY, bestPage.width, bestPage.height, sw, sh);
+  requestRender();
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a read-only snapshot of the ordered page list.
+ * Each entry: { id, kind, width, height, canvasX, canvasY, pdfPageIndex? }
+ *
+ * @returns {Array<object>}
+ */
+function getPageList() {
+  return pages.map(p => ({ ...p }));
+}
+
+/**
+ * Hit-tests a canvas-space point against the page list.
+ * Returns the ID of the page that contains the point, or the first page's ID
+ * if no page matches (fallback for annotations drawn outside all pages).
+ *
+ * @param {number} cx — Canvas X
+ * @param {number} cy — Canvas Y
+ * @returns {string|null}
+ */
+function resolvePageId(cx, cy) {
+  for (const page of pages) {
+    if (
+      cx >= page.canvasX && cx <= page.canvasX + page.width &&
+      cy >= page.canvasY && cy <= page.canvasY + page.height
+    ) return page.id;
+  }
+  return pages[0]?.id ?? null;
+}
+
+/**
+ * Returns the ID of the page whose vertical centre is nearest the viewport centre.
+ * @returns {string|null}
+ */
+function getCurrentPageId() {
+  if (pages.length === 0) return null;
+
+  const { width: sw, height: sh } = container.getBoundingClientRect();
+  const centre  = toCanvas(sw / 2, sh / 2);
+  let bestId    = pages[0].id;
+  let bestDist  = Infinity;
+
+  for (const page of pages) {
+    const d = Math.abs((page.canvasY + page.height / 2) - centre.y);
+    if (d < bestDist) { bestDist = d; bestId = page.id; }
+  }
+  return bestId;
+}
+
+/**
+ * Returns the 0-based list index of the page nearest the viewport centre.
+ * @returns {number}
+ */
+function getCurrentPageListIndex() {
+  const id = getCurrentPageId();
+  if (id === null) return 0;
+  const idx = pages.findIndex(p => p.id === id);
+  return idx === -1 ? 0 : idx;
+}
+
+/** @returns {number} Total number of pages (PDF + blank) */
+function getPageCount()          { return pages.length; }
+
+/** @returns {string|null} Absolute path of the loaded PDF, or null */
+function getCurrentPdfPath()     { return currentPath; }
+
+/** @returns {string|null} SHA-256 fingerprint of the loaded PDF, or null */
+function getCurrentFingerprint() { return currentFingerprint; }
+
+/**
+ * Returns the PDF.js document proxy for the currently loaded PDF.
+ * Used by the export module to render individual pages to offscreen canvases.
+ * @returns {import('pdfjs-dist').PDFDocumentProxy|null}
+ */
+function getPdfDoc() { return pdfDoc; }
+
+// ---------------------------------------------------------------------------
+// Teardown
+// ---------------------------------------------------------------------------
+
+/**
+ * Destroys all page instances and resets all state.
+ * Called before loading a new PDF.
+ */
+function tearDown() {
+  for (const inst of pageInstances.values()) inst.destroy();
+  pageInstances.clear();
+  pages             = [];
+  pdfPageDims.clear();
+  pdfDoc            = null;
+  currentPath       = null;
+  currentFingerprint = null;
+}
+
+// ---------------------------------------------------------------------------
+// v1 migration helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Splices blank pages from a v1 file migration into the current page list.
+ * Called from app.js after openPDF() and after the initial page list is built.
+ *
+ * Each blankDescriptor has: { id, kind:'blank', width, height, _canvasY }
+ * The _canvasY value is the Y the blank page had in the old canvas coordinate
+ * system, used to determine where it falls relative to PDF pages.
+ *
+ * After splicing, destroys and rebuilds all instances with the merged layout.
+ *
+ * @param {Array} blankDescriptors — From serialiser.migrateV1()
+ */
+function spliceBlankPagesFromMigration(blankDescriptors) {
+  if (!blankDescriptors || blankDescriptors.length === 0) return;
+
+  // Insert each blank page at the correct position relative to PDF pages.
+  // Because recomputeLayout() hasn't run for blanks yet we compare _canvasY
+  // against the current computed canvasY values on the PDF pages.
+  for (const desc of blankDescriptors) {
+    let insertIdx = pages.length; // default: after everything
+    for (let i = 0; i < pages.length; i++) {
+      if (pages[i].canvasY > desc._canvasY) {
+        insertIdx = i;
+        break;
+      }
+    }
+    pages.splice(insertIdx, 0, {
+      id:      desc.id,
+      kind:    'blank',
+      width:   desc.width,
+      height:  desc.height,
+      canvasX: 0,
+      canvasY: 0,
+    });
+  }
+
+  // Tear down all instances and rebuild with the merged layout
+  for (const inst of pageInstances.values()) inst.destroy();
+  pageInstances.clear();
+
+  recomputeLayout();
+  _mountAllPages();
+  triggerLazyRender();
+  requestRender();
+
+  document.dispatchEvent(new CustomEvent('pages-changed'));
+}
+
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
+
+export {
+  init as initPageManager,
+  openPDF,
+  loadPageList,
+  getPageList,
+  addBlankPage,
+  removePage,
+  resolvePageId,
+  recomputeLayout,
+  getCurrentPageId,
+  getCurrentPageListIndex,
+  goToPage,
+  goToPageIndex,
+  fitPage,
+  getPageCount,
+  getCurrentPdfPath,
+  getCurrentFingerprint,
+  getPdfDoc,
+  triggerLazyRender,
+  spliceBlankPagesFromMigration,
+  tearDown,
+};

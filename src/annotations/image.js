@@ -1,15 +1,27 @@
 /**
  * image.js — Image annotation (DOM overlay approach)
  *
- * Image annotations are absolutely positioned <div> elements containing an
- * <img> tag. They pan and zoom with the viewport via CSS transform, identical
- * to text boxes. The image data is stored as a base64 data URL inside the
- * annotation object.
+ * Corner handles have two modes:
+ *   - Quick drag  → RESIZE: scales the whole image to fit the new size
+ *   - Hold 400ms  → CROP:   keeps the image at its current size but trims the
+ *                           visible window from that corner (handle turns amber)
+ *
+ * The image body itself is draggable to move it on the canvas.
  *
  * Annotation schema:
- *   { type:'image', pageIndex, canvasX, canvasY, width, height, dataUrl }
+ *   { type:'image', pageIndex, canvasX, canvasY, width, height,
+ *     imgW, imgH,      — full (uncropped) image dimensions in canvas units
+ *     cropX, cropY,    — offset into the image where the visible window starts
+ *     dataUrl }
  *
- * Exports: initImages(), addImage()
+ * When not cropped: imgW===width, imgH===height, cropX===0, cropY===0.
+ * Resize always resets cropX/cropY to 0 and updates imgW/imgH.
+ *
+ * Paste:
+ *   - Ctrl+V         → places image at viewport centre (via pasteImageAtCenter())
+ *   - Touch long-press (800ms) on canvas → shows "Paste Image" button
+ *
+ * Exports: initImages(), addImage(), pasteImageAtCenter()
  */
 
 'use strict';
@@ -17,15 +29,28 @@
 import { toCanvas, toScreen, state as viewportState } from '../canvas/viewport.js';
 import { register, requestRender }                    from '../canvas/renderer.js';
 import { add, update, remove, getAll }                from './manager.js';
-import { getPages }                                   from '../pdf/pdfManager.js';
+import { resolvePageId }                              from '../pages/pageManager.js';
 import { getDragOffset }                              from './select.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const MIN_WIDTH  = 40;
-const MIN_HEIGHT = 40;
+const MIN_SIZE = 20;
+
+/**
+ * Maximum default width (canvas units) for a freshly pasted image.
+ * Keeps screenshots and clipboard images from filling the entire canvas.
+ * A standard PDF page is ~595 units wide, so 400 gives a clear but
+ * non-overwhelming default that the user can resize if needed.
+ */
+const MAX_PASTE_W = 400;
+
+/** How long a canvas touch must be held (ms) before showing the paste button */
+const LONG_PRESS_MS = 800;
+
+/** Max movement (CSS px) allowed during long-press before cancelling */
+const LONG_PRESS_MOVE_THRESHOLD = 10;
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -36,7 +61,30 @@ let container = null;
 /** Map of annotation id → wrapper DOM element */
 const imgElements = new Map();
 
+/**
+ * Resize/crop state while a corner handle is being dragged.
+ * cropMode is set by the per-image crop toggle button, not a timer.
+ */
 let resizeState = null;
+
+/**
+ * Set of annotation IDs that are currently in crop mode.
+ * When an image is in crop mode, corner drags crop instead of resize.
+ */
+const cropModeIds = new Set();
+
+/**
+ * Move state while the image body is being dragged.
+ */
+let moveState = null;
+
+/** Long-press state for canvas paste gesture */
+let longPressTimer  = null;
+let longPressStartX = 0;
+let longPressStartY = 0;
+
+/** The floating "Paste Image" button */
+let pasteButtonEl = null;
 
 // ---------------------------------------------------------------------------
 // Init
@@ -46,6 +94,9 @@ function init() {
   container = document.getElementById('canvas-container');
   document.addEventListener('annotations-changed', syncElements);
   register(updatePositions);
+
+  buildPasteButton();
+  initLongPress();
 }
 
 // ---------------------------------------------------------------------------
@@ -53,24 +104,144 @@ function init() {
 // ---------------------------------------------------------------------------
 
 /**
- * Adds an image annotation to the canvas.
- * Called by screenshot.js after a region is captured.
- *
- * @param {string} dataUrl  — PNG data URL
- * @param {number} canvasX  — Canvas-space left edge
- * @param {number} canvasY  — Canvas-space top edge
- * @param {number} width    — Canvas-space width
- * @param {number} height   — Canvas-space height
- * @param {number} pageIndex
+ * Adds an image annotation at the given canvas position with no initial crop.
  */
-function addImage(dataUrl, canvasX, canvasY, width, height, pageIndex) {
+function addImage(dataUrl, canvasX, canvasY, width, height, pageId) {
   add({
-    type: 'image',
-    pageIndex: pageIndex ?? resolvePageIndex(canvasX + width / 2, canvasY + height / 2),
+    type:   'image',
+    pageId: pageId ?? resolvePageId(canvasX + width / 2, canvasY + height / 2),
     canvasX, canvasY, width, height,
+    imgW:  width,
+    imgH:  height,
+    cropX: 0,
+    cropY: 0,
     dataUrl,
   });
 }
+
+/**
+ * Reads a clipboard image and places it at the centre of the current viewport.
+ * Called by the Ctrl+V handler in app.js.
+ */
+async function pasteImageAtCenter() {
+  const rect   = container.getBoundingClientRect();
+  const { x: cx, y: cy } = toCanvas(rect.width / 2, rect.height / 2);
+  await _pasteFromClipboard(cx, cy);
+}
+
+// ---------------------------------------------------------------------------
+// Long-press paste (tablet)
+// ---------------------------------------------------------------------------
+
+function buildPasteButton() {
+  pasteButtonEl = document.createElement('button');
+  pasteButtonEl.id        = 'img-paste-btn';
+  pasteButtonEl.className = 'img-paste-btn hidden';
+  pasteButtonEl.textContent = '⊕  Paste Image';
+  document.body.appendChild(pasteButtonEl);
+
+  pasteButtonEl.addEventListener('click', async () => {
+    pasteButtonEl.classList.add('hidden');
+    const rect   = container.getBoundingClientRect();
+    const { x: cx, y: cy } = toCanvas(
+      longPressStartX - rect.left,
+      longPressStartY - rect.top,
+    );
+    await _pasteFromClipboard(cx, cy);
+  });
+
+  // Dismiss when tapping anywhere else
+  document.addEventListener('pointerdown', (e) => {
+    if (!pasteButtonEl.classList.contains('hidden') && !pasteButtonEl.contains(e.target)) {
+      pasteButtonEl.classList.add('hidden');
+    }
+  }, { capture: true });
+}
+
+function initLongPress() {
+  container.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    if (e.target.closest('.image-anno')) return;
+
+    longPressStartX = e.clientX;
+    longPressStartY = e.clientY;
+
+    clearTimeout(longPressTimer);
+    longPressTimer = setTimeout(() => {
+      longPressTimer = null;
+      // Position the button at the hold point
+      pasteButtonEl.style.left = `${longPressStartX}px`;
+      pasteButtonEl.style.top  = `${longPressStartY}px`;
+      pasteButtonEl.classList.remove('hidden');
+    }, LONG_PRESS_MS);
+  });
+
+  const cancel = () => { clearTimeout(longPressTimer); longPressTimer = null; };
+
+  container.addEventListener('pointermove', (e) => {
+    if (!longPressTimer) return;
+    const dx = e.clientX - longPressStartX;
+    const dy = e.clientY - longPressStartY;
+    if (Math.sqrt(dx * dx + dy * dy) > LONG_PRESS_MOVE_THRESHOLD) cancel();
+  });
+  container.addEventListener('pointerup',     cancel);
+  container.addEventListener('pointercancel', cancel);
+}
+
+// ---------------------------------------------------------------------------
+// Clipboard paste
+// ---------------------------------------------------------------------------
+
+async function _pasteFromClipboard(canvasX, canvasY) {
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      const imgType = item.types.find(t => t.startsWith('image/'));
+      if (!imgType) continue;
+
+      const blob    = await item.getType(imgType);
+      const dataUrl = await _blobToDataUrl(blob);
+      const { w: natW, h: natH } = await _getImageDimensions(dataUrl);
+
+      // Size the image in canvas units independent of current zoom.
+      // At 100% zoom (scale=1) the image will appear at its natural pixel size
+      // capped to MAX_PASTE_W — consistent no matter when or where it's pasted.
+      const canvasW  = Math.min(natW, MAX_PASTE_W);
+      const canvasH  = natH * (canvasW / natW);
+      addImage(dataUrl, canvasX - canvasW / 2, canvasY - canvasH / 2, canvasW, canvasH);
+      break;
+    }
+  } catch (err) {
+    console.error('Paste image failed:', err);
+  }
+}
+
+function _blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('FileReader failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function _getImageDimensions(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload  = () => resolve({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onerror = () => resolve({ w: 200, h: 200 });
+    img.src = dataUrl;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Backward-compat helpers
+// ---------------------------------------------------------------------------
+
+function getImgW(anno)  { return anno.imgW  ?? anno.width;  }
+function getImgH(anno)  { return anno.imgH  ?? anno.height; }
+function getCropX(anno) { return anno.cropX ?? 0; }
+function getCropY(anno) { return anno.cropY ?? 0; }
 
 // ---------------------------------------------------------------------------
 // DOM ↔ store sync
@@ -96,11 +267,25 @@ function syncElements() {
       const el = imgElements.get(anno.id);
       el.style.width  = `${anno.width}px`;
       el.style.height = `${anno.height}px`;
+      _applyImgStyle(el, anno);
     }
   }
 
   updatePositions();
   requestRender();
+}
+
+function _applyImgStyle(containerEl, anno) {
+  const img = containerEl.querySelector('img');
+  if (!img) return;
+  const imgW  = getImgW(anno);
+  const imgH  = getImgH(anno);
+  const cropX = getCropX(anno);
+  const cropY = getCropY(anno);
+  img.style.width  = `${imgW}px`;
+  img.style.height = `${imgH}px`;
+  img.style.left   = `${-cropX}px`;
+  img.style.top    = `${-cropY}px`;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,16 +322,27 @@ function createImageElement(anno) {
     'transform-origin: top left',
     `width: ${anno.width}px`,
     `height: ${anno.height}px`,
-    'z-index: 2',
+    // z-index is controlled by CSS (.image-anno / #canvas-container[data-tool])
+    // so that images sit below the annotation canvas in draw/highlight/eraser mode
+    // and above it in select mode (so handles are grabbable).
   ].join('; ');
 
-  // ── Image ─────────────────────────────────────────────────────────────────
-  const img = document.createElement('img');
-  img.src            = anno.dataUrl;
-  img.draggable      = false;
-  img.style.cssText  = 'width:100%;height:100%;display:block;object-fit:contain;border-radius:inherit;';
+  // ── Clip wrapper — contains only the image; overflow:hidden clips crop ─────
+  // The outer el has overflow:visible so handles and delete button
+  // can sit outside the image boundary.
+  const clip = document.createElement('div');
+  clip.className = 'image-anno-clip';
 
-  // ── Delete button ─────────────────────────────────────────────────────────
+  const img = document.createElement('img');
+  img.src       = anno.dataUrl;
+  img.draggable = false;
+  img.style.cssText = 'position:absolute;display:block;pointer-events:none;user-select:none;';
+  _applyImgStyle(el, anno); // sets img size/position
+
+  clip.appendChild(img);
+  el.appendChild(clip);
+
+  // ── Delete button (outside clip, so not cropped away) ─────────────────────
   const deleteBtn = document.createElement('button');
   deleteBtn.className   = 'image-anno-delete';
   deleteBtn.textContent = '×';
@@ -155,55 +351,229 @@ function createImageElement(anno) {
     e.stopPropagation();
     remove(anno.id);
   });
-
-  // ── Resize handle (bottom-right) ──────────────────────────────────────────
-  const resizeHandle = document.createElement('div');
-  resizeHandle.className = 'image-anno-resize';
-
-  el.appendChild(img);
   el.appendChild(deleteBtn);
-  el.appendChild(resizeHandle);
 
-  // ── Resize wiring ─────────────────────────────────────────────────────────
-  resizeHandle.addEventListener('pointerdown',   (e) => onResizeStart(e, anno.id, resizeHandle));
-  resizeHandle.addEventListener('pointermove',   onResizeMove);
-  resizeHandle.addEventListener('pointerup',     (e) => onResizeEnd(e, resizeHandle));
-  resizeHandle.addEventListener('pointercancel', (e) => onResizeEnd(e, resizeHandle));
+  // ── Crop toggle button — lets user switch between resize and crop mode ─────
+  const cropBtn = document.createElement('button');
+  cropBtn.className = 'image-anno-crop-btn';
+  cropBtn.title     = 'Toggle crop mode — drag corners to crop instead of resize';
+  cropBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+    <path d="M3 1v3H1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M9 11V8h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="3" y="3" width="6" height="6" rx="0.5" stroke="currentColor" stroke-width="1.4"/>
+  </svg>`;
+  cropBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (cropModeIds.has(anno.id)) {
+      cropModeIds.delete(anno.id);
+      cropBtn.classList.remove('active');
+      // Remove crop-mode class from all handles of this image
+      el.querySelectorAll('.image-anno-handle').forEach(h => h.classList.remove('crop-mode'));
+    } else {
+      cropModeIds.add(anno.id);
+      cropBtn.classList.add('active');
+      el.querySelectorAll('.image-anno-handle').forEach(h => h.classList.add('crop-mode'));
+    }
+  });
+  el.appendChild(cropBtn);
 
-  // Block canvas pan/zoom while interacting
-  el.addEventListener('pointerdown', (e) => e.stopPropagation());
-  el.addEventListener('wheel',       (e) => e.stopPropagation());
+  // ── Crop handles (4 corners, outside clip) ────────────────────────────────
+  const corners = ['tl', 'tr', 'bl', 'br'];
+  for (const corner of corners) {
+    const h = document.createElement('div');
+    h.className = `image-anno-handle image-anno-handle-${corner}`;
+    h.addEventListener('pointerdown',   (e) => onHandleDown(e, anno.id, corner, h));
+    h.addEventListener('pointermove',   onHandleMove);
+    h.addEventListener('pointerup',     (e) => onHandleUp(e, h));
+    h.addEventListener('pointercancel', (e) => onHandleUp(e, h));
+    el.appendChild(h);
+  }
+
+  // ── Move drag on the image body ───────────────────────────────────────────
+  el.addEventListener('pointerdown', (e) => {
+    e.stopPropagation(); // prevent canvas pan in all cases
+    if (e.target.closest('.image-anno-handle')) return;
+    if (e.target.closest('.image-anno-delete')) return;
+    onMoveStart(e, anno.id, el);
+  });
+  el.addEventListener('pointermove',   onMoveMove);
+  el.addEventListener('pointerup',     (e) => onMoveEnd(e, el));
+  el.addEventListener('pointercancel', (e) => onMoveEnd(e, el));
+  el.addEventListener('wheel', (e) => e.stopPropagation());
 
   return el;
 }
 
 // ---------------------------------------------------------------------------
-// Resize handlers
+// Move handlers (drag the whole image)
 // ---------------------------------------------------------------------------
 
-function onResizeStart(e, annotationId, handle) {
-  if (e.button !== 0) return;
+function onMoveStart(e, annotationId, el) {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  e.preventDefault();
+  el.setPointerCapture(e.pointerId);
+
+  const anno = getAll().find(a => a.id === annotationId);
+  moveState = {
+    annotationId,
+    startCanvasX: anno.canvasX,
+    startCanvasY: anno.canvasY,
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+  };
+}
+
+function onMoveMove(e) {
+  if (!moveState) return;
+  const scale = viewportState.scale;
+  const dx = (e.clientX - moveState.startClientX) / scale;
+  const dy = (e.clientY - moveState.startClientY) / scale;
+  update(moveState.annotationId, {
+    canvasX: moveState.startCanvasX + dx,
+    canvasY: moveState.startCanvasY + dy,
+  });
+  requestRender();
+}
+
+function onMoveEnd(e, el) {
+  if (!moveState) return;
+  el.releasePointerCapture(e.pointerId);
+  moveState = null;
+}
+
+// ---------------------------------------------------------------------------
+// Resize / crop handlers
+// ---------------------------------------------------------------------------
+
+function onHandleDown(e, annotationId, corner, handle) {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
   e.preventDefault();
   e.stopPropagation();
   handle.setPointerCapture(e.pointerId);
 
   const anno = getAll().find(a => a.id === annotationId);
-  resizeState = { annotationId, canvasX: anno.canvasX, canvasY: anno.canvasY };
+  const isCrop = cropModeIds.has(annotationId);
+
+  resizeState = {
+    annotationId,
+    corner,
+    handle,
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+    cropMode: isCrop,
+    aspect: anno.width / anno.height,  // locked aspect ratio for resize mode
+    startAnno: {
+      canvasX: anno.canvasX,
+      canvasY: anno.canvasY,
+      width:   anno.width,
+      height:  anno.height,
+      imgW:    getImgW(anno),
+      imgH:    getImgH(anno),
+      cropX:   getCropX(anno),
+      cropY:   getCropY(anno),
+    },
+  };
+
+  if (isCrop) handle.classList.add('crop-mode');
 }
 
-function onResizeMove(e) {
+function onHandleMove(e) {
   if (!resizeState) return;
-  const rect     = container.getBoundingClientRect();
-  const { x, y } = toCanvas(e.clientX - rect.left, e.clientY - rect.top);
-  update(resizeState.annotationId, {
-    width:  Math.max(MIN_WIDTH,  x - resizeState.canvasX),
-    height: Math.max(MIN_HEIGHT, y - resizeState.canvasY),
-  });
-  requestRender();
+
+  const scale    = viewportState.scale;
+  const dxCanvas = (e.clientX - resizeState.startClientX) / scale;
+  const dyCanvas = (e.clientY - resizeState.startClientY) / scale;
+  const s   = resizeState.startAnno;
+  const asp = resizeState.aspect;  // locked aspect ratio
+  let changes;
+
+  if (resizeState.cropMode) {
+    // ── CROP: keep imgW/imgH fixed, adjust the visible window ────────────
+    switch (resizeState.corner) {
+      case 'tl': {
+        const newCropX = Math.max(0, Math.min(s.cropX + dxCanvas, s.imgW - MIN_SIZE));
+        const newCropY = Math.max(0, Math.min(s.cropY + dyCanvas, s.imgH - MIN_SIZE));
+        const dcx = newCropX - s.cropX;
+        const dcy = newCropY - s.cropY;
+        changes = { canvasX: s.canvasX + dcx, canvasY: s.canvasY + dcy,
+                    cropX: newCropX, cropY: newCropY,
+                    width: Math.max(MIN_SIZE, s.width - dcx),
+                    height: Math.max(MIN_SIZE, s.height - dcy) };
+        break;
+      }
+      case 'tr': {
+        const newCropY = Math.max(0, Math.min(s.cropY + dyCanvas, s.imgH - MIN_SIZE));
+        const dcy = newCropY - s.cropY;
+        changes = { canvasY: s.canvasY + dcy, cropY: newCropY,
+                    width:  Math.max(MIN_SIZE, Math.min(s.width + dxCanvas, s.imgW - s.cropX)),
+                    height: Math.max(MIN_SIZE, s.height - dcy) };
+        break;
+      }
+      case 'bl': {
+        const newCropX = Math.max(0, Math.min(s.cropX + dxCanvas, s.imgW - MIN_SIZE));
+        const dcx = newCropX - s.cropX;
+        changes = { canvasX: s.canvasX + dcx, cropX: newCropX,
+                    width:  Math.max(MIN_SIZE, s.width - dcx),
+                    height: Math.max(MIN_SIZE, Math.min(s.height + dyCanvas, s.imgH - s.cropY)) };
+        break;
+      }
+      case 'br': {
+        changes = { width:  Math.max(MIN_SIZE, Math.min(s.width + dxCanvas, s.imgW - s.cropX)),
+                    height: Math.max(MIN_SIZE, Math.min(s.height + dyCanvas, s.imgH - s.cropY)) };
+        break;
+      }
+    }
+  } else {
+    // ── RESIZE: scale image maintaining original aspect ratio ─────────────
+    // Use the x-drag as the primary signal; derive height from locked ratio.
+    // Corners that extend left use negative dx to grow the image.
+    switch (resizeState.corner) {
+      case 'br': {
+        const newW = Math.max(MIN_SIZE, s.width + dxCanvas);
+        const newH = Math.max(MIN_SIZE, newW / asp);
+        changes = { width: newW, height: newH, imgW: newW, imgH: newH, cropX: 0, cropY: 0 };
+        break;
+      }
+      case 'tl': {
+        const newW = Math.max(MIN_SIZE, s.width - dxCanvas);
+        const newH = Math.max(MIN_SIZE, newW / asp);
+        const dcx = s.width  - newW;
+        const dcy = s.height - newH;
+        changes = { canvasX: s.canvasX + dcx, canvasY: s.canvasY + dcy,
+                    width: newW, height: newH, imgW: newW, imgH: newH, cropX: 0, cropY: 0 };
+        break;
+      }
+      case 'tr': {
+        const newW = Math.max(MIN_SIZE, s.width + dxCanvas);
+        const newH = Math.max(MIN_SIZE, newW / asp);
+        const dcy = s.height - newH;
+        changes = { canvasY: s.canvasY + dcy,
+                    width: newW, height: newH, imgW: newW, imgH: newH, cropX: 0, cropY: 0 };
+        break;
+      }
+      case 'bl': {
+        const newW = Math.max(MIN_SIZE, s.width - dxCanvas);
+        const newH = Math.max(MIN_SIZE, newW / asp);
+        const dcx = s.width - newW;
+        changes = { canvasX: s.canvasX + dcx,
+                    width: newW, height: newH, imgW: newW, imgH: newH, cropX: 0, cropY: 0 };
+        break;
+      }
+    }
+  }
+
+  if (changes) {
+    update(resizeState.annotationId, changes);
+    requestRender();
+  }
 }
 
-function onResizeEnd(e, handle) {
+function onHandleUp(e, handle) {
   if (!resizeState) return;
+  // Only remove crop-mode highlight if we're NOT persistently in crop mode
+  if (!cropModeIds.has(resizeState.annotationId)) {
+    handle.classList.remove('crop-mode');
+  }
   handle.releasePointerCapture(e.pointerId);
   resizeState = null;
 }
@@ -212,18 +582,8 @@ function onResizeEnd(e, handle) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function resolvePageIndex(cx, cy) {
-  for (const page of getPages()) {
-    if (
-      cx >= page.canvasX && cx <= page.canvasX + page.width &&
-      cy >= page.canvasY && cy <= page.canvasY + page.height
-    ) return page.pageIndex;
-  }
-  return 0;
-}
-
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init as initImages, addImage };
+export { init as initImages, addImage, pasteImageAtCenter };

@@ -21,8 +21,8 @@ import { getAll, remove } from './manager.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Distance (canvas units) within which a draw stroke point triggers erasure */
-const ERASE_RADIUS = 12;
+/** Default erase radius — overridden by setEraseRadius() from toolbar */
+let ERASE_RADIUS = 12;
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -57,6 +57,15 @@ function deactivate() {
   active  = false;
   erasing = false;
   container.classList.remove('tool-eraser');
+}
+
+/**
+ * Sets the erase radius (canvas units). Called by toolbar when the user picks
+ * a different eraser size.
+ * @param {number} radius
+ */
+function setEraseRadius(radius) {
+  ERASE_RADIUS = radius;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +160,7 @@ function hitsAnnotation(anno, cx, cy) {
     return false;
   }
 
-  if (anno.type === 'textBox' || anno.type === 'image') {
+  if (anno.type === 'textBox') {
     return (
       cx >= anno.canvasX &&
       cx <= anno.canvasX + anno.width &&
@@ -160,6 +169,13 @@ function hitsAnnotation(anno, cx, cy) {
     );
   }
 
+  // Images are only deletable via the select tool (delete button on the element).
+  // The eraser must not remove them, even when drawing on top.
+  if (anno.type === 'image') return false;
+
+  // Blank pages are not erasable (they're canvas structure, not annotations)
+  if (anno.type === 'blankPage') return false;
+
   return false;
 }
 
@@ -167,4 +183,4 @@ function hitsAnnotation(anno, cx, cy) {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init as initEraser, activate, deactivate };
+export { init as initEraser, activate, deactivate, setEraseRadius };

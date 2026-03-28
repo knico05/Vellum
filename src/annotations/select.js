@@ -1,19 +1,26 @@
 /**
- * select.js — Rectangle selection and move tool
+ * select.js — Freeform lasso selection and move tool
  *
  * Behaviour:
- *   1. Drag on empty canvas → draws a selection rectangle.
- *   2. Release → all annotations whose bounding boxes intersect the rect are selected.
- *      A dashed outline is drawn around the union bounding box of selected annotations.
- *   3. Pointer-down inside the selection → drag to move all selected annotations.
- *   4. Release → positions committed to manager (single emit, autosave fires once).
- *   5. Pointer-down outside selection → clears selection and starts a new one.
+ *   1. Drag on the canvas → draws a freehand lasso polygon.
+ *   2. Release → the polygon is closed and any annotation whose centroid
+ *      falls inside the polygon is selected. A dashed bounding-box outline
+ *      is drawn around the union of all selected annotations.
+ *   3. Pointer-down inside the bounding box → drag to move all selected
+ *      annotations together.
+ *   4. Release → positions are committed to the manager (one emit so autosave
+ *      fires once).
+ *   5. Pointer-down outside the bounding box → clears selection and starts a
+ *      new lasso.
  *   6. Escape / deactivate → clears selection.
  *
+ * Point-in-polygon check uses the ray-casting algorithm, which correctly handles
+ * concave and self-intersecting shapes.
+ *
  * Cross-module drag preview:
- *   getDragOffset(id) is exported and called by highlight.js, draw.js, and note.js
- *   during their render callbacks. While dragging, it returns {dx, dy} so each
- *   annotation draws itself at the offset position without permanently mutating state.
+ *   getDragOffset(id) is called every frame by highlight.js, draw.js, note.js,
+ *   and image.js. While dragging it returns {dx, dy} so each annotation draws
+ *   itself at the offset position without permanently mutating state.
  *
  * Exports: initSelect(), activate(), deactivate(), getDragOffset()
  */
@@ -25,32 +32,42 @@ import { registerOverlay, requestRender }   from '../canvas/renderer.js';
 import { getAll, batchUpdate }              from './manager.js';
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimum canvas-unit distance between consecutive lasso points.
+ * Filters out micro-movements to keep the polygon manageable.
+ */
+const MIN_LASSO_DISTANCE = 3;
+
+// ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
 
 let active    = false;
 let container = null;
 
-// Drawing a new selection rectangle (pointerdown → pointermove → pointerup)
-let selectionRect = null;   // {x1,y1,x2,y2} in canvas coords, or null
+/** Points of the lasso being drawn (canvas coordinates), or null */
+let lassoPoints = null;
 
-// Committed selection
+/** Committed selection */
 let selectedIds     = new Set();
-let selectionBounds = null;   // {x,y,w,h} union bounding box in canvas coords
+let selectionBounds = null;  // {x, y, w, h} union bounding box in canvas coords
 
-// Moving selected annotations
-let dragging        = false;
-let dragStart       = null;   // {x,y} canvas coords where drag started
-let deltaX          = 0;
-let deltaY          = 0;
+/** Moving selected annotations */
+let dragging   = false;
+let dragStart  = null;  // {x, y} canvas coords
+let deltaX     = 0;
+let deltaY     = 0;
 
 // ---------------------------------------------------------------------------
-// Public API — called by other annotation modules each render frame
+// Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the current drag offset for an annotation that is being moved,
- * or null if the annotation is not selected / not being dragged.
+ * Returns the current drag offset for an annotation, or null if it is not
+ * selected / not being dragged. Called every frame by other annotation modules.
  *
  * @param {string} id
  * @returns {{dx:number, dy:number}|null}
@@ -71,7 +88,6 @@ function init() {
   container.addEventListener('pointerup',     onPointerUp);
   container.addEventListener('pointercancel', onPointerUp);
 
-  // Escape clears selection
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && active) clearSelection();
   });
@@ -102,16 +118,16 @@ function onPointerDown(e) {
   const { x: cx, y: cy } = clientToCanvas(e);
 
   if (selectionBounds && isInsideBounds(cx, cy, selectionBounds)) {
-    // Inside existing selection → start drag
-    dragging   = true;
-    dragStart  = { x: cx, y: cy };
-    deltaX     = 0;
-    deltaY     = 0;
+    // Inside existing selection bounding box → start drag-move
+    dragging  = true;
+    dragStart = { x: cx, y: cy };
+    deltaX    = 0;
+    deltaY    = 0;
     container.classList.add('tool-select-drag');
   } else {
-    // Outside → clear old selection and start a new rect
+    // Outside or no selection → clear and start a new lasso
     clearSelection();
-    selectionRect = { x1: cx, y1: cy, x2: cx, y2: cy };
+    lassoPoints = [{ x: cx, y: cy }];
   }
 }
 
@@ -125,10 +141,15 @@ function onPointerMove(e) {
     deltaX = cx - dragStart.x;
     deltaY = cy - dragStart.y;
     requestRender();
-  } else if (selectionRect) {
-    selectionRect.x2 = cx;
-    selectionRect.y2 = cy;
-    requestRender();
+  } else if (lassoPoints) {
+    const last = lassoPoints[lassoPoints.length - 1];
+    const dx   = cx - last.x;
+    const dy   = cy - last.y;
+    // Only record when the pointer has moved far enough
+    if (Math.sqrt(dx * dx + dy * dy) >= MIN_LASSO_DISTANCE) {
+      lassoPoints.push({ x: cx, y: cy });
+      requestRender();
+    }
   }
 }
 
@@ -144,11 +165,11 @@ function onPointerUp() {
     return;
   }
 
-  if (selectionRect) {
+  if (lassoPoints && lassoPoints.length >= 3) {
     finaliseSelection();
-    selectionRect = null;
-    requestRender();
   }
+  lassoPoints = null;
+  requestRender();
 }
 
 // ---------------------------------------------------------------------------
@@ -156,22 +177,19 @@ function onPointerUp() {
 // ---------------------------------------------------------------------------
 
 /**
- * After the user releases the mouse, finds all annotations inside the rect
- * and marks them as selected.
+ * Closes the lasso polygon and selects every annotation whose centroid falls
+ * inside it. Uses ray-casting for the point-in-polygon check.
  */
 function finaliseSelection() {
-  const { x1, y1, x2, y2 } = selectionRect;
-  const minX = Math.min(x1, x2);
-  const maxX = Math.max(x1, x2);
-  const minY = Math.min(y1, y2);
-  const maxY = Math.max(y1, y2);
-
-  // Ignore tiny drag (accidental click)
-  if (maxX - minX < 4 && maxY - minY < 4) return;
-
   selectedIds.clear();
+
   for (const anno of getAll()) {
-    if (annotationIntersectsRect(anno, minX, minY, maxX, maxY)) {
+    if (anno.type === 'blankPage') continue; // blank pages are not selectable
+
+    const { cx, cy } = annotationCentroid(anno);
+    if (cx === null) continue;
+
+    if (pointInPolygon(cx, cy, lassoPoints)) {
       selectedIds.add(anno.id);
     }
   }
@@ -182,7 +200,7 @@ function finaliseSelection() {
 }
 
 /**
- * Commits the current drag delta to the manager.
+ * Commits the drag delta to the manager.
  * Uses batchUpdate so only one 'annotations-changed' event fires.
  */
 function commitDrag() {
@@ -193,13 +211,11 @@ function commitDrag() {
     if (!selectedIds.has(anno.id)) continue;
 
     if (anno.points) {
-      // Path-based annotations (draw + new highlight): offset the point array
       updates.push({
         id:      anno.id,
         changes: { points: anno.points.map(p => ({ ...p, x: p.x + deltaX, y: p.y + deltaY })) },
       });
     } else {
-      // Rect-based annotations (textBox, legacy highlight): offset the origin
       updates.push({
         id:      anno.id,
         changes: { canvasX: anno.canvasX + deltaX, canvasY: anno.canvasY + deltaY },
@@ -209,7 +225,6 @@ function commitDrag() {
 
   if (updates.length > 0) batchUpdate(updates);
 
-  // Update stored selectionBounds to reflect new position
   if (selectionBounds) {
     selectionBounds = {
       x: selectionBounds.x + deltaX,
@@ -223,12 +238,9 @@ function commitDrag() {
   deltaY = 0;
 }
 
-/**
- * Clears the selection state and triggers a repaint.
- */
 function clearSelection() {
   selectedIds.clear();
-  selectionRect   = null;
+  lassoPoints     = null;
   selectionBounds = null;
   dragging        = false;
   dragStart       = null;
@@ -242,41 +254,39 @@ function clearSelection() {
 // ---------------------------------------------------------------------------
 
 /**
- * Draws the selection rectangle (while dragging) and the selection bounds
- * outline (when annotations are selected). Called every frame by the renderer.
+ * Draws the live lasso path while dragging, and the selection bounding-box
+ * outline when annotations are selected. Called every frame by the renderer.
  *
- * @param {CanvasRenderingContext2D} ctx
+ * @param {CanvasRenderingContext2D} ctx — already in canvas space
  */
 function drawOverlay(ctx) {
-  const scale = viewportState.scale;
+  const scale    = viewportState.scale;
   const hairline = 1.5 / scale;
-  const dash     = 5  / scale;
+  const dash     = 5   / scale;
 
-  // Live selection rectangle (while user is drawing the selection area)
-  if (selectionRect) {
-    const { x1, y1, x2, y2 } = selectionRect;
-    const x = Math.min(x1, x2);
-    const y = Math.min(y1, y2);
-    const w = Math.abs(x2 - x1);
-    const h = Math.abs(y2 - y1);
-
+  // ── Live lasso (user is still drawing) ──────────────────────────────────
+  if (lassoPoints && lassoPoints.length >= 2) {
     ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(lassoPoints[0].x, lassoPoints[0].y);
+    for (let i = 1; i < lassoPoints.length; i++) {
+      ctx.lineTo(lassoPoints[i].x, lassoPoints[i].y);
+    }
+    // Don't close the path while drawing — closing only happens on release
     ctx.setLineDash([dash, dash]);
     ctx.lineWidth   = hairline;
     ctx.strokeStyle = 'rgba(91, 138, 245, 0.9)';
     ctx.fillStyle   = 'rgba(91, 138, 245, 0.06)';
-    ctx.beginPath();
-    ctx.rect(x, y, w, h);
     ctx.fill();
     ctx.stroke();
     ctx.restore();
     return;
   }
 
-  // Selection bounds outline (around selected annotations, including drag offset)
+  // ── Selection bounding-box outline (after selection is committed) ────────
   if (selectedIds.size > 0 && selectionBounds) {
-    const dx = dragging ? deltaX : 0;
-    const dy = dragging ? deltaY : 0;
+    const dx  = dragging ? deltaX : 0;
+    const dy  = dragging ? deltaY : 0;
     const pad = 6 / scale;
     const { x, y, w, h } = selectionBounds;
 
@@ -290,19 +300,65 @@ function drawOverlay(ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Geometry helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Converts a PointerEvent's client position to canvas coordinates.
+ * Ray-casting point-in-polygon test.
+ * Returns true if (px, py) is inside the polygon defined by vertices.
+ *
+ * @param {number} px
+ * @param {number} py
+ * @param {Array<{x:number, y:number}>} polygon
+ * @returns {boolean}
  */
-function clientToCanvas(e) {
-  const rect = container.getBoundingClientRect();
-  return toCanvas(e.clientX - rect.left, e.clientY - rect.top);
+function pointInPolygon(px, py, polygon) {
+  let inside = false;
+  const n = polygon.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    const intersect =
+      (yi > py) !== (yj > py) &&
+      px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
 }
 
 /**
- * Returns true if (cx, cy) is inside the bounds object {x,y,w,h}.
+ * Returns the centroid of an annotation — the representative point used for
+ * lasso containment testing.
+ *
+ * @param {object} anno
+ * @returns {{ cx: number|null, cy: number|null }}
+ */
+function annotationCentroid(anno) {
+  if (anno.type === 'textBox' || anno.type === 'image') {
+    return {
+      cx: anno.canvasX + anno.width  / 2,
+      cy: anno.canvasY + anno.height / 2,
+    };
+  }
+
+  if ((anno.type === 'draw' || anno.type === 'highlight') && anno.points?.length) {
+    let sumX = 0, sumY = 0;
+    for (const p of anno.points) { sumX += p.x; sumY += p.y; }
+    return { cx: sumX / anno.points.length, cy: sumY / anno.points.length };
+  }
+
+  if (anno.type === 'highlight' && anno.canvasX !== undefined) {
+    return {
+      cx: anno.canvasX + (anno.width  ?? 0) / 2,
+      cy: anno.canvasY + (anno.height ?? 0) / 2,
+    };
+  }
+
+  return { cx: null, cy: null };
+}
+
+/**
+ * Returns true if the canvas point (cx, cy) is inside the bounding box.
  */
 function isInsideBounds(cx, cy, bounds) {
   return (
@@ -311,43 +367,6 @@ function isInsideBounds(cx, cy, bounds) {
     cy >= bounds.y &&
     cy <= bounds.y + bounds.h
   );
-}
-
-/**
- * Returns true if the annotation's bounding box intersects the given rect.
- *
- * @param {object} anno
- * @param {number} minX
- * @param {number} minY
- * @param {number} maxX
- * @param {number} maxY
- * @returns {boolean}
- */
-function annotationIntersectsRect(anno, minX, minY, maxX, maxY) {
-  let ax, ay, aw, ah;
-
-  if (anno.type === 'textBox' || anno.type === 'image') {
-    // Rect-based annotations: explicit canvasX/Y/width/height
-    ax = anno.canvasX; ay = anno.canvasY; aw = anno.width; ah = anno.height;
-  } else if (anno.type === 'draw' || (anno.type === 'highlight' && anno.points)) {
-    // Path-based annotations: compute bounding box from points
-    let pMinX = Infinity, pMinY = Infinity, pMaxX = -Infinity, pMaxY = -Infinity;
-    for (const p of anno.points) {
-      if (p.x < pMinX) pMinX = p.x;
-      if (p.y < pMinY) pMinY = p.y;
-      if (p.x > pMaxX) pMaxX = p.x;
-      if (p.y > pMaxY) pMaxY = p.y;
-    }
-    ax = pMinX; ay = pMinY; aw = pMaxX - pMinX; ah = pMaxY - pMinY;
-  } else if (anno.type === 'highlight' && anno.canvasX !== undefined) {
-    // Legacy rect-based highlight
-    ax = anno.canvasX; ay = anno.canvasY; aw = anno.width; ah = anno.height;
-  } else {
-    return false;
-  }
-
-  // Axis-aligned bounding box intersection
-  return !(ax + aw < minX || ax > maxX || ay + ah < minY || ay > maxY);
 }
 
 /**
@@ -383,6 +402,14 @@ function computeUnionBounds(ids) {
   }
 
   return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/**
+ * Converts a PointerEvent's client position to canvas coordinates.
+ */
+function clientToCanvas(e) {
+  const rect = container.getBoundingClientRect();
+  return toCanvas(e.clientX - rect.left, e.clientY - rect.top);
 }
 
 // ---------------------------------------------------------------------------

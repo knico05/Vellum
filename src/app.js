@@ -6,7 +6,7 @@
  *
  * Module initialisation order matters:
  *   1. Canvas renderer and input (foundation everything sits on)
- *   2. PDF manager (registers renderer draw callback)
+ *   2. Page manager (replaces pdfManager + blankpage — owns all pages)
  *   3. Annotation tools (register renderer draw callbacks, attach pointer listeners)
  *   4. UI modules (toolbar, shortcuts, panel — read state from the above)
  *   5. Auto-save (last, so it doesn't trigger before state is ready)
@@ -14,26 +14,29 @@
 
 'use strict';
 
-
-import { init as initRenderer, requestRender } from './canvas/renderer.js';
-import { init as initInput }                   from './canvas/input.js';
-import { state as viewport }                    from './canvas/viewport.js';
-import { initPDFManager, openPDF, getPageCount, getCurrentFingerprint, goToPage, fitPage } from './pdf/pdfManager.js';
-import { clear, loadFromJSON, undo }           from './annotations/manager.js';
-import { initAutosave }                        from './storage/autosave.js';
-import { deserialise, annotationsPath }        from './storage/serialiser.js';
-import { initHighlight }                       from './annotations/highlight.js';
-import { initDraw }                            from './annotations/draw.js';
-import { initNotes }                           from './annotations/note.js';
-import { initEraser }                          from './annotations/eraser.js';
-import { initImages }                          from './annotations/image.js';
-import { initSelect }                          from './annotations/select.js';
-import { init as initToolbar, setActiveTool, updateStatus } from './ui/toolbar.js';
-import { init as initShortcuts }               from './ui/shortcuts.js';
-import { initScreenshot, activateScreenshot }  from './ui/screenshot.js';
-import { initFloatingToolbar }                from './ui/floatingtoolbar.js';
-import { init as initPanel, loadPageNotes, getCurrentPageIndex } from './ui/panel.js';
-import { initLibrary, addToLibrary } from './ui/library.js';
+import { init as initRenderer, requestRender }    from './canvas/renderer.js';
+import { init as initInput }                      from './canvas/input.js';
+import { state as viewport }                      from './canvas/viewport.js';
+import {
+  initPageManager, openPDF as openPDFPages, loadPageList, getPageCount,
+  getCurrentFingerprint, getCurrentPdfPath, goToPageIndex, fitPage, addBlankPage,
+  getCurrentPageListIndex, spliceBlankPagesFromMigration,
+} from './pages/pageManager.js';
+import { clear, loadFromJSON, undo }              from './annotations/manager.js';
+import { initAutosave }                           from './storage/autosave.js';
+import { deserialise }                            from './storage/serialiser.js';
+import { initHighlight }                          from './annotations/highlight.js';
+import { initDraw }                               from './annotations/draw.js';
+import { initNotes }                              from './annotations/note.js';
+import { initEraser }                             from './annotations/eraser.js';
+import { initImages, pasteImageAtCenter }         from './annotations/image.js';
+import { initSelect }                             from './annotations/select.js';
+import { init as initToolbar, setActiveTool, getActiveTool, updateStatus } from './ui/toolbar.js';
+import { init as initShortcuts }                  from './ui/shortcuts.js';
+import { initScreenshot, activateScreenshot }     from './ui/screenshot.js';
+import { init as initPanel, loadPageNotes, getCurrentPageIndex, togglePanel } from './ui/panel.js';
+import { initLibrary, addToLibrary }              from './ui/library.js';
+import { exportToPdf }                            from './export/pdfExport.js';
 
 // ---------------------------------------------------------------------------
 // Title bar window controls
@@ -53,39 +56,39 @@ document.getElementById('btn-close').addEventListener('click', () => {
 // Module initialisation (order matters)
 // ---------------------------------------------------------------------------
 
-initRenderer();      // Creates <canvas>, starts animation loop
-initInput();         // Attaches pan/zoom listeners
-initPDFManager();    // Registers draw callback, lazy-render listener
-initHighlight();     // Registers draw callbacks, attaches pointer listeners
-initDraw();          // Registers draw callbacks, attaches pointer listeners
-initNotes();         // Manages sticky note DOM elements
-initEraser();        // Registers pointer listeners for the eraser tool
-initImages();        // Manages image annotation DOM elements
-initSelect();        // Registers pointer listeners and overlay draw for select/move tool
-initToolbar();       // Builds toolbar UI, owns activeTool state
-initPanel();         // Builds notes panel UI, owns per-page notes state
-initShortcuts({      // Wires up global keyboard shortcuts
+initRenderer();       // Creates <canvas>, starts animation loop
+initInput();          // Attaches pan/zoom listeners
+initPageManager();    // Owns all pages (PDF + blank); replaces pdfManager + blankpage
+initHighlight();      // Registers draw callbacks, attaches pointer listeners
+initDraw();           // Registers draw callbacks, attaches pointer listeners
+initNotes();          // Manages sticky note DOM elements
+initEraser();         // Registers pointer listeners for the eraser tool
+initImages();         // Manages image annotation DOM elements
+initSelect();         // Registers pointer listeners and overlay draw for select/move tool
+initToolbar();        // Builds toolbar UI, owns activeTool state
+initPanel();          // Builds notes panel UI, owns per-page notes state
+initShortcuts({       // Wires up global keyboard shortcuts
   openFile:   handleOpen,
   setTool:    setActiveTool,
   undo,
   fitPage,
   screenshot: activateScreenshot,
   prevPage: () => {
-    const cur = getCurrentPageIndex();
-    if (cur !== null) goToPage(cur - 1);
+    const cur = getCurrentPageListIndex();
+    if (cur > 0) goToPageIndex(cur - 1);
   },
   nextPage: () => {
-    const cur = getCurrentPageIndex();
-    if (cur !== null) goToPage(cur + 1);
+    const cur = getCurrentPageListIndex();
+    if (cur < getPageCount() - 1) goToPageIndex(cur + 1);
   },
+  togglePanel,
 });
-initAutosave();      // Listens for annotation changes, writes to disk
-initScreenshot();       // Creates screenshot overlay DOM, attaches listeners
-initFloatingToolbar();  // Floating pen-friendly tool palette
+initAutosave();       // Listens for changes, writes to disk
+initScreenshot();     // Creates screenshot overlay DOM, attaches listeners
 initLibrary(openFromLibrary); // File library drawer
 
 // ---------------------------------------------------------------------------
-// Toolbar — Open button
+// Toolbar — Open button and action buttons
 // ---------------------------------------------------------------------------
 
 const btnOpen = document.getElementById('btn-open');
@@ -93,11 +96,56 @@ btnOpen.addEventListener('click', handleOpen);
 
 document.getElementById('btn-fit-page').addEventListener('click', fitPage);
 document.getElementById('btn-screenshot').addEventListener('click', activateScreenshot);
+document.getElementById('btn-new-page').addEventListener('click', addBlankPage);
+document.getElementById('btn-export').addEventListener('click', handleExport);
 
 async function handleOpen() {
   const filePath = await window.api.openFile();
   if (!filePath) return; // User cancelled
   await loadFile(filePath);
+}
+
+/**
+ * Exports the current document as a flattened PDF.
+ * Renders each page + its annotations to an offscreen canvas at 2× resolution,
+ * then assembles them into a single PDF the user can share with anyone.
+ */
+async function handleExport() {
+  const pdfPath  = getCurrentPdfPath();
+  const btnExport  = document.getElementById('btn-export');
+  const lblStatus  = document.getElementById('lbl-save-status');
+
+  // Derive a default filename: "lecture3.pdf" → "lecture3-annotated.pdf"
+  let defaultName = 'annotated.pdf';
+  if (pdfPath) {
+    const base = pdfPath.replace(/\\/g, '/').split('/').pop().replace(/\.pdf$/i, '');
+    defaultName = `${base}-annotated.pdf`;
+  }
+
+  const savePath = await window.api.savePdfDialog(defaultName);
+  if (!savePath) return; // User cancelled
+
+  btnExport.disabled    = true;
+  btnExport.textContent = 'Exporting…';
+  lblStatus.textContent = 'Exporting…';
+
+  try {
+    const pdfBytes = await exportToPdf((current, total) => {
+      lblStatus.textContent = `Exporting ${current + 1} / ${total}…`;
+    });
+
+    await window.api.writeBinary(savePath, pdfBytes);
+
+    lblStatus.textContent = 'Exported!';
+    setTimeout(() => { lblStatus.textContent = ''; }, 2500);
+  } catch (err) {
+    console.error('Export failed:', err);
+    alert(`Export failed:\n${err?.message ?? String(err)}`);
+    lblStatus.textContent = '';
+  } finally {
+    btnExport.disabled    = false;
+    btnExport.textContent = 'Export PDF';
+  }
 }
 
 /**
@@ -117,10 +165,18 @@ async function loadFile(filePath) {
   btnOpen.textContent = 'Loading…';
 
   try {
-    await openPDF(filePath);
-    clear();                          // Discard annotations from previous PDF
+    // 1. Load the PDF — builds the default page list (PDF pages only)
+    await openPDFPages(filePath);
+
+    // 2. Discard annotations from any previous document
+    clear();
+
+    // 3. Load saved annotations and page list (if any)
     await tryLoadAnnotations(filePath);
-    await addToLibrary(filePath);     // Record in persistent library
+
+    // 4. Record in library
+    await addToLibrary(filePath);
+
     updateStatusBar();
   } catch (err) {
     console.error('Failed to open PDF:', err);
@@ -136,34 +192,59 @@ async function loadFile(filePath) {
 // ---------------------------------------------------------------------------
 
 /**
- * Checks for a companion .annotations.json file next to the given PDF.
- * If found, parses it and loads annotations and page notes into their
- * respective modules.
- * Warns (but still loads) if the fingerprint doesn't match the current PDF.
+ * Loads saved annotations for the given PDF from the app's annotations store
+ * (userData/annotations/<hash>.json).
+ *
+ * Migration: if no file exists at the new path but a legacy sidecar
+ * (.annotations.json next to the PDF) does, copies it to the new location
+ * on first open. The sidecar is left in place and ignored from that point on.
  *
  * @param {string} pdfPath — Absolute path of the just-opened PDF
  */
 async function tryLoadAnnotations(pdfPath) {
-  const jsonPath = annotationsPath(pdfPath);
-  const exists   = await window.api.fileExists(jsonPath);
+  const jsonPath = await window.api.getAnnotationsPath(pdfPath);
+  let exists     = await window.api.fileExists(jsonPath);
+
+  // One-time migration from legacy sidecar format
+  if (!exists) {
+    const sidecarPath = pdfPath.replace(/\.pdf$/i, '.annotations.json');
+    if (await window.api.fileExists(sidecarPath)) {
+      try {
+        const bytes = await window.api.readFile(sidecarPath);
+        await window.api.writeFile(jsonPath, new TextDecoder().decode(bytes));
+        exists = true;
+      } catch (err) {
+        console.warn('Could not migrate sidecar annotations:', err.message);
+      }
+    }
+  }
+
   if (!exists) return;
 
   try {
     const bytes  = await window.api.readFile(jsonPath);
     const text   = new TextDecoder().decode(bytes);
-    const { pdfFingerprint, annotations, pageNotes } = deserialise(text);
+    const result = deserialise(text);
 
-    // Fingerprint check — warn if the JSON was made for a different version
-    // of the PDF (e.g. the file was replaced but the JSON wasn't)
+    // Fingerprint check — warn if annotations were made for a different PDF version
     const currentFp = getCurrentFingerprint();
-    if (pdfFingerprint && currentFp && pdfFingerprint !== currentFp) {
+    if (result.pdfFingerprint && currentFp && result.pdfFingerprint !== currentFp) {
       console.warn(
         'Annotation fingerprint mismatch — annotations may not align with this PDF version.'
       );
     }
 
-    loadFromJSON(annotations);
-    loadPageNotes(pageNotes);
+    if (result._migratedFrom === 1) {
+      // v1 migration: page list was built from PDF only in openPDF().
+      // Splice blank pages into the list at the correct positions.
+      spliceBlankPagesFromMigration(result._blankPageDescriptors ?? []);
+    } else if (result.pages) {
+      // v2: restore full saved page order (may include blank pages)
+      loadPageList(result.pages);
+    }
+
+    loadFromJSON(result.annotations);
+    loadPageNotes(result.pageNotes);
   } catch (err) {
     console.error('Failed to load annotations:', err);
   }
@@ -190,7 +271,21 @@ document.getElementById('canvas-container').addEventListener('viewport-changed',
   requestRender();
 });
 
-// Note: keyboard zoom (+, -, Ctrl+0) is handled by canvas/input.js directly.
+// Pen auto-draw — when cursor (no tool) is active and the user touches down
+// with a stylus, automatically switch to draw so sketching starts immediately.
+document.getElementById('canvas-container').addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'pen') return;
+  if (getActiveTool() === null) setActiveTool('draw');
+}, { capture: true });
+
+// Ctrl+V — paste clipboard image onto canvas
+document.addEventListener('keydown', async (e) => {
+  if (!(e.key === 'v' && (e.ctrlKey || e.metaKey))) return;
+  const tag      = document.activeElement?.tagName?.toLowerCase();
+  const editable = document.activeElement?.isContentEditable;
+  if (tag === 'input' || tag === 'textarea' || editable) return;
+  await pasteImageAtCenter();
+});
 
 // Initialise labels
 updateStatusBar();

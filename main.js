@@ -212,6 +212,111 @@ function setupIPC(win) {
   });
 
   /**
+   * open-folder-dialog — shows a native folder-selection dialog.
+   * Used by the library panel to let the user pick a destination for moving files.
+   * Returns the chosen directory path, or null if cancelled.
+   */
+  ipcMain.handle('open-folder-dialog', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'Select Folder',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  /**
+   * create-folder — creates a new directory at the given path.
+   * Uses recursive:true so intermediate directories are created as needed.
+   */
+  ipcMain.handle('create-folder', async (_event, dirPath) => {
+    try {
+      fs.mkdirSync(dirPath, { recursive: true });
+      return true;
+    } catch (err) {
+      throw new Error(`Could not create folder: ${err.message}`);
+    }
+  });
+
+  /**
+   * move-file — moves (renames) a file from srcPath to destPath.
+   * If destPath is a directory, the file is moved inside it keeping its name.
+   * Returns the final destination path.
+   */
+  ipcMain.handle('move-file', async (_event, srcPath, destPath) => {
+    try {
+      let finalDest = destPath;
+      // If destPath is a directory, keep the filename
+      if (fs.existsSync(destPath) && fs.statSync(destPath).isDirectory()) {
+        const filename = path.basename(srcPath);
+        finalDest = path.join(destPath, filename);
+      }
+      fs.renameSync(srcPath, finalDest);
+      return finalDest;
+    } catch (err) {
+      throw new Error(`Could not move file: ${err.message}`);
+    }
+  });
+
+  /**
+   * get-annotations-path — returns the path where annotations for a given PDF
+   * should be stored, creating the directory if it doesn't exist yet.
+   *
+   * Files are stored in: userData/annotations/<sha256(normalised_pdf_path)>.json
+   *
+   * Normalisation: backslashes → forward slashes before hashing, so the same
+   * file produces the same key regardless of how the OS reports the separator.
+   *
+   * Using a hash of the path (rather than the PDF fingerprint) means annotations
+   * survive if the PDF is re-exported or slightly modified, as long as the file
+   * path stays the same — which matches user expectations.
+   *
+   * @param {string} pdfPath — Absolute path to the PDF file
+   * @returns {string} Absolute path to the .json annotations file
+   */
+  ipcMain.handle('get-annotations-path', async (_event, pdfPath) => {
+    const annotationsDir = path.join(app.getPath('userData'), 'annotations');
+    if (!fs.existsSync(annotationsDir)) {
+      fs.mkdirSync(annotationsDir, { recursive: true });
+    }
+    // Normalise path separators before hashing so Windows paths are consistent
+    const normalised = pdfPath.replace(/\\/g, '/');
+    const hash       = crypto.createHash('sha256').update(normalised).digest('hex');
+    return path.join(annotationsDir, `${hash}.json`);
+  });
+
+  /**
+   * save-pdf-dialog — shows a native Save As dialog filtered to PDF files.
+   * Used by the export feature to let the user choose where to save the
+   * flattened PDF. Returns the chosen path, or null if cancelled.
+   * @param {string} defaultName — Suggested filename (e.g. "lecture3-annotated.pdf")
+   */
+  ipcMain.handle('save-pdf-dialog', async (_event, defaultName) => {
+    const result = await dialog.showSaveDialog(win, {
+      title:       'Export as PDF',
+      defaultPath: defaultName,
+      filters:     [{ name: 'PDF Files', extensions: ['pdf'] }],
+    });
+    return result.canceled ? null : result.filePath;
+  });
+
+  /**
+   * write-binary — writes a Uint8Array to disk as raw binary.
+   * Separate from write-file (which uses utf8 encoding) because PDF bytes
+   * must not be re-encoded as UTF-8 text.
+   * @param {string}     filePath — Absolute path to write to
+   * @param {Uint8Array} data     — Raw bytes
+   */
+  ipcMain.handle('write-binary', async (_event, filePath, data) => {
+    try {
+      fs.writeFileSync(filePath, Buffer.from(data));
+      return true;
+    } catch (err) {
+      throw new Error(`Could not write file: ${err.message}`);
+    }
+  });
+
+  /**
    * window-control — handles frameless window controls (minimise, maximise, close).
    * The renderer renders these buttons; they send actions here.
    */

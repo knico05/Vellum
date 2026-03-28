@@ -38,8 +38,9 @@ import {
 } from '../annotations/highlight.js';
 
 import {
-  activate   as activateEraser,
-  deactivate as deactivateEraser,
+  activate        as activateEraser,
+  deactivate      as deactivateEraser,
+  setEraseRadius,
 } from '../annotations/eraser.js';
 
 import {
@@ -47,26 +48,41 @@ import {
   deactivate as deactivateSelect,
 } from '../annotations/select.js';
 
+import {
+  activate   as activateNote,
+  deactivate as deactivateNote,
+} from '../annotations/note.js';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
+/** localStorage key for the starred default colour */
+const LS_DEFAULT_COLOUR = 'qn-default-colour';
+
+/** localStorage key for the saved custom colour palette */
+const LS_CUSTOM_PALETTE = 'qn-custom-palette';
+
+/** Maximum number of user-saved custom colours */
+const MAX_CUSTOM_COLOURS = 10;
+
 /** Tools that support colour selection */
 const COLOUR_TOOLS = new Set(['highlight', 'draw']);
 
-/** Tools that support stroke size selection */
-const STROKE_TOOLS = new Set(['draw', 'highlight']);
+/** Tools that support stroke/size selection */
+const STROKE_TOOLS = new Set(['draw', 'highlight', 'eraser']);
 
 /**
- * Stroke size presets for the draw tool.
- * width: canvas-unit base stroke width passed to setStrokeWidth()
- * dot:   visual dot diameter in px shown on the button
+ * Stroke size presets.
+ * width:       canvas-unit stroke width for draw/highlight
+ * eraseRadius: canvas-unit erase radius for the eraser tool
+ * dot:         visual dot diameter in px shown on the button
  */
 const STROKE_SIZES = [
-  { id: 'fine',   label: 'Fine',   width: 1,  dot: 3  },
-  { id: 'normal', label: 'Normal', width: 2,  dot: 5  },
-  { id: 'thick',  label: 'Thick',  width: 4,  dot: 8  },
-  { id: 'brush',  label: 'Brush',  width: 8,  dot: 12 },
+  { id: 'fine',   label: 'Fine',   width: 1,  eraseRadius: 6,  dot: 3  },
+  { id: 'normal', label: 'Normal', width: 2,  eraseRadius: 12, dot: 5  },
+  { id: 'thick',  label: 'Thick',  width: 4,  eraseRadius: 24, dot: 8  },
+  { id: 'brush',  label: 'Brush',  width: 8,  eraseRadius: 48, dot: 12 },
 ];
 
 /**
@@ -86,55 +102,56 @@ const COLOURS = [
  * Tool definitions.
  * id:    logical name used throughout the app
  * title: tooltip text
- * svg:   inner SVG markup (14×14 viewBox)
+ * svg:   inner SVG markup (18×18 viewBox, rendered at 18×18px for clarity)
  */
 const TOOLS = [
   {
     id: 'cursor',
     title: 'Cursor (V)',
-    svg: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M2.5 1.5L2.5 11L5 8.5L6.5 12.5L8.5 11.5L7 7.5L10.5 7.5Z" fill="currentColor"/>
-    </svg>`,
-  },
-  {
-    id: 'select',
-    title: 'Select & Move (S)',
-    svg: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="2" y="2" width="10" height="10" rx="1" stroke="currentColor" stroke-width="1.3" stroke-dasharray="2.5 2"/>
-      <path d="M5 5L5 9M9 5L9 9M5 5L9 5M5 9L9 9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-    </svg>`,
-  },
-  {
-    id: 'highlight',
-    title: 'Highlight (H)',
-    svg: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="1.5" y="4" width="11" height="5" rx="1" fill="currentColor" opacity="0.55"/>
-      <line x1="1.5" y1="11" x2="12.5" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    svg: `<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M5 2.5v14.5l4-4.5 2.2 5.5 2.8-1.1-2.2-5.5H16L5 2.5z" fill="currentColor"/>
     </svg>`,
   },
   {
     id: 'draw',
     title: 'Draw (D)',
-    svg: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M9.5 2L12 4.5L5.5 11L2.5 11.5L3 8.5Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
-      <line x1="7.5" y1="4" x2="10" y2="6.5" stroke="currentColor" stroke-width="1.4"/>
+    svg: `<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M14 3l3 3-9.5 9.5-3.5.5.5-3.5L14 3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
+      <path d="M11.5 5.5L14.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
     </svg>`,
   },
   {
-    id: 'note',
-    title: 'Text Box (N) — double-click canvas to place',
-    svg: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M2.5 2.5H8.5L11.5 5.5V11.5H2.5Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
-      <path d="M8.5 2.5V5.5H11.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+    id: 'highlight',
+    title: 'Highlight (H)',
+    svg: `<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2.5" y="6" width="15" height="7" rx="1.5" fill="currentColor" opacity="0.5"/>
+      <line x1="2.5" y1="16" x2="17.5" y2="16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
     </svg>`,
   },
   {
     id: 'eraser',
     title: 'Eraser (E)',
-    svg: `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M8.5 2L12 5.5L6 11.5H2.5L1.5 10.5L7 5Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
-      <path d="M5 8L8.5 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-      <line x1="1.5" y1="11.5" x2="12.5" y2="11.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    svg: `<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M13.5 3.5l3 3-8 8H5l-1.5-1.5 8-9.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
+      <path d="M7 11.5L13 5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="3" y1="17.5" x2="17" y2="17.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>`,
+  },
+  {
+    id: 'select',
+    title: 'Select & Move (S)',
+    svg: `<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="3" y="3" width="14" height="14" rx="1.5" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 2.5"/>
+      <path d="M8 8h4M8 10h4M8 12h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+    </svg>`,
+  },
+  {
+    id: 'note',
+    title: 'Text Box (N) — tap/click to place',
+    svg: `<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+      <line x1="6.5" y1="8" x2="13.5" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="6.5" y1="11" x2="11" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
     </svg>`,
   },
 ];
@@ -152,11 +169,35 @@ let activeTool = null;
  */
 let activeColour = 'yellow';
 
+/**
+ * The starred default colour. When a colour-capable tool is activated this is
+ * pre-selected automatically. Persisted in localStorage.
+ */
+let defaultColour = localStorage.getItem(LS_DEFAULT_COLOUR) || 'yellow';
+
+/**
+ * User-saved custom colours (hex strings). Max MAX_CUSTOM_COLOURS entries.
+ * Persisted in localStorage.
+ */
+let customPalette = (() => {
+  try {
+    const stored = localStorage.getItem(LS_CUSTOM_PALETTE);
+    const parsed = stored ? JSON.parse(stored) : [];
+    return Array.isArray(parsed) ? parsed.slice(0, MAX_CUSTOM_COLOURS) : [];
+  } catch { return []; }
+})();
+
 /** Map of tool id → button element, populated during init() */
 const toolButtons = new Map();
 
 /** Map of colour name → swatch element, populated during init() */
 const swatchButtons = new Map();
+
+/**
+ * The custom palette swatch container — rebuilt whenever customPalette changes.
+ * Sits between the preset swatches and the custom-colour controls.
+ */
+let customPaletteContainerEl = null;
 
 /** The #colour-picker container element */
 let colourPickerEl = null;
@@ -209,7 +250,7 @@ function init() {
     toolButtons.set(tool.id, btn);
   }
 
-  // Build colour swatches inside the colour picker
+  // Build preset colour swatches
   for (const colour of COLOURS) {
     const swatch = document.createElement('button');
     swatch.className         = 'colour-swatch';
@@ -218,12 +259,20 @@ function init() {
     swatch.dataset.colour    = colour.name;
 
     swatch.addEventListener('click', () => handleColourClick(colour.name));
+    swatch.addEventListener('contextmenu', (e) => { e.preventDefault(); handleStarColour(colour.name); });
 
     colourPickerEl.appendChild(swatch);
     swatchButtons.set(colour.name, swatch);
   }
 
+  // Custom palette container — sits between presets and custom controls
+  customPaletteContainerEl = document.createElement('div');
+  customPaletteContainerEl.className = 'colour-custom-palette';
+  colourPickerEl.appendChild(customPaletteContainerEl);
+  renderCustomPalette();
+
   // Apply initial swatch active state
+  activeColour = defaultColour;
   updateSwatchState();
 
   // ── Custom colour circle (opens native colour picker) ──────────────────
@@ -243,10 +292,21 @@ function init() {
   const customBtn = document.createElement('button');
   customBtn.id        = 'btn-custom-colour';
   customBtn.className = 'colour-swatch colour-swatch-custom';
-  customBtn.title     = 'Custom colour';
+  customBtn.title     = 'Pick custom colour (right-click to save to palette)';
   customBtn.style.background = 'conic-gradient(red, yellow, lime, cyan, blue, magenta, red)';
   customBtn.addEventListener('click', () => colourInput.click());
+  customBtn.addEventListener('contextmenu', (e) => { e.preventDefault(); saveCustomColourToPalette(activeColour); });
   colourPickerEl.appendChild(customBtn);
+
+  // Save-to-palette button — adds the current colour to the saved palette
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'colour-save-btn';
+  saveBtn.title     = `Save current colour to palette (max ${MAX_CUSTOM_COLOURS})`;
+  saveBtn.innerHTML = `<svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+    <path d="M6 1v10M1 6h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+  </svg>`;
+  saveBtn.addEventListener('click', () => saveCustomColourToPalette(activeColour));
+  colourPickerEl.appendChild(saveBtn);
 
   // ── Eyedropper (Chromium/Electron supports the EyeDropper API) ─────────
   if ('EyeDropper' in window) {
@@ -285,6 +345,16 @@ function init() {
 
   // Apply initial stroke size active state
   updateStrokeSizeState();
+
+  // When a text box is placed, the note tool self-deactivates — switch to cursor
+  document.addEventListener('note-placed', () => {
+    setActiveTool(null);
+  });
+
+  // When a text box is focused for editing, switch any active tool to cursor
+  document.addEventListener('request-cursor-tool', () => {
+    if (activeTool !== null) setActiveTool(null);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -321,11 +391,17 @@ function setActiveTool(toolName) {
 
   activeTool = toolName;
 
-  // Activate the new tool (note and cursor have no activate/deactivate)
+  // Activate the new tool
   if (activeTool === 'highlight') activateHighlight();
   if (activeTool === 'draw')      activateDraw();
   if (activeTool === 'eraser')    activateEraser();
   if (activeTool === 'select')    activateSelect();
+  if (activeTool === 'note')      activateNote();
+
+  // Stamp the active tool onto #canvas-container so CSS can gate
+  // pointer-events on image annotations (images are inert outside select mode)
+  const container = document.getElementById('canvas-container');
+  if (container) container.dataset.tool = activeTool ?? 'cursor';
 
   updateButtonStates();
   updateColourPickerVisibility();
@@ -341,6 +417,7 @@ function deactivateCurrentTool() {
   if (activeTool === 'draw')      deactivateDraw();
   if (activeTool === 'eraser')    deactivateEraser();
   if (activeTool === 'select')    deactivateSelect();
+  if (activeTool === 'note')      deactivateNote();
 }
 
 /**
@@ -381,6 +458,102 @@ function applyColourToActiveTool() {
   } else if (activeTool === 'draw') {
     // draw.js expects an opaque CSS colour — use preset solid or custom hex
     setDrawColour(presetDef ? presetDef.solid : activeColour);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Default colour (starred)
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks a colour as the default (starred) — it will be pre-selected when
+ * activating a colour-capable tool. Right-click a swatch to set.
+ *
+ * @param {string} colourName — preset name or hex string
+ */
+function handleStarColour(colourName) {
+  defaultColour = colourName;
+  localStorage.setItem(LS_DEFAULT_COLOUR, defaultColour);
+  updateSwatchState();
+}
+
+// ---------------------------------------------------------------------------
+// Custom palette persistence
+// ---------------------------------------------------------------------------
+
+/**
+ * Saves the currently active colour to the persistent custom palette.
+ * Ignored if colour is already in the palette or palette is full.
+ *
+ * @param {string} hex — CSS hex colour string
+ */
+function saveCustomColourToPalette(hex) {
+  // Only save valid hex colours
+  if (!hex || !hex.startsWith('#')) return;
+  if (customPalette.includes(hex)) return;
+  if (customPalette.length >= MAX_CUSTOM_COLOURS) {
+    // Silently drop the oldest entry to stay within the limit
+    customPalette.shift();
+  }
+  customPalette.push(hex);
+  localStorage.setItem(LS_CUSTOM_PALETTE, JSON.stringify(customPalette));
+  renderCustomPalette();
+  updateSwatchState();
+}
+
+/**
+ * Removes a colour from the custom palette.
+ *
+ * @param {string} hex
+ */
+function removeCustomColourFromPalette(hex) {
+  customPalette = customPalette.filter(c => c !== hex);
+  localStorage.setItem(LS_CUSTOM_PALETTE, JSON.stringify(customPalette));
+  // If the removed colour was active, reset to defaultColour
+  if (activeColour === hex) handleColourClick(defaultColour);
+  renderCustomPalette();
+  updateSwatchState();
+}
+
+/**
+ * Rebuilds the custom palette swatch DOM from the current customPalette array.
+ * Each swatch shows a remove × on hover. Right-click sets it as default.
+ */
+function renderCustomPalette() {
+  if (!customPaletteContainerEl) return;
+  customPaletteContainerEl.innerHTML = '';
+
+  if (customPalette.length === 0) return;
+
+  // Thin separator before custom palette entries
+  const sep = document.createElement('div');
+  sep.className = 'colour-custom-sep';
+  customPaletteContainerEl.appendChild(sep);
+
+  for (const hex of customPalette) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'colour-saved-wrapper';
+
+    const swatch = document.createElement('button');
+    swatch.className      = 'colour-swatch colour-swatch-saved';
+    swatch.title          = `${hex} — right-click to set as default`;
+    swatch.style.background = hex;
+    swatch.dataset.colour = hex;
+    swatch.addEventListener('click', () => handleColourClick(hex));
+    swatch.addEventListener('contextmenu', (e) => { e.preventDefault(); handleStarColour(hex); });
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className   = 'colour-saved-remove';
+    removeBtn.textContent = '×';
+    removeBtn.title       = 'Remove from palette';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeCustomColourFromPalette(hex);
+    });
+
+    wrapper.appendChild(swatch);
+    wrapper.appendChild(removeBtn);
+    customPaletteContainerEl.appendChild(wrapper);
   }
 }
 
@@ -442,6 +615,7 @@ function applyStrokeSizeToActiveTool() {
   if (!sizeDef) return;
   if (activeTool === 'draw')      setDrawStrokeWidth(sizeDef.width);
   if (activeTool === 'highlight') setHighlightStrokeWidth(sizeDef.width);
+  if (activeTool === 'eraser')    setEraseRadius(sizeDef.eraseRadius);
 }
 
 // ---------------------------------------------------------------------------
@@ -468,10 +642,14 @@ function updateColourPickerVisibility() {
   const strokeVisible = activeTool !== null && STROKE_TOOLS.has(activeTool);
 
   colourPickerEl.style.display  = colourVisible ? 'flex' : 'none';
+  // Show colour separator only when colour AND stroke are both visible
   colourSepEl.style.display     = colourVisible ? 'block' : 'none';
   strokePickerEl.style.display  = strokeVisible ? 'flex' : 'none';
 
   if (colourVisible) {
+    // Pre-select the starred default colour each time a colour tool is activated
+    activeColour = defaultColour;
+    updateSwatchState();
     applyColourToActiveTool();
   }
   if (strokeVisible) {
@@ -480,16 +658,28 @@ function updateColourPickerVisibility() {
 }
 
 /**
- * Syncs swatch active classes with the current activeColour state.
+ * Syncs swatch active and default (star) classes with current state.
  * If activeColour is a hex string (custom), marks the custom button active.
  */
 function updateSwatchState() {
-  const isPreset = COLOURS.some(c => c.name === activeColour);
+  const isPreset     = COLOURS.some(c => c.name === activeColour);
+  const isCustomSaved = customPalette.includes(activeColour);
+
   for (const [name, swatch] of swatchButtons) {
     swatch.classList.toggle('active', name === activeColour);
+    swatch.classList.toggle('default-colour', name === defaultColour);
   }
+
+  // Also mark default star on saved custom swatches
+  if (customPaletteContainerEl) {
+    for (const sw of customPaletteContainerEl.querySelectorAll('.colour-swatch')) {
+      sw.classList.toggle('active', sw.dataset.colour === activeColour);
+      sw.classList.toggle('default-colour', sw.dataset.colour === defaultColour);
+    }
+  }
+
   const customBtn = document.getElementById('btn-custom-colour');
-  customBtn?.classList.toggle('active', !isPreset);
+  customBtn?.classList.toggle('active', !isPreset && !isCustomSaved);
 }
 
 /**

@@ -3,25 +3,27 @@
  *
  * When active, a full-window overlay appears. The user drags a rectangle.
  * On release:
- *   1. The overlay is hidden (so it doesn't appear in the capture).
- *   2. Two animation frames are awaited so the browser paints the hidden state.
+ *   1. The overlay is hidden (canvas pointer-events stay disabled until after
+ *      capture — this prevents a hovering pen from repainting the canvas
+ *      before capturePage fires).
+ *   2. Two animation frames are awaited so the overlay paint is fully composited.
  *   3. The full window is captured via IPC (captureScreen).
- *   4. The captured PNG is cropped client-side using a canvas, with the region
- *      scaled by devicePixelRatio to match the physical pixel buffer.
- *   5. The cropped PNG blob is written to the clipboard.
+ *   4. The captured PNG is cropped client-side. Instead of using
+ *      window.devicePixelRatio (unreliable on some Windows DPI configurations),
+ *      we derive the actual pixel scale from the captured image's natural
+ *      dimensions vs the CSS window dimensions.
+ *   5. The cropped PNG blob is written to the clipboard only.
  *
- * Doing the crop client-side avoids the logical/physical pixel mismatch that
- * occurs when passing a rect directly to Electron's capturePage() on HiDPI
- * screens, where the rect would need to be in physical pixels but clientX/Y
- * are in CSS pixels.
+ * Pointer handling:
+ *   Instead of setPointerCapture (which can be unreliable for pen/touch in
+ *   Electron on Windows), we add window-level pointermove/pointerup listeners
+ *   during a drag. This matches how the select tool works and is reliable
+ *   across all pointer types (mouse, pen, touch).
  *
  * Exports: initScreenshot(), activateScreenshot()
  */
 
 'use strict';
-
-import { toCanvas, state as viewportState } from '../canvas/viewport.js';
-import { addImage }                          from '../annotations/image.js';
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -53,9 +55,9 @@ function init() {
 
   document.body.appendChild(overlayEl);
 
+  // Only pointerdown is on the overlay — move/up go on window during drag
+  // so they fire regardless of where the pointer moves (reliable for pen/touch)
   overlayEl.addEventListener('pointerdown', onPointerDown);
-  overlayEl.addEventListener('pointermove', onPointerMove);
-  overlayEl.addEventListener('pointerup',   onPointerUp);
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && active) deactivate();
@@ -72,15 +74,47 @@ function activate() {
   dragCurrent = null;
   rectEl.classList.add('hidden');
   overlayEl.classList.remove('hidden');
+
+  // Keep the canvas completely frozen while the overlay is up.
+  // Without this a hovering pen can trigger draw.js and repaint the canvas
+  // between "overlay hidden" and "capturePage() completes".
+  _disableCanvas();
 }
 
 function deactivate() {
   active = false;
+  _cleanupWindowListeners();
   overlayEl.classList.add('hidden');
   overlayEl.classList.remove('dragging');
   rectEl.classList.add('hidden');
   dragStart   = null;
   dragCurrent = null;
+  _enableCanvas();
+}
+
+/** Hides overlay visuals but does NOT restore canvas pointer-events. */
+function _hideOverlayOnly() {
+  overlayEl.classList.add('hidden');
+  overlayEl.classList.remove('dragging');
+  rectEl.classList.add('hidden');
+  active      = false;
+  dragStart   = null;
+  dragCurrent = null;
+}
+
+function _disableCanvas() {
+  const c = document.getElementById('canvas-container');
+  if (c) c.style.pointerEvents = 'none';
+}
+
+function _enableCanvas() {
+  const c = document.getElementById('canvas-container');
+  if (c) c.style.pointerEvents = '';
+}
+
+function _cleanupWindowListeners() {
+  window.removeEventListener('pointermove', onPointerMove);
+  window.removeEventListener('pointerup',   onPointerUp);
 }
 
 // ---------------------------------------------------------------------------
@@ -88,12 +122,20 @@ function deactivate() {
 // ---------------------------------------------------------------------------
 
 function onPointerDown(e) {
+  e.preventDefault();
+  e.stopPropagation();
+
   dragStart   = { x: e.clientX, y: e.clientY };
   dragCurrent = { x: e.clientX, y: e.clientY };
+
   rectEl.classList.remove('hidden');
   overlayEl.classList.add('dragging');
   updateRect();
-  overlayEl.setPointerCapture(e.pointerId);
+
+  // Window-level listeners capture all pointer types reliably across platforms.
+  // More reliable than setPointerCapture for pen/touch in Electron on Windows.
+  window.addEventListener('pointermove', onPointerMove);
+  window.addEventListener('pointerup',   onPointerUp);
 }
 
 function onPointerMove(e) {
@@ -103,40 +145,40 @@ function onPointerMove(e) {
 }
 
 async function onPointerUp(e) {
+  _cleanupWindowListeners();
+
   if (!dragStart) return;
   dragCurrent = { x: e.clientX, y: e.clientY };
 
-  // CSS pixel rect of the selection
+  // CSS-pixel rect of the selection
   const x = Math.round(Math.min(dragStart.x, dragCurrent.x));
   const y = Math.round(Math.min(dragStart.y, dragCurrent.y));
   const w = Math.round(Math.abs(dragCurrent.x - dragStart.x));
   const h = Math.round(Math.abs(dragCurrent.y - dragStart.y));
 
-  // Hide the overlay before capturing so it doesn't appear in the screenshot
-  deactivate();
+  // Hide the overlay so it doesn't appear in the capture.
+  // Canvas pointer-events stay DISABLED — a hovering pen must not redraw
+  // anything between now and when capturePage() resolves.
+  _hideOverlayOnly();
 
-  if (w < 4 || h < 4) return; // Accidental click — ignore
+  if (w < 4 || h < 4) {
+    _enableCanvas();
+    return;
+  }
 
-  // Wait for two animation frames so the browser paints the hidden overlay
-  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  // Wait for two frames so the overlay's removal is fully composited.
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
   try {
     const pngBytes = await window.api.captureScreen();
     const blob     = await cropPng(pngBytes, x, y, w, h);
-
-    // Place on canvas at the canvas-space position of the selection
-    const canvasTopLeft = toCanvas(x, y);
-    const canvasW = w / viewportState.scale;
-    const canvasH = h / viewportState.scale;
-    const dataUrl = await blobToDataUrl(blob);
-    addImage(dataUrl, canvasTopLeft.x, canvasTopLeft.y, canvasW, canvasH);
-
-    // Also copy to system clipboard
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-    showToast('Screenshot added to canvas');
+    showToast('Screenshot copied — paste to add to canvas');
   } catch (err) {
     console.error('Screenshot failed:', err);
     showToast('Screenshot failed');
+  } finally {
+    _enableCanvas();
   }
 }
 
@@ -146,36 +188,44 @@ async function onPointerUp(e) {
 
 /**
  * Crops a full-window PNG to the given CSS-pixel rect.
- * Multiplies coordinates by devicePixelRatio because capturePage returns a
- * buffer at physical resolution.
+ *
+ * Instead of using window.devicePixelRatio (which can differ from the actual
+ * Electron backing-store scale on Windows HiDPI configurations), we compute
+ * the true pixel scale by comparing the captured image's natural dimensions
+ * to the CSS window size.
  *
  * @param {Uint8Array} pngBytes  — Full-window PNG from captureScreen
  * @param {number}     cssX      — Left edge in CSS pixels
  * @param {number}     cssY      — Top edge in CSS pixels
  * @param {number}     cssW      — Width in CSS pixels
  * @param {number}     cssH      — Height in CSS pixels
- * @returns {Promise<Blob>}      — Cropped PNG blob
+ * @returns {Promise<Blob>}
  */
 function cropPng(pngBytes, cssX, cssY, cssW, cssH) {
   return new Promise((resolve, reject) => {
-    const dpr = window.devicePixelRatio || 1;
-    const px  = Math.round(cssX * dpr);
-    const py  = Math.round(cssY * dpr);
-    const pw  = Math.round(cssW * dpr);
-    const ph  = Math.round(cssH * dpr);
-
     const img = new Image();
     const url = URL.createObjectURL(new Blob([pngBytes], { type: 'image/png' }));
 
     img.onload = () => {
       URL.revokeObjectURL(url);
 
+      const scaleX = img.naturalWidth  / window.innerWidth;
+      const scaleY = img.naturalHeight / window.innerHeight;
+
+      const px = Math.round(cssX * scaleX);
+      const py = Math.round(cssY * scaleY);
+      const pw = Math.round(cssW * scaleX);
+      const ph = Math.round(cssH * scaleY);
+
+      if (pw < 1 || ph < 1) {
+        reject(new Error('Crop area is too small after DPI scaling'));
+        return;
+      }
+
       const canvas = document.createElement('canvas');
       canvas.width  = pw;
       canvas.height = ph;
-
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, px, py, pw, ph, 0, 0, pw, ph);
+      canvas.getContext('2d').drawImage(img, px, py, pw, ph, 0, 0, pw, ph);
 
       canvas.toBlob((blob) => {
         if (blob) resolve(blob);
@@ -189,20 +239,6 @@ function cropPng(pngBytes, cssX, cssY, cssW, cssH) {
     };
 
     img.src = url;
-  });
-}
-
-/**
- * Converts a Blob to a base64 data URL.
- * @param {Blob} blob
- * @returns {Promise<string>}
- */
-function blobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload  = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('FileReader failed'));
-    reader.readAsDataURL(blob);
   });
 }
 

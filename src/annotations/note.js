@@ -27,7 +27,7 @@
 import { toCanvas, toScreen, state as viewportState } from '../canvas/viewport.js';
 import { register, requestRender }                    from '../canvas/renderer.js';
 import { add, update, remove, getAll }                from './manager.js';
-import { getPages }                                   from '../pdf/pdfManager.js';
+import { resolvePageId }                              from '../pages/pageManager.js';
 import { getDragOffset }                              from './select.js';
 
 // ---------------------------------------------------------------------------
@@ -75,6 +75,9 @@ const FONT_SIZES = [
 
 let container = null;
 
+/** True when the text-box tool is active from the toolbar (single-click places a box) */
+let toolActive = false;
+
 /** Map of annotation id → DOM element */
 const boxElements = new Map();
 
@@ -91,37 +94,113 @@ let resizeState = null;
 // Initialisation
 // ---------------------------------------------------------------------------
 
-/** pointerType of the most recent pointerdown — used to filter dblclick by input device */
+/** pointerType of the most recent pointerdown — used to filter click/dblclick by input device */
 let lastPointerType = 'mouse';
+
+/** Touch double-tap detection state */
+let lastTapTime = 0;
+let lastTapX    = 0;
+let lastTapY    = 0;
+const DOUBLE_TAP_MS   = 320;  // max ms between two taps
+const DOUBLE_TAP_DIST = 32;   // max CSS-px drift between taps
 
 function init() {
   container = document.getElementById('canvas-container');
 
-  // Track which input device was last used so dblclick can filter by type
-  container.addEventListener('pointerdown', (e) => { lastPointerType = e.pointerType; });
+  // Track which input device was last used so the click handler can filter by type.
+  // Text boxes call stopPropagation on pointerdown, so this only fires when the
+  // user presses down OUTSIDE every text box.
+  container.addEventListener('pointerdown', (e) => {
+    lastPointerType = e.pointerType;
 
-  container.addEventListener('dblclick', onCreate);
+    // Blur any currently editing text box when tapping outside it
+    const editingBody = container.querySelector('.text-box.editing .text-box-body');
+    if (editingBody) editingBody.blur();
+
+    // Manual double-tap for touch: input.js calls preventDefault() on touch
+    // pointerdown which suppresses the native dblclick event entirely.
+    if (e.pointerType === 'touch' && !toolActive) {
+      const now = Date.now();
+      const dx  = e.clientX - lastTapX;
+      const dy  = e.clientY - lastTapY;
+      if (now - lastTapTime < DOUBLE_TAP_MS &&
+          Math.sqrt(dx * dx + dy * dy) < DOUBLE_TAP_DIST) {
+        // Double-tap confirmed — place a text box and reset so a third tap
+        // doesn't immediately trigger another one.
+        placeBox(e);
+        lastTapTime = 0;
+      } else {
+        lastTapTime = now;
+        lastTapX    = e.clientX;
+        lastTapY    = e.clientY;
+      }
+    }
+  });
+
+  // Two ways to create a text box:
+  //   1. N tool active → single click/tap
+  //   2. Double-click/double-tap (touch or mouse, never pen) on empty canvas
+  container.addEventListener('click',   onSingleClick);
+  container.addEventListener('dblclick', onDoubleClick);
 
   document.addEventListener('annotations-changed', syncElements);
   register(updatePositions);
+}
+
+/**
+ * Activates the text-box tool. A single click/tap (non-pen) places a text box.
+ * Called by toolbar.js when the N button is pressed.
+ */
+function activate() {
+  toolActive = true;
+  container.classList.add('tool-note');
+}
+
+/**
+ * Deactivates the text-box tool.
+ */
+function deactivate() {
+  toolActive = false;
+  container.classList.remove('tool-note');
 }
 
 // ---------------------------------------------------------------------------
 // Box creation
 // ---------------------------------------------------------------------------
 
-function onCreate(e) {
-  // Text boxes are created by touch double-tap or mouse double-click only.
-  // Pen double-tap should draw, not place a text box.
+/**
+ * Double-click/double-tap handler — always available (touch + mouse, not pen).
+ * Does not fire when the N tool is active (single-click already handles that).
+ */
+function onDoubleClick(e) {
+  if (toolActive) return;             // single-click path already handles this
   if (lastPointerType === 'pen') return;
   if (e.target.closest('.text-box')) return;
+  placeBox(e);
+}
 
+/**
+ * Click handler — places a text box only when the N tool is active.
+ * Immediately returns to cursor after placing.
+ */
+function onSingleClick(e) {
+  if (!toolActive) return;
+  if (lastPointerType === 'pen') return;
+  if (e.target.closest('.text-box')) return;
+  placeBox(e);
+  deactivate();
+  document.dispatchEvent(new CustomEvent('note-placed'));
+}
+
+/**
+ * Shared placement logic — creates a text box centred on the click/tap position.
+ */
+function placeBox(e) {
   const rect     = container.getBoundingClientRect();
   const { x, y } = toCanvas(e.clientX - rect.left, e.clientY - rect.top);
-
   add({
     type:      'textBox',
-    pageIndex: resolvePageIndex(x, y),
+    pageId:    resolvePageId(x, y),
     canvasX:   x - BOX_WIDTH  / 2,
     canvasY:   y - BOX_HEIGHT / 2,
     width:     BOX_WIDTH,
@@ -272,17 +351,26 @@ function createBoxElement(anno) {
   resizeHandle.addEventListener('pointerup',     (e) => onResizeEnd(e, resizeHandle));
   resizeHandle.addEventListener('pointercancel', (e) => onResizeEnd(e, resizeHandle));
 
-  body.addEventListener('input', () => scheduleTextSave(anno.id, body));
+  body.addEventListener('input', () => {
+    scheduleTextSave(anno.id, body);
+    syncHeight(anno.id, el, body);
+  });
 
-  body.addEventListener('focus', () => el.classList.add('editing'));
+  body.addEventListener('focus', () => {
+    el.classList.add('editing');
+    // Switch to cursor so the active drawing/highlight tool can't fire
+    // while the user is typing inside a text box.
+    document.dispatchEvent(new CustomEvent('request-cursor-tool'));
+  });
   body.addEventListener('blur',  () => {
-    // Delay removing .editing so clicks on the options bar don't close it
-    // before the click event fires.
+    // Short delay: allows options-bar mousedown (which uses preventDefault to
+    // keep focus) to fire before we remove .editing. Without it, tapping a
+    // colour swatch closes the bar before the tap registers.
     setTimeout(() => {
       if (!el.contains(document.activeElement)) {
         el.classList.remove('editing');
       }
-    }, 150);
+    }, 80);
   });
 
   el.addEventListener('pointerdown', (e) => e.stopPropagation());
@@ -487,6 +575,26 @@ function onResizeEnd(e, handle) {
 // Text persistence
 // ---------------------------------------------------------------------------
 
+/**
+ * Grows or shrinks the text box to fit its current content.
+ *
+ * body.scrollHeight always returns the full content height regardless of
+ * the element's overflow setting, so we can use it to measure needed space.
+ * The drag strip (8px) is the only non-body content that contributes to the
+ * container height (options bar and delete/resize buttons are absolute).
+ */
+const DRAG_STRIP_H = 8;
+
+function syncHeight(annotationId, containerEl, bodyEl) {
+  const needed  = Math.max(MIN_BOX_HEIGHT, bodyEl.scrollHeight + DRAG_STRIP_H);
+  const current = getAll().find(a => a.id === annotationId)?.height ?? 0;
+  if (Math.abs(needed - current) < 1) return; // no meaningful change
+
+  // Update DOM immediately for smooth feel, then persist to the store
+  containerEl.style.height = `${needed}px`;
+  update(annotationId, { height: needed });
+}
+
 function scheduleTextSave(annotationId, bodyEl) {
   clearTimeout(saveTimers.get(annotationId));
   const timer = setTimeout(() => {
@@ -500,18 +608,8 @@ function scheduleTextSave(annotationId, bodyEl) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function resolvePageIndex(cx, cy) {
-  for (const page of getPages()) {
-    if (
-      cx >= page.canvasX && cx <= page.canvasX + page.width &&
-      cy >= page.canvasY && cy <= page.canvasY + page.height
-    ) return page.pageIndex;
-  }
-  return 0;
-}
-
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init as initNotes };
+export { init as initNotes, activate, deactivate };

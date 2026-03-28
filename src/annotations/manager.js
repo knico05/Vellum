@@ -147,11 +147,11 @@ function update(id, changes) {
 /**
  * Returns all annotations for a specific page, in insertion order.
  *
- * @param {number} pageIndex — 0-based page index
+ * @param {string} pageId — Page ID string (e.g. "pdf-0", "blank-abc")
  * @returns {object[]}
  */
-function getByPage(pageIndex) {
-  return annotations.filter(a => a.pageIndex === pageIndex);
+function getByPage(pageId) {
+  return annotations.filter(a => a.pageId === pageId);
 }
 
 /**

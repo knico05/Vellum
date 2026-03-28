@@ -18,8 +18,11 @@
  *   openFile()                     → Promise<string|null>
  *   readFile(path)                 → Promise<Uint8Array>
  *   writeFile(path, data)          → Promise<true>
+ *   writeBinary(path, data)        → Promise<true>
  *   fileExists(path)               → Promise<boolean>
  *   getFingerprint(path)           → Promise<string>
+ *   getAnnotationsPath(pdfPath)    → Promise<string>
+ *   savePdfDialog(defaultName)     → Promise<string|null>
  *   loadLibrary()                  → Promise<object|null>
  *   saveLibrary(data)              → Promise<true>
  *   windowControl(action)          → void
@@ -96,6 +99,61 @@ contextBridge.exposeInMainWorld('api', {
    */
   saveLibrary: (data) =>
     ipcRenderer.invoke('library-save', data),
+
+  /**
+   * Opens a native folder-selection dialog.
+   * Used by the library panel for "move file" destinations.
+   * @returns {Promise<string|null>} Chosen directory path, or null if cancelled.
+   */
+  openFolderDialog: () =>
+    ipcRenderer.invoke('open-folder-dialog'),
+
+  /**
+   * Creates a new directory (recursively) at the given path.
+   * @param {string} dirPath
+   * @returns {Promise<true>}
+   */
+  createFolder: (dirPath) =>
+    ipcRenderer.invoke('create-folder', dirPath),
+
+  /**
+   * Moves a file from srcPath to destPath.
+   * If destPath is a directory the file is placed inside it.
+   * @param {string} srcPath
+   * @param {string} destPath
+   * @returns {Promise<string>} The final destination path.
+   */
+  moveFile: (srcPath, destPath) =>
+    ipcRenderer.invoke('move-file', srcPath, destPath),
+
+  /**
+   * Returns the path where annotations for a given PDF are stored in userData.
+   * Creates the annotations directory if it doesn't exist yet.
+   * @param {string} pdfPath — Absolute path to the PDF
+   * @returns {Promise<string>} Absolute path to the .json annotations file
+   */
+  getAnnotationsPath: (pdfPath) =>
+    ipcRenderer.invoke('get-annotations-path', pdfPath),
+
+  /**
+   * Shows a native Save As dialog filtered to PDF files.
+   * Used by the export feature to let the user pick a destination.
+   * @param {string} defaultName — Suggested filename
+   * @returns {Promise<string|null>} Chosen path, or null if cancelled.
+   */
+  savePdfDialog: (defaultName) =>
+    ipcRenderer.invoke('save-pdf-dialog', defaultName),
+
+  /**
+   * Writes raw binary data to disk.
+   * Used for writing exported PDF bytes — unlike writeFile() this does not
+   * apply UTF-8 encoding, which would corrupt binary data.
+   * @param {string}     filePath
+   * @param {Uint8Array} data
+   * @returns {Promise<true>}
+   */
+  writeBinary: (filePath, data) =>
+    ipcRenderer.invoke('write-binary', filePath, data),
 
   /**
    * Sends a window control action to the main process.

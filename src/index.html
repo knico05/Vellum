@@ -32,13 +32,15 @@
     <!-- Top toolbar -->
     <div id="toolbar">
       <button class="tool-btn" id="btn-library" title="File Library">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="1.5" y="2" width="4" height="10" rx="0.8" stroke="currentColor" stroke-width="1.3"/>
-          <rect x="7"   y="2" width="5.5" height="4.5" rx="0.8" stroke="currentColor" stroke-width="1.3"/>
-          <rect x="7"   y="8" width="5.5" height="4" rx="0.8" stroke="currentColor" stroke-width="1.3"/>
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="2" y="2.5" width="5" height="15" rx="1" stroke="currentColor" stroke-width="1.5"/>
+          <rect x="9" y="2.5" width="9" height="6.5" rx="1" stroke="currentColor" stroke-width="1.5"/>
+          <rect x="9" y="11" width="9" height="6.5" rx="1" stroke="currentColor" stroke-width="1.5"/>
         </svg>
       </button>
       <button class="toolbar-btn" id="btn-open" title="Open PDF (Ctrl+O)">Open</button>
+      <button class="toolbar-btn" id="btn-new-page" title="Add a blank page to sketch on">New Page</button>
+      <button class="toolbar-btn" id="btn-export" title="Export as PDF — flatten annotations into a shareable PDF">Export PDF</button>
       <div class="toolbar-sep"></div>
       <div id="tool-group" style="display:flex;gap:2px;align-items:center;"></div>
       <div id="colour-picker" style="display:none;align-items:center;gap:6px;margin-left:8px;"></div>
@@ -50,17 +52,24 @@
       <span class="toolbar-label" id="lbl-zoom"></span>
       <div class="toolbar-sep"></div>
       <button class="tool-btn" id="btn-screenshot" title="Screenshot to clipboard (Ctrl+Shift+S)">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="1.5" y="3" width="11" height="8.5" rx="1.2" stroke="currentColor" stroke-width="1.3"/>
-          <circle cx="7" cy="7.2" r="2" stroke="currentColor" stroke-width="1.3"/>
-          <path d="M5 3L5.8 1.5H8.2L9 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="2" y="4" width="16" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M7 4l1.2-2h3.6L13 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </button>
       <div class="toolbar-sep"></div>
       <button class="tool-btn" id="btn-fit-page" title="Fit page (F)">
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="3" y="2" width="8" height="10" rx="1" stroke="currentColor" stroke-width="1.4"/>
-          <line x1="1" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5" stroke-linecap="round"/>
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="4.5" y="2" width="11" height="16" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="2" y1="10" x2="18" y2="10" stroke="currentColor" stroke-width="1.3" stroke-dasharray="2.5 2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button class="tool-btn" id="btn-toggle-panel" title="Toggle pages panel (P)">
+        <!-- Panel/sidebar icon: vertical split with right column -->
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="2" y="3" width="16" height="14" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+          <line x1="13" y1="3.5" x2="13" y2="16.5" stroke="currentColor" stroke-width="1.5"/>
         </svg>
       </button>
     </div>
@@ -80,7 +89,16 @@
     <div id="library-inner">
       <div id="library-header">
         <span class="library-title">Files</span>
-        <button class="modal-close" id="btn-library-close" title="Close">&#x2715;</button>
+        <div style="display:flex;gap:4px;align-items:center;">
+          <button class="tool-btn" id="btn-library-new-folder" title="New folder on disk">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M2 5.5C2 4.67 2.67 4 3.5 4H8l2 2h6.5c.83 0 1.5.67 1.5 1.5v8c0 .83-.67 1.5-1.5 1.5h-13C2.67 17 2 16.33 2 15.5V5.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
+              <line x1="10" y1="9" x2="10" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="7.5" y1="11.5" x2="12.5" y2="11.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <button class="modal-close" id="btn-library-close" title="Close">&#x2715;</button>
+        </div>
       </div>
       <div id="library-list"></div>
     </div>
