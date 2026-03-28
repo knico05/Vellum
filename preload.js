@@ -127,6 +127,31 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('move-file', srcPath, destPath),
 
   /**
+   * Lists all PDF files in a directory (non-recursive).
+   * @param {string} dirPath — Absolute path to the directory to scan
+   * @returns {Promise<string[]>} Array of absolute PDF file paths
+   */
+  scanFolder: (dirPath) =>
+    ipcRenderer.invoke('scan-folder', dirPath),
+
+  /**
+   * Creates a minimal blank single-page PDF at the given path.
+   * Fails if the file already exists.
+   * @param {string} filePath — Absolute destination path ending in .pdf
+   * @returns {Promise<true>}
+   */
+  createBlankPdf: (filePath) =>
+    ipcRenderer.invoke('create-blank-pdf', filePath),
+
+  /**
+   * Permanently deletes a file from disk after a native confirmation dialog.
+   * @param {string} filePath — Absolute path of the file to delete
+   * @returns {Promise<boolean>} true if deleted, false if user cancelled
+   */
+  deleteFile: (filePath) =>
+    ipcRenderer.invoke('delete-file', filePath),
+
+  /**
    * Returns the path where annotations for a given PDF are stored in userData.
    * Creates the annotations directory if it doesn't exist yet.
    * @param {string} pdfPath — Absolute path to the PDF

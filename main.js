@@ -87,6 +87,47 @@ function createWindow() {
  *
  * @param {BrowserWindow} win - The main window (needed for dialog parent)
  */
+/**
+ * Builds a minimal valid single-page blank A4 PDF as a binary string.
+ *
+ * The PDF spec requires byte offsets in the xref table to be exact, so we
+ * build the body first, measure each object's offset, then append the xref.
+ *
+ * @returns {string} Binary string suitable for fs.writeFileSync(path, data, 'binary')
+ */
+function _buildBlankPdf() {
+  const W = 595, H = 842; // A4 at 72 dpi
+
+  // Build the body objects first so we can measure their offsets
+  const obj1 = '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n';
+  const obj2 = '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n';
+  const obj3 = `3 0 obj<</Type/Page/MediaBox[0 0 ${W} ${H}]/Parent 2 0 R>>endobj\n`;
+
+  const header = '%PDF-1.4\n';
+
+  const off1 = header.length;
+  const off2 = off1 + obj1.length;
+  const off3 = off2 + obj2.length;
+  const xrefOff = off3 + obj3.length;
+
+  const pad = (n) => String(n).padStart(10, '0');
+
+  const xref = [
+    'xref\n',
+    '0 4\n',
+    '0000000000 65535 f \n',
+    `${pad(off1)} 00000 n \n`,
+    `${pad(off2)} 00000 n \n`,
+    `${pad(off3)} 00000 n \n`,
+    'trailer<</Size 4/Root 1 0 R>>\n',
+    'startxref\n',
+    `${xrefOff}\n`,
+    '%%EOF\n',
+  ].join('');
+
+  return header + obj1 + obj2 + obj3 + xref;
+}
+
 function setupIPC(win) {
 
   /**
@@ -255,6 +296,69 @@ function setupIPC(win) {
       return finalDest;
     } catch (err) {
       throw new Error(`Could not move file: ${err.message}`);
+    }
+  });
+
+  /**
+   * create-blank-pdf — generates a minimal valid single-page blank PDF at the
+   * given path.  The file can be opened immediately and the user adds their own
+   * pages via the "New Page" button.  Refuses to overwrite an existing file.
+   *
+   * The PDF is built as a plain ASCII string with exact byte offsets so it is
+   * accepted by PDF.js without any external dependencies.
+   *
+   * @param {string} filePath — Absolute destination path (must end in .pdf)
+   * @returns {Promise<true>}
+   */
+  ipcMain.handle('create-blank-pdf', async (_event, filePath) => {
+    if (fs.existsSync(filePath)) {
+      throw new Error('A file with that name already exists.');
+    }
+    try {
+      fs.writeFileSync(filePath, _buildBlankPdf(), 'binary');
+      return true;
+    } catch (err) {
+      throw new Error(`Could not create file: ${err.message}`);
+    }
+  });
+
+  /**
+   * delete-file — permanently removes a file from disk.
+   * Shows a native confirmation dialog before deleting.
+   * @param {string} filePath — Absolute path of the file to delete
+   * @returns {Promise<boolean>} true if deleted, false if user cancelled
+   */
+  ipcMain.handle('delete-file', async (_event, filePath) => {
+    const { response } = await dialog.showMessageBox(win, {
+      type:    'warning',
+      buttons: ['Delete', 'Cancel'],
+      defaultId: 1,
+      cancelId:  1,
+      title:   'Delete file',
+      message: `Delete "${path.basename(filePath)}"?`,
+      detail:  'This will permanently remove the file from disk.',
+    });
+    if (response !== 0) return false; // user chose Cancel
+    try {
+      fs.unlinkSync(filePath);
+      return true;
+    } catch (err) {
+      throw new Error(`Could not delete file: ${err.message}`);
+    }
+  });
+
+  /**
+   * scan-folder — lists all PDF files in a directory (non-recursive).
+   * Returns an array of absolute file paths.
+   */
+  ipcMain.handle('scan-folder', async (_event, dirPath) => {
+    try {
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      return entries
+        .filter(e => e.isFile() && e.name.toLowerCase().endsWith('.pdf'))
+        .map(e => path.join(dirPath, e.name));
+    } catch (err) {
+      throw new Error(`Could not scan folder: ${err.message}`);
     }
   });
 

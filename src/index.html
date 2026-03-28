@@ -43,15 +43,13 @@
       <button class="toolbar-btn" id="btn-export" title="Export as PDF — flatten annotations into a shareable PDF">Export PDF</button>
       <div class="toolbar-sep"></div>
       <button class="tool-btn" id="btn-undo" title="Undo (Ctrl+Z)">
-        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M4 8a7 7 0 117 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M4 4v4h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </button>
       <button class="tool-btn" id="btn-redo" title="Redo (Ctrl+Shift+Z)">
-        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M16 8a7 7 0 11-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M16 4v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="m15 15 6-6m0 0-6-6m6 6H9a6 6 0 0 0 0 12h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </button>
       <div class="toolbar-sep"></div>
@@ -105,6 +103,13 @@
       <div id="library-header">
         <span class="library-title">Files</span>
         <div style="display:flex;gap:4px;align-items:center;">
+          <!-- Pin a folder for quick access -->
+          <button class="tool-btn" id="btn-library-open-folder" title="Pin folder — saves folder to library for quick access">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M2 5.5C2 4.67 2.67 4 3.5 4H8l2 2h6.5c.83 0 1.5.67 1.5 1.5v8c0 .83-.67 1.5-1.5 1.5h-13C2.67 17 2 16.33 2 15.5V5.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
+            </svg>
+          </button>
+          <!-- Create a new folder on disk -->
           <button class="tool-btn" id="btn-library-new-folder" title="New folder on disk">
             <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M2 5.5C2 4.67 2.67 4 3.5 4H8l2 2h6.5c.83 0 1.5.67 1.5 1.5v8c0 .83-.67 1.5-1.5 1.5h-13C2.67 17 2 16.33 2 15.5V5.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
@@ -114,6 +119,12 @@
           </button>
           <button class="modal-close" id="btn-library-close" title="Close">&#x2715;</button>
         </div>
+      </div>
+      <!-- Inline input row — shown when creating a new folder -->
+      <div id="library-folder-input-row" class="hidden">
+        <input id="library-folder-input" type="text" placeholder="Folder name…" autocomplete="off" spellcheck="false"/>
+        <button id="library-folder-input-ok" class="library-folder-input-btn library-folder-input-ok">Create</button>
+        <button id="library-folder-input-cancel" class="library-folder-input-btn">✕</button>
       </div>
       <div id="library-list"></div>
     </div>

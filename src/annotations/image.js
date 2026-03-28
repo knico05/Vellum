@@ -40,11 +40,10 @@ const MIN_SIZE = 20;
 
 /**
  * Maximum default width (canvas units) for a freshly pasted image.
- * Keeps screenshots and clipboard images from filling the entire canvas.
- * A standard PDF page is ~595 units wide, so 400 gives a clear but
- * non-overwhelming default that the user can resize if needed.
+ * Capped at half a standard PDF page width (~595/2 ≈ 280) so pasted images
+ * start at a readable size without overwhelming the canvas. User can resize.
  */
-const MAX_PASTE_W = 400;
+const MAX_PASTE_W = 280;
 
 /** How long a canvas touch must be held (ms) before showing the paste button */
 const LONG_PRESS_MS = 800;
@@ -337,10 +336,12 @@ function createImageElement(anno) {
   img.src       = anno.dataUrl;
   img.draggable = false;
   img.style.cssText = 'position:absolute;display:block;pointer-events:none;user-select:none;';
-  _applyImgStyle(el, anno); // sets img size/position
 
   clip.appendChild(img);
   el.appendChild(clip);
+
+  // Apply img size/position AFTER img is in the DOM so querySelector finds it
+  _applyImgStyle(el, anno);
 
   // ── Delete button (outside clip, so not cropped away) ─────────────────────
   const deleteBtn = document.createElement('button');

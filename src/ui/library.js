@@ -1,16 +1,19 @@
 /**
  * library.js — Persistent file library panel
  *
- * A slide-in drawer that shows recently opened PDFs, grouped by directory.
- * Clicking a file entry opens it. Right-clicking shows a context menu with
- * "Move to folder" and "Remove from library" options.
- * The header has a "New Folder" button that creates a directory on disk.
+ * Two-section layout:
+ *   FOLDERS — pinned directories; click to expand and see PDFs inside (live scan)
+ *   RECENT  — individual files opened recently, grouped by directory
  *
  * Storage: userData/library.json via the IPC bridge.
- * Schema:
- *   { version: 1, files: [{ path, name, dir, lastOpened }] }
+ * Schema v2:
+ *   {
+ *     version: 2,
+ *     folders: [{ path, name, pinnedAt }],
+ *     files:   [{ path, name, dir, lastOpened }]
+ *   }
  *
- * Files are stored most-recent-first. Max 50 entries.
+ * Migration: v1 data (files only) is loaded as-is with folders:[] added.
  *
  * Exports: initLibrary(openFileFn), addToLibrary(filePath), toggleLibrary()
  */
@@ -21,79 +24,71 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-const LIBRARY_VERSION  = 1;
-const MAX_ENTRIES      = 50;
+const LIBRARY_VERSION = 2;
+const MAX_RECENT      = 50;
 
 // ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
 
-/** @type {{ version: number, files: Array<{path,name,dir,lastOpened}> }} */
-let library = { version: LIBRARY_VERSION, files: [] };
+/** @type {{ version:number, folders:Array<{path,name,pinnedAt}>, files:Array<{path,name,dir,lastOpened}> }} */
+let library = { version: LIBRARY_VERSION, folders: [], files: [] };
 
 /** Callback to open a PDF — injected by app.js */
 let openFileFn = null;
 
-/** Whether the panel is currently open */
 let panelOpen = false;
+let panelEl   = null;
+let listEl    = null;
 
-/** The #library-panel DOM element */
-let panelEl = null;
-
-/** The #library-list DOM element (inner scroll container) */
-let listEl = null;
-
-/** Floating context menu element */
-let contextMenuEl = null;
-
-/** File currently targeted by the context menu */
-let contextMenuFile = null;
+/** Folder paths that are currently expanded in the UI (in-memory, resets on close) */
+const expandedFolders = new Set();
 
 /**
- * Set of file paths that no longer exist on disk.
- * Populated by checkMissingFiles() each time the panel opens.
- * Used by renderList() to grey out stale entries.
+ * Live-scan cache: folder path → array of absolute PDF paths.
+ * Populated when a folder is expanded; cleared when it is collapsed or removed.
  */
+const folderFilesCache = new Map();
+
+/** Set of file paths that no longer exist on disk (for greying out recent entries) */
 const missingPaths = new Set();
+
+/** Floating context menu */
+let contextMenuEl     = null;
+/** { type: 'file'|'folder', data } */
+let contextMenuTarget = null;
 
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
-/**
- * Initialises the library panel.
- * Loads persisted data, builds the DOM, and wires up the toggle button.
- *
- * @param {function(string): void} openFn — called with a file path when the
- *   user clicks a library entry
- */
 async function initLibrary(openFn) {
   openFileFn = openFn;
 
   panelEl = document.getElementById('library-panel');
   listEl  = document.getElementById('library-list');
 
-  // Load persisted library from disk
   try {
     const data = await window.api.loadLibrary();
-    if (data && data.version === LIBRARY_VERSION && Array.isArray(data.files)) {
-      library = data;
+    if (data && Array.isArray(data.files)) {
+      library.files   = data.files;
+      library.folders = Array.isArray(data.folders) ? data.folders : [];
     }
   } catch (err) {
     console.error('Failed to load library:', err);
   }
 
-  // Toggle button in the toolbar
-  const btn = document.getElementById('btn-library');
-  if (btn) btn.addEventListener('click', toggleLibrary);
+  document.getElementById('btn-library')
+    ?.addEventListener('click', toggleLibrary);
+  document.getElementById('btn-library-close')
+    ?.addEventListener('click', closeLibrary);
+  document.getElementById('btn-library-open-folder')
+    ?.addEventListener('click', handlePinFolder);
+  document.getElementById('btn-library-new-folder')
+    ?.addEventListener('click', handleNewFolder);
 
-  // Close button inside the panel
-  document.getElementById('btn-library-close')?.addEventListener('click', closeLibrary);
+  initFolderInput();
 
-  // New Folder button
-  document.getElementById('btn-library-new-folder')?.addEventListener('click', handleNewFolder);
-
-  // Close when clicking outside the inner panel (backdrop area)
   panelEl.addEventListener('click', (e) => {
     if (e.target === panelEl) closeLibrary();
   });
@@ -106,66 +101,34 @@ async function initLibrary(openFn) {
 // Public API
 // ---------------------------------------------------------------------------
 
-/**
- * Adds a file path to the library (or moves it to the top if already present).
- * Persists immediately.
- *
- * @param {string} filePath — Absolute path of the opened PDF
- */
 async function addToLibrary(filePath) {
   const name = filePath.replace(/\\/g, '/').split('/').pop();
   const dir  = filePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/') || '/';
 
-  // Remove existing entry for this path, then prepend a fresh one
   library.files = library.files.filter(f => f.path !== filePath);
   library.files.unshift({ path: filePath, name, dir, lastOpened: new Date().toISOString() });
 
-  // Enforce max size
-  if (library.files.length > MAX_ENTRIES) {
-    library.files = library.files.slice(0, MAX_ENTRIES);
+  if (library.files.length > MAX_RECENT) {
+    library.files = library.files.slice(0, MAX_RECENT);
   }
 
   renderList();
-
-  try {
-    await window.api.saveLibrary(library);
-  } catch (err) {
-    console.error('Failed to save library:', err);
-  }
+  await _save();
 }
 
-/**
- * Opens or closes the library panel.
- */
 function toggleLibrary() {
   panelOpen ? closeLibrary() : openLibrary();
 }
 
 // ---------------------------------------------------------------------------
-// Internal
+// Panel open / close
 // ---------------------------------------------------------------------------
 
 function openLibrary() {
   panelOpen = true;
   panelEl.classList.add('open');
   document.getElementById('btn-library')?.classList.add('active');
-  // Check for stale paths each time the panel opens so the list reflects
-  // files that were renamed or deleted outside the app since last open.
-  checkMissingFiles();
-}
-
-/**
- * Checks whether each library entry still exists on disk.
- * Updates missingPaths and re-renders the list.
- * Runs asynchronously so it doesn't block the panel opening.
- */
-async function checkMissingFiles() {
-  missingPaths.clear();
-  await Promise.all(library.files.map(async (file) => {
-    const exists = await window.api.fileExists(file.path);
-    if (!exists) missingPaths.add(file.path);
-  }));
-  renderList();
+  _checkMissingFiles();
 }
 
 function closeLibrary() {
@@ -174,35 +137,306 @@ function closeLibrary() {
   document.getElementById('btn-library')?.classList.remove('active');
 }
 
+async function _checkMissingFiles() {
+  missingPaths.clear();
+  await Promise.all(library.files.map(async (file) => {
+    const exists = await window.api.fileExists(file.path);
+    if (!exists) missingPaths.add(file.path);
+  }));
+  renderList();
+}
+
 // ---------------------------------------------------------------------------
-// Folder management
+// Pinned folder management
 // ---------------------------------------------------------------------------
 
 /**
- * Handles "New Folder" — opens a folder dialog to pick a parent directory,
- * then prompts for a folder name and creates it on disk.
+ * Adds a directory to the pinned folders list and expands it immediately.
+ * Does nothing if the folder is already pinned.
+ *
+ * @param {string} dirPath
  */
-async function handleNewFolder() {
-  const parentDir = await window.api.openFolderDialog();
-  if (!parentDir) return;
+async function addPinnedFolder(dirPath) {
+  const norm = dirPath.replace(/\\/g, '/').replace(/\/$/, '');
+  if (library.folders.some(f => f.path.replace(/\\/g, '/').replace(/\/$/, '') === norm)) return;
 
-  const folderName = prompt('Folder name:');
-  if (!folderName || !folderName.trim()) return;
+  const parts = norm.split('/').filter(Boolean);
+  const name  = parts[parts.length - 1] || norm;
 
-  const fullPath = parentDir.replace(/\\/g, '/') + '/' + folderName.trim();
+  library.folders.push({ path: dirPath, name, pinnedAt: new Date().toISOString() });
+  await _save();
+  expandedFolders.add(dirPath);
+  renderList();
+  // Find the placeholder container renderList() just created and populate it
+  const container = _findChildrenContainer(dirPath);
+  if (container) _expandFolder(dirPath, null, container);
+}
+
+/**
+ * Removes a directory from the pinned folders list.
+ *
+ * @param {string} dirPath
+ */
+async function removePinnedFolder(dirPath) {
+  library.folders = library.folders.filter(f => f.path !== dirPath);
+  expandedFolders.delete(dirPath);
+  folderFilesCache.delete(dirPath);
+  renderList();
+  await _save();
+}
+
+// ---------------------------------------------------------------------------
+// Folder expand / collapse
+// ---------------------------------------------------------------------------
+
+/**
+ * Toggles the expanded state of a folder row.
+ * If expanding for the first time, scans the folder and populates the cache.
+ *
+ * @param {string} dirPath
+ * @param {HTMLElement} rowEl — the folder row button
+ */
+async function toggleFolderExpand(dirPath, rowEl) {
+  if (expandedFolders.has(dirPath)) {
+    // Collapse
+    expandedFolders.delete(dirPath);
+    folderFilesCache.delete(dirPath);
+    _updateFolderRowArrow(rowEl, false);
+    rowEl.nextElementSibling?.remove(); // remove children container
+    return;
+  }
+
+  // Expand
+  expandedFolders.add(dirPath);
+  _updateFolderRowArrow(rowEl, true);
+  rowEl.classList.add('expanded');
+
+  // Show a loading placeholder
+  const placeholder = _makeFolderChildren(dirPath, null);
+  rowEl.insertAdjacentElement('afterend', placeholder);
+
+  await _expandFolder(dirPath, rowEl, placeholder);
+}
+
+/**
+ * Finds the .library-folder-children element for a given dirPath in the DOM.
+ * Uses dataset comparison to safely handle paths with special characters.
+ */
+function _findChildrenContainer(dirPath) {
+  if (!listEl) return null;
+  for (const el of listEl.querySelectorAll('.library-folder-children')) {
+    if (el.dataset.dirPath === dirPath) return el;
+  }
+  return null;
+}
+
+/**
+ * Shows an inline name input inside the folder's children container so the
+ * user can type a file name and create a blank PDF in that folder.
+ * Expands the folder first if it is currently collapsed.
+ *
+ * @param {string} dirPath
+ */
+async function _showNewFileInput(dirPath) {
+  // Ensure the folder is expanded so we have a children container to attach to
+  if (!expandedFolders.has(dirPath)) {
+    const folderRow = _findFolderRow(dirPath);
+    if (folderRow) await toggleFolderExpand(dirPath, folderRow);
+    else return;
+  }
+
+  const container = _findChildrenContainer(dirPath);
+  if (!container) return;
+
+  // Don't add a second input if one is already open
+  if (container.querySelector('.library-newfile-input-row')) return;
+
+  const row = document.createElement('div');
+  row.className = 'library-newfile-input-row';
+
+  const input = document.createElement('input');
+  input.type          = 'text';
+  input.className     = 'library-newfile-input';
+  input.placeholder   = 'File name…';
+  input.autocomplete  = 'off';
+  input.spellcheck    = false;
+
+  const ok = document.createElement('button');
+  ok.className   = 'library-folder-input-btn library-folder-input-ok';
+  ok.textContent = 'Create';
+
+  const cancel = document.createElement('button');
+  cancel.className   = 'library-folder-input-btn';
+  cancel.textContent = '✕';
+
+  const dismiss = () => row.remove();
+
+  const commit = async () => {
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+
+    const sep      = dirPath.includes('\\') ? '\\' : '/';
+    const filePath = dirPath.replace(/[/\\]+$/, '') + sep + name + '.pdf';
+
+    dismiss();
+
+    try {
+      await window.api.createBlankPdf(filePath);
+    } catch (err) {
+      // Show error briefly in the container
+      const errEl = document.createElement('div');
+      errEl.className   = 'library-folder-empty';
+      errEl.textContent = err.message;
+      container.prepend(errEl);
+      setTimeout(() => errEl.remove(), 4000);
+      return;
+    }
+
+    // Refresh folder scan so the new file appears, then add to library and open
+    folderFilesCache.delete(dirPath);
+    await _expandFolder(dirPath, null, container);
+    await addToLibrary(filePath);
+    closeLibrary();
+    openFileFn?.(filePath);
+  };
+
+  ok.addEventListener('click', commit);
+  cancel.addEventListener('click', dismiss);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') dismiss();
+  });
+
+  row.appendChild(input);
+  row.appendChild(ok);
+  row.appendChild(cancel);
+
+  // Insert at the top of the children container
+  container.prepend(row);
+  input.focus();
+}
+
+/**
+ * Finds the folder row button element for a given dirPath.
+ */
+function _findFolderRow(dirPath) {
+  if (!listEl) return null;
+  for (const el of listEl.querySelectorAll('.library-folder-row')) {
+    if (el.title === dirPath) return el;
+  }
+  return null;
+}
+
+/**
+ * Scans a folder and renders its PDF children.
+ * Updates an existing placeholder if provided, otherwise updates the
+ * children container that follows rowEl.
+ */
+async function _expandFolder(dirPath, rowEl, existingContainer) {
+  let paths = [];
   try {
-    await window.api.createFolder(fullPath);
-    alert(`Folder created:\n${fullPath}`);
+    paths = await window.api.scanFolder(dirPath);
   } catch (err) {
-    alert(`Failed to create folder:\n${err.message}`);
+    console.error('scan-folder error:', err);
+  }
+
+  folderFilesCache.set(dirPath, paths);
+
+  const container = existingContainer
+    ?? (rowEl ? rowEl.nextElementSibling : null);
+  if (!container) return;
+
+  // Rebuild children DOM
+  container.innerHTML = '';
+
+  if (paths.length === 0) {
+    const msg = document.createElement('div');
+    msg.className   = 'library-folder-empty';
+    msg.textContent = 'No PDFs in this folder';
+    container.appendChild(msg);
+    return;
+  }
+
+  for (const filePath of paths) {
+    const name = filePath.replace(/\\/g, '/').split('/').pop();
+    const row  = document.createElement('button');
+    row.className = 'library-file library-folder-file';
+    row.title     = filePath;
+
+    const nameEl = document.createElement('span');
+    nameEl.className   = 'library-file-name';
+    nameEl.textContent = name;
+
+    row.appendChild(nameEl);
+    row.addEventListener('click', () => {
+      closeLibrary();
+      openFileFn?.(filePath);
+    });
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showContextMenu(e, 'folder-file', { filePath, dirPath });
+    });
+
+    container.appendChild(row);
   }
 }
 
 /**
- * Handles "Move to folder" context menu action — shows a folder picker and
- * moves the file, then updates the library entry to reflect the new path.
- *
- * @param {{ path: string, name: string }} file
+ * Creates a folder children container element.
+ * If paths is null, shows a loading state.
+ */
+function _makeFolderChildren(dirPath, paths) {
+  const container = document.createElement('div');
+  container.className       = 'library-folder-children';
+  container.dataset.dirPath = dirPath;
+
+  if (paths === null) {
+    const msg = document.createElement('div');
+    msg.className   = 'library-folder-empty';
+    msg.textContent = 'Scanning…';
+    container.appendChild(msg);
+  }
+
+  return container;
+}
+
+function _updateFolderRowArrow(rowEl, expanded) {
+  const arrow = rowEl?.querySelector('.library-folder-arrow');
+  if (arrow) arrow.textContent = expanded ? '▾' : '▸';
+  rowEl?.classList.toggle('expanded', expanded);
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+/**
+ * "Open Folder" button — picks a directory and pins it permanently.
+ */
+async function handlePinFolder() {
+  const dir = await window.api.openFolderDialog();
+  if (!dir) return;
+  await addPinnedFolder(dir);
+}
+
+/**
+ * "New Folder" button — shows the inline name input.
+ */
+function handleNewFolder() {
+  showFolderInput();
+}
+
+/**
+ * Removes a file entry from the recent list and persists.
+ */
+async function removeFromRecent(filePath) {
+  library.files = library.files.filter(f => f.path !== filePath);
+  renderList();
+  await _save();
+}
+
+/**
+ * Moves a file then updates its library entry.
  */
 async function handleMoveFile(file) {
   const destDir = await window.api.openFolderDialog();
@@ -210,19 +444,72 @@ async function handleMoveFile(file) {
 
   try {
     const newPath = await window.api.moveFile(file.path, destDir);
-
-    // Update the library entry to point to the new location
     const entry = library.files.find(f => f.path === file.path);
     if (entry) {
-      const parts = newPath.replace(/\\/g, '/').split('/');
-      entry.path = newPath;
-      entry.name = parts[parts.length - 1];
-      entry.dir  = parts.slice(0, -1).join('/') || '/';
+      const parts  = newPath.replace(/\\/g, '/').split('/');
+      entry.path   = newPath;
+      entry.name   = parts[parts.length - 1];
+      entry.dir    = parts.slice(0, -1).join('/') || '/';
       renderList();
-      await window.api.saveLibrary(library);
+      await _save();
     }
   } catch (err) {
-    alert(`Failed to move file:\n${err.message}`);
+    console.error('move-file error:', err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Inline new-folder input
+// ---------------------------------------------------------------------------
+
+let folderInputRowEl = null;
+let folderInputEl    = null;
+
+function initFolderInput() {
+  folderInputRowEl = document.getElementById('library-folder-input-row');
+  folderInputEl    = document.getElementById('library-folder-input');
+
+  document.getElementById('library-folder-input-ok')
+    ?.addEventListener('click', commitNewFolder);
+  document.getElementById('library-folder-input-cancel')
+    ?.addEventListener('click', hideFolderInput);
+
+  folderInputEl?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); commitNewFolder(); }
+    if (e.key === 'Escape') hideFolderInput();
+  });
+}
+
+function showFolderInput() {
+  folderInputRowEl?.classList.remove('hidden');
+  if (folderInputEl) folderInputEl.value = '';
+  folderInputEl?.focus();
+}
+
+function hideFolderInput() {
+  folderInputRowEl?.classList.add('hidden');
+}
+
+async function commitNewFolder() {
+  const name = folderInputEl?.value.trim();
+  if (!name) { folderInputEl?.focus(); return; }
+
+  hideFolderInput();
+
+  const parentDir = await window.api.openFolderDialog();
+  if (!parentDir) return;
+
+  const sep      = parentDir.includes('\\') ? '\\' : '/';
+  const fullPath = parentDir.replace(/[/\\]+$/, '') + sep + name;
+
+  try {
+    await window.api.createFolder(fullPath);
+  } catch (err) {
+    const errRow = document.createElement('p');
+    errRow.className   = 'library-empty';
+    errRow.textContent = `Could not create folder: ${err.message}`;
+    listEl?.prepend(errRow);
+    setTimeout(() => errRow.remove(), 4000);
   }
 }
 
@@ -230,47 +517,54 @@ async function handleMoveFile(file) {
 // Context menu
 // ---------------------------------------------------------------------------
 
-/**
- * Builds the floating context menu element and appends it to the body.
- * The menu is hidden until showContextMenu() positions and reveals it.
- */
 function buildContextMenu() {
   contextMenuEl = document.createElement('div');
   contextMenuEl.className = 'library-context-menu hidden';
-
-  const moveItem = document.createElement('button');
-  moveItem.className   = 'library-context-item';
-  moveItem.textContent = 'Move to folder…';
-  moveItem.addEventListener('click', async () => {
-    // Capture before hideContextMenu() clears contextMenuFile
-    const file = contextMenuFile;
-    hideContextMenu();
-    if (file) await handleMoveFile(file);
-  });
-
-  const removeItem = document.createElement('button');
-  removeItem.className   = 'library-context-item';
-  removeItem.textContent = 'Remove from library';
-  removeItem.addEventListener('click', () => {
-    // Capture before hideContextMenu() clears contextMenuFile
-    const file = contextMenuFile;
-    hideContextMenu();
-    if (file) removeFromLibrary(file.path);
-  });
-
-  contextMenuEl.appendChild(moveItem);
-  contextMenuEl.appendChild(removeItem);
   document.body.appendChild(contextMenuEl);
 
-  // Dismiss on click anywhere outside
   document.addEventListener('pointerdown', (e) => {
     if (!contextMenuEl.contains(e.target)) hideContextMenu();
   }, { capture: true });
 }
 
-function showContextMenu(e, file) {
-  contextMenuFile = file;
-  // Make visible first so offsetWidth/Height are measurable, then clamp
+function showContextMenu(e, type, data) {
+  contextMenuTarget = { type, data };
+  contextMenuEl.innerHTML = '';
+
+  if (type === 'folder') {
+    _addMenuItem('Remove from library', () => {
+      const d = contextMenuTarget?.data;
+      hideContextMenu();
+      if (d) removePinnedFolder(d.path);
+    });
+  } else if (type === 'folder-file') {
+    _addMenuItem('Delete file…', async () => {
+      const d = contextMenuTarget?.data;
+      hideContextMenu();
+      if (!d) return;
+      const deleted = await window.api.deleteFile(d.filePath);
+      if (!deleted) return;
+      // Remove from recent list if present
+      library.files = library.files.filter(f => f.path !== d.filePath);
+      // Refresh the folder scan so the file disappears from the expanded view
+      folderFilesCache.delete(d.dirPath);
+      const container = _findChildrenContainer(d.dirPath);
+      if (container) await _expandFolder(d.dirPath, null, container);
+      await _save();
+    });
+  } else {
+    _addMenuItem('Move to folder…', async () => {
+      const d = contextMenuTarget?.data;
+      hideContextMenu();
+      if (d) await handleMoveFile(d);
+    });
+    _addMenuItem('Remove from recent', () => {
+      const d = contextMenuTarget?.data;
+      hideContextMenu();
+      if (d) removeFromRecent(d.path);
+    });
+  }
+
   contextMenuEl.classList.remove('hidden');
   const x = Math.min(e.clientX, window.innerWidth  - contextMenuEl.offsetWidth  - 8);
   const y = Math.min(e.clientY, window.innerHeight - contextMenuEl.offsetHeight - 8);
@@ -278,45 +572,130 @@ function showContextMenu(e, file) {
   contextMenuEl.style.top  = `${Math.max(0, y)}px`;
 }
 
+function _addMenuItem(label, handler) {
+  const btn = document.createElement('button');
+  btn.className   = 'library-context-item';
+  btn.textContent = label;
+  btn.addEventListener('click', handler);
+  contextMenuEl.appendChild(btn);
+}
+
 function hideContextMenu() {
   contextMenuEl?.classList.add('hidden');
-  contextMenuFile = null;
+  contextMenuTarget = null;
 }
 
-/**
- * Removes a file entry from the in-memory library and persists the change.
- * Does NOT delete the file from disk.
- *
- * @param {string} filePath
- */
-async function removeFromLibrary(filePath) {
-  library.files = library.files.filter(f => f.path !== filePath);
-  renderList();
-  try {
-    await window.api.saveLibrary(library);
-  } catch (err) {
-    console.error('Failed to save library after remove:', err);
-  }
-}
+// ---------------------------------------------------------------------------
+// Render
+// ---------------------------------------------------------------------------
 
-/**
- * Rebuilds the list DOM from the current library state.
- * Groups files by directory.
- */
 function renderList() {
   if (!listEl) return;
   listEl.innerHTML = '';
 
-  if (library.files.length === 0) {
+  const hasFolders = library.folders.length > 0;
+  const hasFiles   = library.files.length   > 0;
+
+  if (!hasFolders && !hasFiles) {
     const empty = document.createElement('p');
     empty.className   = 'library-empty';
-    empty.textContent = 'No files opened yet.\nUse Open to load a PDF.';
+    empty.textContent = 'Nothing here yet.\nUse Open to load a PDF, or pin a folder.';
     listEl.appendChild(empty);
     return;
   }
 
-  // Group by directory, preserving recency order within each group
-  /** @type {Map<string, Array>} */
+  if (hasFolders) _renderFolderSection();
+  if (hasFiles)   _renderRecentSection();
+}
+
+function _renderFolderSection() {
+  const header = _makeSectionHeader('Folders');
+  listEl.appendChild(header);
+
+  for (const folder of library.folders) {
+    const isExpanded = expandedFolders.has(folder.path);
+
+    // Folder row
+    const row = document.createElement('button');
+    row.className = 'library-folder-row' + (isExpanded ? ' expanded' : '');
+    row.title     = folder.path;
+
+    const icon = document.createElement('span');
+    icon.className   = 'library-folder-icon';
+    icon.textContent = '⌂'; // replaced by CSS with a folder SVG via background
+
+    const nameEl = document.createElement('span');
+    nameEl.className   = 'library-folder-name';
+    nameEl.textContent = folder.name;
+
+    const arrow = document.createElement('span');
+    arrow.className   = 'library-folder-arrow';
+    arrow.textContent = isExpanded ? '▾' : '▸';
+
+    row.appendChild(icon);
+    row.appendChild(nameEl);
+
+    // "New file" button — visible on hover, creates a blank PDF in this folder
+    const newFileBtn = document.createElement('button');
+    newFileBtn.className   = 'library-folder-newfile';
+    newFileBtn.title       = 'New file in this folder';
+    newFileBtn.textContent = '+';
+    newFileBtn.addEventListener('click', (e) => {
+      e.stopPropagation(); // don't trigger expand/collapse
+      _showNewFileInput(folder.path);
+    });
+    row.appendChild(newFileBtn);
+
+    row.appendChild(arrow);
+
+    row.addEventListener('click', () => toggleFolderExpand(folder.path, row));
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showContextMenu(e, 'folder', folder);
+    });
+
+    listEl.appendChild(row);
+
+    // If this folder is expanded, render its children immediately from cache
+    if (isExpanded) {
+      const cached = folderFilesCache.get(folder.path) ?? null;
+      const container = _makeFolderChildren(folder.path, cached);
+
+      if (cached !== null) {
+        // Rebuild children from cache synchronously
+        for (const filePath of cached) {
+          const name   = filePath.replace(/\\/g, '/').split('/').pop();
+          const fileRow = document.createElement('button');
+          fileRow.className = 'library-file library-folder-file';
+          fileRow.title     = filePath;
+
+          const nameSpan = document.createElement('span');
+          nameSpan.className   = 'library-file-name';
+          nameSpan.textContent = name;
+
+          fileRow.appendChild(nameSpan);
+          fileRow.addEventListener('click', () => {
+            closeLibrary();
+            openFileFn?.(filePath);
+          });
+          fileRow.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            showContextMenu(e, 'folder-file', { filePath, dirPath: folder.path });
+          });
+          container.appendChild(fileRow);
+        }
+      }
+
+      listEl.appendChild(container);
+    }
+  }
+}
+
+function _renderRecentSection() {
+  const header = _makeSectionHeader('Recent');
+  listEl.appendChild(header);
+
+  // Group by directory
   const groups = new Map();
   for (const file of library.files) {
     if (!groups.has(file.dir)) groups.set(file.dir, []);
@@ -324,14 +703,12 @@ function renderList() {
   }
 
   for (const [dir, files] of groups) {
-    // Directory heading
     const heading = document.createElement('div');
     heading.className   = 'library-dir';
-    heading.textContent = formatDir(dir);
+    heading.textContent = _formatDir(dir);
     heading.title       = dir;
     listEl.appendChild(heading);
 
-    // File entries
     for (const file of files) {
       const isMissing = missingPaths.has(file.path);
 
@@ -345,20 +722,20 @@ function renderList() {
 
       const dateEl = document.createElement('span');
       dateEl.className   = 'library-file-date';
-      dateEl.textContent = isMissing ? 'not found' : formatDate(file.lastOpened);
+      dateEl.textContent = isMissing ? 'not found' : _formatDate(file.lastOpened);
 
       row.appendChild(nameEl);
       row.appendChild(dateEl);
 
       row.addEventListener('click', () => {
-        if (isMissing) return; // Don't try to open a file that doesn't exist
+        if (isMissing) return;
         closeLibrary();
         openFileFn?.(file.path);
       });
 
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        showContextMenu(e, file);
+        showContextMenu(e, 'file', file);
       });
 
       listEl.appendChild(row);
@@ -366,36 +743,45 @@ function renderList() {
   }
 }
 
-/**
- * Shortens a directory path for display.
- * Shows only the last two path segments to keep it readable.
- *
- * @param {string} dir
- * @returns {string}
- */
-function formatDir(dir) {
+function _makeSectionHeader(label) {
+  const el = document.createElement('div');
+  el.className   = 'library-section-header';
+  el.textContent = label;
+  return el;
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+async function _save() {
+  try {
+    await window.api.saveLibrary(library);
+  } catch (err) {
+    console.error('Failed to save library:', err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+function _formatDir(dir) {
   const parts = dir.replace(/\\/g, '/').split('/').filter(Boolean);
   if (parts.length === 0) return '/';
   if (parts.length <= 2) return parts.join('/');
   return '…/' + parts.slice(-2).join('/');
 }
 
-/**
- * Formats an ISO timestamp as a short relative or absolute date.
- *
- * @param {string} iso
- * @returns {string}
- */
-function formatDate(iso) {
+function _formatDate(iso) {
   try {
-    const d = new Date(iso);
-    const now = new Date();
-    const diffMs = now - d;
+    const d       = new Date(iso);
+    const diffMs  = Date.now() - d;
     const diffDays = Math.floor(diffMs / 86400000);
 
     if (diffDays === 0) return 'Today';
     if (diffDays === 1) return 'Yesterday';
-    if (diffDays < 7)  return `${diffDays}d ago`;
+    if (diffDays < 7)   return `${diffDays}d ago`;
     return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   } catch {
     return '';

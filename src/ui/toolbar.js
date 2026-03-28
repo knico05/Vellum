@@ -59,9 +59,6 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** localStorage key for the starred default colour */
-const LS_DEFAULT_COLOUR = 'qn-default-colour';
-
 /** localStorage key for the saved custom colour palette */
 const LS_CUSTOM_PALETTE = 'qn-custom-palette';
 
@@ -100,10 +97,11 @@ const STROKE_SIZES = [
  * background: CSS colour used for the swatch circle
  */
 const COLOURS = [
-  { name: 'yellow', solid: '#f5c518', background: '#f5c518' },
-  { name: 'green',  solid: '#3ecf8e', background: '#3ecf8e' },
-  { name: 'pink',   solid: '#f472b6', background: '#f472b6' },
   { name: 'blue',   solid: '#5b8af5', background: '#5b8af5' },
+  { name: 'black',  solid: '#1a1a1a', background: '#1a1a1a' },
+  { name: 'yellow', solid: '#f5c518', background: '#f5c518' },
+  { name: 'red',    solid: '#e53e3e', background: '#e53e3e' },
+  { name: 'green',  solid: '#3ecf8e', background: '#3ecf8e' },
 ];
 
 /**
@@ -172,16 +170,10 @@ const TOOLS = [
 let activeTool = null;
 
 /**
- * Currently selected colour — either a preset name ('yellow') or a CSS hex
+ * Currently selected colour — either a preset name ('blue') or a CSS hex
  * string ('#ff5733') when a custom colour has been picked.
  */
-let activeColour = 'yellow';
-
-/**
- * The starred default colour. When a colour-capable tool is activated this is
- * pre-selected automatically. Persisted in localStorage.
- */
-let defaultColour = localStorage.getItem(LS_DEFAULT_COLOUR) || 'yellow';
+let activeColour = 'blue';
 
 /**
  * User-saved custom colours (hex strings). Max MAX_CUSTOM_COLOURS entries.
@@ -295,7 +287,6 @@ function init() {
     swatch.dataset.colour    = colour.name;
 
     swatch.addEventListener('click', () => handleColourClick(colour.name));
-    swatch.addEventListener('contextmenu', (e) => { e.preventDefault(); handleStarColour(colour.name); });
 
     colourPickerEl.appendChild(swatch);
     swatchButtons.set(colour.name, swatch);
@@ -308,7 +299,7 @@ function init() {
   renderCustomPalette();
 
   // Apply initial swatch active state
-  activeColour = defaultColour;
+  activeColour = COLOURS[0].name;
   updateSwatchState();
 
   // ── Custom colour circle (opens native colour picker) ──────────────────
@@ -399,6 +390,7 @@ function init() {
       activeEraseMode = mode.id;
       updateEraserModeState();
       setEraseMode(mode.id);
+      saveToolSettings();
     });
     eraserModePickerEl.appendChild(btn);
     eraserModeBtns.set(mode.id, btn);
@@ -420,6 +412,7 @@ function init() {
     pressureOn = !pressureOn;
     pressureBtn.classList.toggle('active', pressureOn);
     setPressureSensitive(pressureOn);
+    saveToolSettings();
   });
   pressureToggleEl.appendChild(pressureBtn);
 
@@ -540,22 +533,6 @@ function applyColourToActiveTool() {
 }
 
 // ---------------------------------------------------------------------------
-// Default colour (starred)
-// ---------------------------------------------------------------------------
-
-/**
- * Marks a colour as the default (starred) — it will be pre-selected when
- * activating a colour-capable tool. Right-click a swatch to set.
- *
- * @param {string} colourName — preset name or hex string
- */
-function handleStarColour(colourName) {
-  defaultColour = colourName;
-  localStorage.setItem(LS_DEFAULT_COLOUR, defaultColour);
-  updateSwatchState();
-}
-
-// ---------------------------------------------------------------------------
 // Custom palette persistence
 // ---------------------------------------------------------------------------
 
@@ -587,8 +564,8 @@ function saveCustomColourToPalette(hex) {
 function removeCustomColourFromPalette(hex) {
   customPalette = customPalette.filter(c => c !== hex);
   localStorage.setItem(LS_CUSTOM_PALETTE, JSON.stringify(customPalette));
-  // If the removed colour was active, reset to defaultColour
-  if (activeColour === hex) handleColourClick(defaultColour);
+  // If the removed colour was active, reset to the first preset colour
+  if (activeColour === hex) handleColourClick(COLOURS[0].name);
   renderCustomPalette();
   updateSwatchState();
 }
@@ -618,7 +595,6 @@ function renderCustomPalette() {
     swatch.style.background = hex;
     swatch.dataset.colour = hex;
     swatch.addEventListener('click', () => handleColourClick(hex));
-    swatch.addEventListener('contextmenu', (e) => { e.preventDefault(); handleStarColour(hex); });
 
     const removeBtn = document.createElement('button');
     removeBtn.className   = 'colour-saved-remove';
@@ -710,8 +686,10 @@ function applyStrokeSizeToActiveTool() {
 function saveToolSettings() {
   if (!activeTool) return;
   const entry = {};
-  if (COLOUR_TOOLS.has(activeTool)) entry.colour = activeColour;
-  if (STROKE_TOOLS.has(activeTool)) entry.sizeId  = activeStrokeSize;
+  if (COLOUR_TOOLS.has(activeTool)) entry.colour    = activeColour;
+  if (STROKE_TOOLS.has(activeTool)) entry.sizeId    = activeStrokeSize;
+  if (activeTool === 'eraser')      entry.eraseMode = activeEraseMode;
+  if (activeTool === 'draw')        entry.pressure  = pressureOn;
   if (Object.keys(entry).length === 0) return;
   toolSettings[activeTool] = entry;
   localStorage.setItem(LS_TOOL_SETTINGS, JSON.stringify(toolSettings));
@@ -727,10 +705,16 @@ function saveToolSettings() {
 function restoreToolSettings(toolName) {
   const saved = toolSettings[toolName];
   if (COLOUR_TOOLS.has(toolName)) {
-    activeColour = saved?.colour ?? defaultColour;
+    activeColour = saved?.colour ?? COLOURS[0].name;
   }
   if (STROKE_TOOLS.has(toolName)) {
     activeStrokeSize = saved?.sizeId ?? 'normal';
+  }
+  if (toolName === 'eraser') {
+    activeEraseMode = saved?.eraseMode ?? 'partial';
+  }
+  if (toolName === 'draw') {
+    pressureOn = saved?.pressure ?? true;
   }
 }
 
@@ -766,9 +750,7 @@ function updateColourPickerVisibility() {
   eraserModePickerEl.style.display  = eraserModeVisible ? 'flex'  : 'none';
   pressureToggleEl.style.display    = pressureVisible   ? 'flex'  : 'none';
 
-  if (colourVisible || strokeVisible) {
-    // Restore the last colour + size the user had for this specific tool.
-    // Falls back to the starred default colour and 'normal' size if no memory.
+  if (colourVisible || strokeVisible || eraserModeVisible || pressureVisible) {
     restoreToolSettings(activeTool);
     if (colourVisible) {
       updateSwatchState();
@@ -778,6 +760,14 @@ function updateColourPickerVisibility() {
       updateStrokeSizeState();
       applyStrokeSizeToActiveTool();
     }
+    if (eraserModeVisible) {
+      updateEraserModeState();
+      setEraseMode(activeEraseMode);
+    }
+    if (pressureVisible) {
+      document.getElementById('btn-pressure-toggle')?.classList.toggle('active', pressureOn);
+      setPressureSensitive(pressureOn);
+    }
   }
 }
 
@@ -786,19 +776,16 @@ function updateColourPickerVisibility() {
  * If activeColour is a hex string (custom), marks the custom button active.
  */
 function updateSwatchState() {
-  const isPreset     = COLOURS.some(c => c.name === activeColour);
+  const isPreset      = COLOURS.some(c => c.name === activeColour);
   const isCustomSaved = customPalette.includes(activeColour);
 
   for (const [name, swatch] of swatchButtons) {
     swatch.classList.toggle('active', name === activeColour);
-    swatch.classList.toggle('default-colour', name === defaultColour);
   }
 
-  // Also mark default star on saved custom swatches
   if (customPaletteContainerEl) {
     for (const sw of customPaletteContainerEl.querySelectorAll('.colour-swatch')) {
       sw.classList.toggle('active', sw.dataset.colour === activeColour);
-      sw.classList.toggle('default-colour', sw.dataset.colour === defaultColour);
     }
   }
 

@@ -31,10 +31,11 @@ import { getDragOffset }                   from './select.js';
  * Higher alpha than draw strokes so text underneath stays readable.
  */
 const COLOURS = {
-  yellow: 'rgba(255, 213, 79,  0.45)',
-  green:  'rgba(72,  199, 116, 0.45)',
-  pink:   'rgba(255, 99,  132, 0.45)',
   blue:   'rgba(91,  138, 245, 0.45)',
+  black:  'rgba(10,  10,  10,  0.55)',
+  yellow: 'rgba(255, 213, 79,  0.45)',
+  red:    'rgba(229, 62,  62,  0.45)',
+  green:  'rgba(72,  199, 116, 0.45)',
 };
 
 /** Default stroke width in canvas units — thick like a real marker */
@@ -48,7 +49,7 @@ const MIN_POINT_DISTANCE = 2;
 // ---------------------------------------------------------------------------
 
 let active           = false;
-let currentColourCss = COLOURS.yellow;  // Resolved CSS rgba string
+let currentColourCss = COLOURS.blue;  // Resolved CSS rgba string
 let currentWidth     = DEFAULT_STROKE_WIDTH;
 let container        = null;
 

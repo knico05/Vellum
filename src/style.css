@@ -457,18 +457,28 @@ button:focus-visible {
   transform: scale(1.3);
 }
 
-/* Images are pointer-passthrough in every tool except select.
-   toolbar.js sets data-tool on #canvas-container on every tool switch.
-   z-index:2 in select mode puts images above the annotation canvas (z-index:1)
-   so handles are visible and grabbable. In other modes z-index:0 puts images
-   below the annotation canvas so drawn strokes appear on top of images. */
+/* Images sit below the annotation canvas (z-index:1) in ALL tool modes because
+   .image-anno has no explicit z-index (auto), placing it at stack level 0.
+   This means strokes drawn over an image remain visually on top regardless of
+   which tool is active — no jarring "jump to front" when switching to select.
+
+   The annotation canvas already has pointer-events:none, so click-through to
+   image bodies works even when the canvas is visually above them.
+
+   In select mode, handles/buttons are lifted to z-index:2 so they float above
+   the annotation canvas and are both visible and clickable. */
 .image-anno {
-  z-index: 2;
+  pointer-events: none;
 }
 
-#canvas-container:not([data-tool="select"]) .image-anno {
-  pointer-events: none;
-  z-index: 0;
+#canvas-container[data-tool="select"] .image-anno {
+  pointer-events: auto;
+}
+
+#canvas-container[data-tool="select"] .image-anno-handle,
+#canvas-container[data-tool="select"] .image-anno-delete,
+#canvas-container[data-tool="select"] .image-anno-crop-btn {
+  z-index: 2;
 }
 
 /* Hide handles and delete/crop buttons when not in select mode */
@@ -940,20 +950,6 @@ button:focus-visible {
   background: #e53e3e;
   color: #fff;
   border-color: transparent;
-}
-
-/* Default (starred) colour — small dot indicator below swatch */
-.colour-swatch.default-colour::after,
-.colour-swatch-saved.default-colour::after {
-  content: '';
-  position: absolute;
-  bottom: -4px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--accent);
 }
 
 .colour-swatch,
@@ -1739,6 +1735,214 @@ button:focus-visible {
   white-space: pre-line;
   line-height: 1.6;
   margin: 0;
+}
+
+/* Inline new-folder input row */
+#library-folder-input-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-1);
+}
+
+#library-folder-input-row.hidden {
+  display: none;
+}
+
+#library-folder-input {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  padding: 4px 8px;
+  outline: none;
+  min-width: 0;
+}
+
+#library-folder-input:focus {
+  border-color: var(--accent);
+}
+
+.library-folder-input-btn {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-family: inherit;
+  padding: 3px 7px;
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+}
+
+.library-folder-input-btn:hover {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+
+.library-folder-input-ok {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.library-folder-input-ok:hover {
+  background: var(--accent-dim);
+}
+
+/* Section header ("Folders" / "Recent") */
+.library-section-header {
+  padding: 12px 16px 4px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* Pinned folder row */
+.library-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 14px 7px 16px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-primary);
+  text-align: left;
+  border-radius: 0;
+  transition: background 100ms ease;
+}
+
+.library-folder-row:hover {
+  background: var(--surface-2);
+}
+
+.library-folder-row.expanded {
+  background: var(--surface-1);
+  color: var(--accent);
+}
+
+.library-folder-row.expanded:hover {
+  background: var(--surface-2);
+}
+
+/* Folder icon — small inline SVG replaced by a CSS mask icon */
+.library-folder-icon {
+  flex-shrink: 0;
+  width: 15px;
+  height: 13px;
+  opacity: 0.6;
+  background: currentColor;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M2 5.5C2 4.67 2.67 4 3.5 4H8l2 2h6.5c.83 0 1.5.67 1.5 1.5v8c0 .83-.67 1.5-1.5 1.5h-13C2.67 17 2 16.33 2 15.5V5.5z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M2 5.5C2 4.67 2.67 4 3.5 4H8l2 2h6.5c.83 0 1.5.67 1.5 1.5v8c0 .83-.67 1.5-1.5 1.5h-13C2.67 17 2 16.33 2 15.5V5.5z'/%3E%3C/svg%3E");
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  font-size: 0; /* hide the ⌂ text fallback */
+}
+
+.library-folder-name {
+  flex: 1;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.library-folder-arrow {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--text-muted);
+  transition: color 100ms ease;
+}
+
+.library-folder-row.expanded .library-folder-arrow {
+  color: var(--accent);
+}
+
+/* "+" new-file button on the folder row — hidden until hover */
+.library-folder-newfile {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 100ms ease, background 100ms ease, color 100ms ease;
+  margin-right: 2px;
+}
+
+.library-folder-row:hover .library-folder-newfile {
+  opacity: 1;
+}
+
+.library-folder-newfile:hover {
+  background: var(--surface-3);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+/* Expanded folder children container */
+.library-folder-children {
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* File row inside an expanded folder — indented */
+.library-folder-file {
+  padding-left: 36px;
+}
+
+/* Inline new-file input row inside an expanded folder */
+.library-newfile-input-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px 5px 36px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.library-newfile-input {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  padding: 3px 7px;
+  outline: none;
+  min-width: 0;
+}
+
+.library-newfile-input:focus {
+  border-color: var(--accent);
+}
+
+/* "No PDFs" / "Scanning…" message inside an expanded folder */
+.library-folder-empty {
+  padding: 8px 36px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* Directory group heading */
