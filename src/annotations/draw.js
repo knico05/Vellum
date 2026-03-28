@@ -65,6 +65,9 @@ let livePoints = [];
 /** True while a pointer is held down */
 let drawing = false;
 
+/** Whether stroke width varies with stylus pressure (default on) */
+let pressureSensitive = true;
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
@@ -108,6 +111,11 @@ function setColour(colour) {
 /** @param {number} width — Base stroke width in canvas units */
 function setStrokeWidth(width) {
   currentWidth = width;
+}
+
+/** @param {boolean} enabled — Whether stylus pressure affects stroke width */
+function setPressureSensitive(enabled) {
+  pressureSensitive = enabled;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,8 +288,10 @@ function drawPath(ctx, points, baseWidth, colour) {
 function makePoint(e) {
   const rect     = container.getBoundingClientRect();
   const { x, y } = toCanvas(e.clientX - rect.left, e.clientY - rect.top);
-  // Clamp to [0.1, 1.0] — some devices report 0 before pen touches surface
-  const pressure = Math.max(0.1, Math.min(1.0, e.pressure || 0.5));
+  // When pressure sensitivity is off, use a flat 0.5 (uniform width).
+  // When on, clamp to [0.1, 1.0] — some devices report 0 before pen touches surface.
+  const rawPressure = pressureSensitive ? (e.pressure || 0.5) : 0.5;
+  const pressure = Math.max(0.1, Math.min(1.0, rawPressure));
   return { x, y, pressure };
 }
 
@@ -290,4 +300,4 @@ function makePoint(e) {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init as initDraw, activate, deactivate, setColour, setStrokeWidth };
+export { init as initDraw, activate, deactivate, setColour, setStrokeWidth, setPressureSensitive };

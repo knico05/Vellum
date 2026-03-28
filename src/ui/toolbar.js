@@ -27,10 +27,11 @@ import {
 } from '../annotations/highlight.js';
 
 import {
-  activate        as activateDraw,
-  deactivate      as deactivateDraw,
-  setColour       as setDrawColour,
-  setStrokeWidth  as setDrawStrokeWidth,
+  activate           as activateDraw,
+  deactivate         as deactivateDraw,
+  setColour          as setDrawColour,
+  setStrokeWidth     as setDrawStrokeWidth,
+  setPressureSensitive,
 } from '../annotations/draw.js';
 
 import {
@@ -41,6 +42,7 @@ import {
   activate        as activateEraser,
   deactivate      as deactivateEraser,
   setEraseRadius,
+  setEraseMode,
 } from '../annotations/eraser.js';
 
 import {
@@ -62,6 +64,12 @@ const LS_DEFAULT_COLOUR = 'qn-default-colour';
 
 /** localStorage key for the saved custom colour palette */
 const LS_CUSTOM_PALETTE = 'qn-custom-palette';
+
+/**
+ * localStorage key for per-tool colour + size memory.
+ * Stored as: { draw: { colour, sizeId }, highlight: { colour, sizeId }, eraser: { sizeId } }
+ */
+const LS_TOOL_SETTINGS = 'qn-tool-settings';
 
 /** Maximum number of user-saved custom colours */
 const MAX_CUSTOM_COLOURS = 10;
@@ -211,8 +219,34 @@ let strokePickerEl = null;
 /** Currently active stroke size id */
 let activeStrokeSize = 'normal';
 
+/**
+ * Per-tool persisted settings: colour and/or stroke size remembered for each
+ * tool so switching back restores the last-used configuration.
+ */
+let toolSettings = (() => {
+  try {
+    const raw = localStorage.getItem(LS_TOOL_SETTINGS);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+})();
+
 /** Map of size id → button element, populated during init() */
 const strokeSizeButtons = new Map();
+
+/** The #eraser-mode-picker container element */
+let eraserModePickerEl = null;
+
+/** Map of eraser mode id → button element */
+const eraserModeBtns = new Map();
+
+/** Currently selected eraser mode */
+let activeEraseMode = 'partial';
+
+/** The #pressure-toggle container element */
+let pressureToggleEl = null;
+
+/** Whether pressure sensitivity is currently on */
+let pressureOn = true;
 
 /** The #lbl-page label element */
 let lblPageEl = null;
@@ -233,6 +267,8 @@ function init() {
   colourPickerEl     = document.getElementById('colour-picker');
   colourSepEl        = document.getElementById('colour-sep');
   strokePickerEl     = document.getElementById('stroke-picker');
+  eraserModePickerEl = document.getElementById('eraser-mode-picker');
+  pressureToggleEl   = document.getElementById('pressure-toggle');
   lblPageEl          = document.getElementById('lbl-page');
   lblZoomEl          = document.getElementById('lbl-zoom');
 
@@ -346,6 +382,47 @@ function init() {
   // Apply initial stroke size active state
   updateStrokeSizeState();
 
+  // ── Eraser mode toggle (partial / full) ────────────────────────────────
+  const ERASE_MODES = [
+    { id: 'partial', label: 'Partial' },
+    { id: 'full',    label: 'Full'    },
+  ];
+  for (const mode of ERASE_MODES) {
+    const btn = document.createElement('button');
+    btn.className    = 'eraser-mode-btn';
+    btn.dataset.mode = mode.id;
+    btn.textContent  = mode.label;
+    btn.title        = mode.id === 'partial'
+      ? 'Partial erase — splits strokes at the eraser circle'
+      : 'Full erase — removes whole annotations';
+    btn.addEventListener('click', () => {
+      activeEraseMode = mode.id;
+      updateEraserModeState();
+      setEraseMode(mode.id);
+    });
+    eraserModePickerEl.appendChild(btn);
+    eraserModeBtns.set(mode.id, btn);
+  }
+  updateEraserModeState();
+
+  // ── Pressure sensitivity toggle (draw tool only) ────────────────────────
+  const pressureBtn = document.createElement('button');
+  pressureBtn.id        = 'btn-pressure-toggle';
+  pressureBtn.className = 'tool-btn pressure-toggle-btn';
+  pressureBtn.title     = 'Pressure sensitivity — vary stroke width with stylus pressure';
+  pressureBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M4 16c2-4 4-8 6-8s3 2 3 4-1 4-1 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M12 7c1-2 2-3.5 3-3.5" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+    <path d="M8 13c0.5-1 1-2 1.5-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+  </svg>`;
+  pressureBtn.classList.toggle('active', pressureOn);
+  pressureBtn.addEventListener('click', () => {
+    pressureOn = !pressureOn;
+    pressureBtn.classList.toggle('active', pressureOn);
+    setPressureSensitive(pressureOn);
+  });
+  pressureToggleEl.appendChild(pressureBtn);
+
   // When a text box is placed, the note tool self-deactivates — switch to cursor
   document.addEventListener('note-placed', () => {
     setActiveTool(null);
@@ -443,6 +520,7 @@ function handleColourClick(colourName) {
   activeColour = colourName;
   updateSwatchState();
   applyColourToActiveTool();
+  saveToolSettings();
 }
 
 /**
@@ -573,6 +651,7 @@ function handleCustomColour(hex) {
   if (customBtn) customBtn.style.background = hex;
   updateSwatchState();
   applyColourToActiveTool();
+  saveToolSettings();
 }
 
 /**
@@ -605,6 +684,7 @@ function handleStrokeSizeClick(sizeId) {
   activeStrokeSize = sizeId;
   updateStrokeSizeState();
   applyStrokeSizeToActiveTool();
+  saveToolSettings();
 }
 
 /**
@@ -616,6 +696,42 @@ function applyStrokeSizeToActiveTool() {
   if (activeTool === 'draw')      setDrawStrokeWidth(sizeDef.width);
   if (activeTool === 'highlight') setHighlightStrokeWidth(sizeDef.width);
   if (activeTool === 'eraser')    setEraseRadius(sizeDef.eraseRadius);
+}
+
+// ---------------------------------------------------------------------------
+// Per-tool settings persistence
+// ---------------------------------------------------------------------------
+
+/**
+ * Saves the current colour and/or size to toolSettings for the active tool,
+ * then writes the whole object to localStorage.
+ * Called after any colour or size change so each tool "remembers" its last state.
+ */
+function saveToolSettings() {
+  if (!activeTool) return;
+  const entry = {};
+  if (COLOUR_TOOLS.has(activeTool)) entry.colour = activeColour;
+  if (STROKE_TOOLS.has(activeTool)) entry.sizeId  = activeStrokeSize;
+  if (Object.keys(entry).length === 0) return;
+  toolSettings[activeTool] = entry;
+  localStorage.setItem(LS_TOOL_SETTINGS, JSON.stringify(toolSettings));
+}
+
+/**
+ * Restores colour and size from the saved settings for the given tool.
+ * Falls back to the starred default colour and 'normal' stroke size when no
+ * memory exists for that tool.
+ *
+ * @param {string} toolName
+ */
+function restoreToolSettings(toolName) {
+  const saved = toolSettings[toolName];
+  if (COLOUR_TOOLS.has(toolName)) {
+    activeColour = saved?.colour ?? defaultColour;
+  }
+  if (STROKE_TOOLS.has(toolName)) {
+    activeStrokeSize = saved?.sizeId ?? 'normal';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -636,24 +752,32 @@ function updateButtonStates() {
 /**
  * Shows the colour picker only when a colour-capable tool is active.
  * Shows the stroke picker only when the draw tool is active.
+ * Restores the tool's last-used colour and size from toolSettings.
  */
 function updateColourPickerVisibility() {
-  const colourVisible = activeTool !== null && COLOUR_TOOLS.has(activeTool);
-  const strokeVisible = activeTool !== null && STROKE_TOOLS.has(activeTool);
+  const colourVisible      = activeTool !== null && COLOUR_TOOLS.has(activeTool);
+  const strokeVisible      = activeTool !== null && STROKE_TOOLS.has(activeTool);
+  const eraserModeVisible  = activeTool === 'eraser';
+  const pressureVisible    = activeTool === 'draw';
 
-  colourPickerEl.style.display  = colourVisible ? 'flex' : 'none';
-  // Show colour separator only when colour AND stroke are both visible
-  colourSepEl.style.display     = colourVisible ? 'block' : 'none';
-  strokePickerEl.style.display  = strokeVisible ? 'flex' : 'none';
+  colourPickerEl.style.display      = colourVisible     ? 'flex'  : 'none';
+  colourSepEl.style.display         = colourVisible     ? 'block' : 'none';
+  strokePickerEl.style.display      = strokeVisible     ? 'flex'  : 'none';
+  eraserModePickerEl.style.display  = eraserModeVisible ? 'flex'  : 'none';
+  pressureToggleEl.style.display    = pressureVisible   ? 'flex'  : 'none';
 
-  if (colourVisible) {
-    // Pre-select the starred default colour each time a colour tool is activated
-    activeColour = defaultColour;
-    updateSwatchState();
-    applyColourToActiveTool();
-  }
-  if (strokeVisible) {
-    applyStrokeSizeToActiveTool();
+  if (colourVisible || strokeVisible) {
+    // Restore the last colour + size the user had for this specific tool.
+    // Falls back to the starred default colour and 'normal' size if no memory.
+    restoreToolSettings(activeTool);
+    if (colourVisible) {
+      updateSwatchState();
+      applyColourToActiveTool();
+    }
+    if (strokeVisible) {
+      updateStrokeSizeState();
+      applyStrokeSizeToActiveTool();
+    }
   }
 }
 
@@ -688,6 +812,15 @@ function updateSwatchState() {
 function updateStrokeSizeState() {
   for (const [id, btn] of strokeSizeButtons) {
     btn.classList.toggle('active', id === activeStrokeSize);
+  }
+}
+
+/**
+ * Syncs eraser mode button active classes with the current activeEraseMode state.
+ */
+function updateEraserModeState() {
+  for (const [id, btn] of eraserModeBtns) {
+    btn.classList.toggle('active', id === activeEraseMode);
   }
 }
 

@@ -136,8 +136,10 @@ function init() {
   // Drag to reposition
   grip.addEventListener('pointerdown', onGripDown);
 
-  // Default position: bottom-center
-  positionDefault();
+  // Restore saved position, or fall back to default bottom-centre
+  if (!restoreSavedPosition()) {
+    positionDefault();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +192,7 @@ function onGripUp() {
   isDragging = false;
   window.removeEventListener('pointermove', onGripMove);
   window.removeEventListener('pointerup',   onGripUp);
+  savePosition();
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +204,44 @@ function positionDefault() {
   barEl.style.bottom    = '28px';
   barEl.style.left      = '50%';
   barEl.style.transform = 'translateX(-50%)';
+}
+
+/**
+ * Saves the toolbar's current pixel position to localStorage so it survives restarts.
+ */
+function savePosition() {
+  const x = parseInt(barEl.style.left,   10);
+  const y = parseInt(barEl.style.top,    10);
+  if (!isNaN(x) && !isNaN(y)) {
+    localStorage.setItem('floatToolbarPos', JSON.stringify({ x, y }));
+  }
+}
+
+/**
+ * Reads the saved position from localStorage and applies it.
+ * Returns true if a valid saved position was found; false if the caller
+ * should fall back to positionDefault().
+ *
+ * @returns {boolean}
+ */
+function restoreSavedPosition() {
+  try {
+    const raw = localStorage.getItem('floatToolbarPos');
+    if (!raw) return false;
+    const { x, y } = JSON.parse(raw);
+    if (typeof x !== 'number' || typeof y !== 'number') return false;
+
+    // Clamp to the current viewport in case the screen size changed
+    const maxX = window.innerWidth  - (barEl.offsetWidth  || 60);
+    const maxY = window.innerHeight - (barEl.offsetHeight || 60);
+    barEl.style.left      = `${Math.max(0, Math.min(maxX, x))}px`;
+    barEl.style.top       = `${Math.max(0, Math.min(maxY, y))}px`;
+    barEl.style.bottom    = 'auto';
+    barEl.style.transform = 'none';
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

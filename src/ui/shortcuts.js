@@ -40,6 +40,8 @@ const SHORTCUT_DOCS = [
   { key: 'Ctrl+Shift+S', description: 'Screenshot to clipboard' },
   { key: 'Ctrl + O',    description: 'Open file'               },
   { key: 'Ctrl + Z',    description: 'Undo last annotation'    },
+  { key: 'Ctrl+Shift+Z', description: 'Redo'                   },
+  { key: 'Ctrl + D',    description: 'Duplicate selection'     },
   { key: '+ / =',       description: 'Zoom in'                 },
   { key: '−',           description: 'Zoom out'                },
   { key: 'Ctrl + 0',    description: 'Reset zoom to 100%'      },
@@ -64,16 +66,17 @@ let modalEl = null;
  * Sets up the global keydown listener and populates the shortcuts modal.
  * Must be called once after the DOM is ready.
  *
- * @param {{ openFile: Function, setTool: Function, undo: Function }} callbacks
+ * @param {{ openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel }} callbacks
  *   openFile — called when Ctrl+O is pressed
  *   setTool  — (toolName: string|null) => void, called for tool shortcuts
  *   undo     — called when Ctrl+Z is pressed
+ *   redo     — called when Ctrl+Shift+Z is pressed
  */
-function init({ openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot, togglePanel }) {
+function init({ openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel }) {
   buildModal();
 
   window.addEventListener('keydown', (e) => {
-    handleKeyDown(e, { openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot, togglePanel });
+    handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel });
   });
 }
 
@@ -87,11 +90,18 @@ function init({ openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot
  * @param {KeyboardEvent} e
  * @param {{ openFile: Function, setTool: Function, undo: Function }} callbacks
  */
-function handleKeyDown(e, { openFile, setTool, undo, fitPage, prevPage, nextPage, screenshot, togglePanel }) {
+function handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel }) {
   // Ctrl+O: open file (fires regardless of editable target)
   if (e.ctrlKey && !e.shiftKey && e.key === 'o') {
     e.preventDefault();
     openFile();
+    return;
+  }
+
+  // Ctrl+Shift+Z: redo (fires regardless of editable target)
+  if (e.ctrlKey && e.shiftKey && e.key === 'z') {
+    e.preventDefault();
+    redo();
     return;
   }
 

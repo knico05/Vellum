@@ -41,6 +41,9 @@ import { register, requestRender }                             from '../canvas/r
 const BLANK_WIDTH  = 595;
 const BLANK_HEIGHT = 842;
 
+/** Maximum number of PDF.js renders running in parallel */
+const MAX_CONCURRENT_RENDERS = 3;
+
 // ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
@@ -69,6 +72,9 @@ let currentFingerprint = null;
 
 /** #canvas-container DOM element */
 let container = null;
+
+/** Number of PDF.js renders currently in flight */
+let activeRenders = 0;
 
 // ---------------------------------------------------------------------------
 // Initialisation
@@ -342,7 +348,29 @@ function _mountAllPages() {
 // ---------------------------------------------------------------------------
 
 /**
- * Renders PDF pages that are near the viewport and haven't been rendered yet.
+ * Returns true if the page is far enough from the viewport to warrant
+ * unloading its pixel buffer. "Far" = more than 3 screen-heights away.
+ * The generous margin prevents thrashing (render → unload → render) during
+ * slow scrolls.
+ *
+ * @param {PDFPage} inst
+ * @param {number} sw — Container width in pixels
+ * @param {number} sh — Container height in pixels
+ * @returns {boolean}
+ */
+function isFarFromViewport(inst, sw, sh) {
+  const { x, y }    = toScreen(inst.canvasX, inst.canvasY);
+  const { x: x2, y: y2 } = toScreen(inst.canvasX + inst.width, inst.canvasY + inst.height);
+  // 2× hysteresis: wide enough to avoid thrash during slow scrolls, tight
+  // enough to free memory sooner than the old 3× threshold.
+  const margin = sh * 2;
+  return x2 < -margin || y2 < -margin || x > sw + margin || y > sh + margin;
+}
+
+/**
+ * Renders PDF pages near the viewport that haven't been rendered yet, and
+ * unloads pixel buffers for pages far off-screen to bound memory usage.
+ * Limits concurrent PDF.js renders to MAX_CONCURRENT_RENDERS.
  * Blank pages are already rendered (white fill at mount time) — no-op for them.
  */
 function triggerLazyRender() {
@@ -353,8 +381,21 @@ function triggerLazyRender() {
   for (const page of pages) {
     if (page.kind !== 'pdf') continue;
     const inst = pageInstances.get(page.id);
-    if (inst && !inst.rendered && !inst.rendering && inst.isNearViewport(sw, sh)) {
-      inst.render(pdfDoc); // async; handles its own errors
+    if (!inst) continue;
+
+    if (inst.isNearViewport(sw, sh)) {
+      if (!inst.rendered && !inst.rendering) {
+        if (activeRenders >= MAX_CONCURRENT_RENDERS) continue;
+        activeRenders++;
+        inst.render(pdfDoc).finally(() => {
+          activeRenders--;
+          // Re-trigger so queued pages get a slot now that one finished
+          triggerLazyRender();
+        });
+      }
+    } else if (inst.rendered && isFarFromViewport(inst, sw, sh)) {
+      // Free pixel memory for pages far off-screen; they will re-render on demand
+      inst.unload();
     }
   }
 }
@@ -373,6 +414,7 @@ function goToPage(id) {
   const { width: sw, height: sh } = container.getBoundingClientRect();
   centreOn(page.canvasX, page.canvasY, page.width, page.height, sw, sh);
   requestRender();
+  triggerLazyRender(); // Ensure the newly visible page renders immediately
 }
 
 /**

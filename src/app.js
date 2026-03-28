@@ -22,7 +22,7 @@ import {
   getCurrentFingerprint, getCurrentPdfPath, goToPageIndex, fitPage, addBlankPage,
   getCurrentPageListIndex, spliceBlankPagesFromMigration,
 } from './pages/pageManager.js';
-import { clear, loadFromJSON, undo }              from './annotations/manager.js';
+import { clear, loadFromJSON, undo, redo }         from './annotations/manager.js';
 import { initAutosave }                           from './storage/autosave.js';
 import { deserialise }                            from './storage/serialiser.js';
 import { initHighlight }                          from './annotations/highlight.js';
@@ -71,6 +71,7 @@ initShortcuts({       // Wires up global keyboard shortcuts
   openFile:   handleOpen,
   setTool:    setActiveTool,
   undo,
+  redo,
   fitPage,
   screenshot: activateScreenshot,
   prevPage: () => {
@@ -98,6 +99,8 @@ document.getElementById('btn-fit-page').addEventListener('click', fitPage);
 document.getElementById('btn-screenshot').addEventListener('click', activateScreenshot);
 document.getElementById('btn-new-page').addEventListener('click', addBlankPage);
 document.getElementById('btn-export').addEventListener('click', handleExport);
+document.getElementById('btn-undo').addEventListener('click', undo);
+document.getElementById('btn-redo').addEventListener('click', redo);
 
 async function handleOpen() {
   const filePath = await window.api.openFile();

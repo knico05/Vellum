@@ -42,7 +42,7 @@
 
 'use strict';
 
-import { applyZoom, applyPan, reset, ZOOM_FACTOR } from './viewport.js';
+import { applyZoom, applyPan, reset, ZOOM_FACTOR, state as viewportState } from './viewport.js';
 import { requestRender } from './renderer.js';
 
 // ---------------------------------------------------------------------------
@@ -52,8 +52,50 @@ import { requestRender } from './renderer.js';
 /** How much to zoom per keyboard +/- press */
 const KEYBOARD_ZOOM_STEP = 0.15;
 
-/** Scroll wheel pixels → zoom delta multiplier */
-const SCROLL_ZOOM_SENSITIVITY = 0.8;
+/**
+ * Zoom sensitivity for trackpad pinch gestures (ctrlKey + wheel, small deltaY).
+ * Trackpad pinch sends tiny deltas (~1–10px per event) so needs higher sensitivity
+ * than a mouse wheel which sends large deltas (~100–120px per click).
+ */
+const PINCH_ZOOM_SENSITIVITY = 6.0;
+
+/**
+ * Zoom sensitivity for Ctrl + mouse wheel (large deltaY ≥ 20px per click).
+ * Kept at 1.0 so one wheel click = ~10–12% zoom, consistent with browser behaviour.
+ */
+const WHEEL_ZOOM_SENSITIVITY = 1.0;
+
+/**
+ * Viewport scale below which the user is in "overview" mode (many pages visible).
+ * Momentum lasts longer in overview mode so rapid page-flicking feels natural.
+ */
+const OVERVIEW_SCALE_THRESHOLD = 0.8;
+
+/** Friction applied per animation frame in overview mode (0.94 → ~1.2s coast) */
+const FRICTION_OVERVIEW = 0.94;
+
+/** Friction applied per animation frame in reading mode (0.80 → ~0.3s coast) */
+const FRICTION_READING = 0.80;
+
+/** Velocity (px/frame) below which the momentum animation stops */
+const MIN_VELOCITY = 0.5;
+
+/** ms after the last wheel event before momentum kicks in */
+const WHEEL_END_DELAY_MS = 50;
+
+/**
+ * Exponential moving-average factor for velocity smoothing.
+ * 0.6 = retain 60% old velocity, take 40% of the latest delta.
+ * Higher = smoother but slower to track direction changes.
+ */
+const VELOCITY_SMOOTHING = 0.6;
+
+/**
+ * How long (ms) to continue suppressing touch events after the last pen lift.
+ * Covers the typical wrist-lift delay so a slow-moving palm doesn't immediately
+ * trigger a pan the moment the stylus leaves the screen.
+ */
+const PALM_REJECTION_GRACE_MS = 200;
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -76,6 +118,36 @@ let lastPinchDistance = 0;
 
 /** The container element we listen on */
 let container = null;
+
+// ---------------------------------------------------------------------------
+// Palm rejection state
+// ---------------------------------------------------------------------------
+
+/**
+ * Set of pointer IDs belonging to active pen contacts.
+ * While non-empty, touch events are ignored so the palm/wrist cannot
+ * accidentally trigger a pan while the user is writing.
+ */
+const activePenPointers = new Set();
+
+/**
+ * True while a pen is down OR during the post-lift grace period.
+ * Checked in onPointerDown to gate touch events.
+ */
+let palmRejectionActive = false;
+
+/** setTimeout handle for the post-pen-lift grace period */
+let palmRejectionTimer = null;
+
+/** Current momentum velocity in screen pixels per animation frame */
+let velX = 0;
+let velY = 0;
+
+/** requestAnimationFrame handle for an active momentum animation, or null */
+let momentumRafId = null;
+
+/** setTimeout handle used to detect when trackpad scrolling has stopped */
+let wheelEndTimer = null;
 
 // ---------------------------------------------------------------------------
 // Initialisation
@@ -107,6 +179,11 @@ function init() {
   // Prevent browser default touch actions (scroll, pinch-zoom the page)
   // so our canvas gestures take over.
   container.style.touchAction = 'none';
+
+  // Track pen lift anywhere on the window so palm rejection clears even if
+  // the stylus leaves the canvas while lifting.
+  window.addEventListener('pointerup', onWindowPenUp);
+  window.addEventListener('pointercancel', onWindowPenCancel);
 }
 
 // ---------------------------------------------------------------------------
@@ -115,9 +192,22 @@ function init() {
 
 function onPointerDown(e) {
   // Pen is handled exclusively by annotation tools — never pan with pen.
-  // Letting input.js capture pen pointers would prevent draw.js / highlight.js
-  // from receiving clean events, making it impossible to annotate.
-  if (e.pointerType === 'pen') return;
+  // Also register the pen contact so palm rejection can suppress touch events
+  // while the stylus is on screen.
+  if (e.pointerType === 'pen') {
+    activePenPointers.add(e.pointerId);
+    palmRejectionActive = true;
+    clearTimeout(palmRejectionTimer);
+    return;
+  }
+
+  // Palm rejection: ignore touch while the pen is in contact or during the
+  // short grace period after the pen lifts. This prevents the wrist from
+  // accidentally panning the canvas while writing.
+  if (e.pointerType === 'touch' && palmRejectionActive) return;
+
+  // A new touch cancels any in-flight momentum so the user regains control.
+  stopMomentum();
 
   // Capture the pointer so we keep receiving events even if the cursor
   // leaves the container element during a fast drag.
@@ -155,6 +245,11 @@ function onPointerMove(e) {
     if (!isMouse || isMiddle || isSpacePan) {
       const dx = curr.x - prev.x;
       const dy = curr.y - prev.y;
+
+      // Track velocity using EMA so pointer lift launches momentum
+      velX = velX * VELOCITY_SMOOTHING + dx * (1 - VELOCITY_SMOOTHING);
+      velY = velY * VELOCITY_SMOOTHING + dy * (1 - VELOCITY_SMOOTHING);
+
       applyPan(dx, dy);
       emitAndRender();
     }
@@ -180,11 +275,20 @@ function onPointerMove(e) {
 // ---------------------------------------------------------------------------
 
 function onPointerEnd(e) {
+  // Pen lifts are handled by the window-level listeners (onWindowPenUp/Cancel)
+  // so that palm rejection clears even if the pen leaves the container.
+  if (e.pointerType === 'pen') return;
+
   activePointers.delete(e.pointerId);
   lastPinchDistance = 0;
 
-  if (activePointers.size === 0 && !spaceDown) {
-    container.style.cursor = '';
+  if (activePointers.size === 0) {
+    // Always launch momentum on finger lift — friction decides how long it coasts.
+    // Overview mode (zoomed out): low friction = long glide for page-flicking.
+    // Reading mode (zoomed in): high friction = stops quickly, feels precise.
+    startMomentum();
+
+    if (!spaceDown) container.style.cursor = '';
   }
 }
 
@@ -200,16 +304,29 @@ function onWheel(e) {
   const originY = e.clientY - rect.top;
 
   if (e.ctrlKey) {
-    // Ctrl+scroll or trackpad pinch → zoom toward cursor
-    // Negate deltaY: scrolling up (negative delta) = zoom in (positive factor)
-    const delta = -e.deltaY * ZOOM_FACTOR * SCROLL_ZOOM_SENSITIVITY;
+    // Ctrl+scroll or trackpad pinch → zoom toward cursor.
+    // Trackpad pinch sends tiny deltaY (1–10px); mouse wheel sends large values
+    // (~100–120px). Use different sensitivities so both feel equally responsive.
+    stopMomentum();
+    const isPinch   = Math.abs(e.deltaY) < 20;
+    const sens      = isPinch ? PINCH_ZOOM_SENSITIVITY : WHEEL_ZOOM_SENSITIVITY;
+    const delta     = -e.deltaY * ZOOM_FACTOR * sens;
     applyZoom(delta, originX, originY);
-  } else if (e.shiftKey) {
-    // Shift+scroll → horizontal pan
-    applyPan(-e.deltaY, 0);
   } else {
-    // Plain scroll → vertical pan
-    applyPan(0, -e.deltaY);
+    // Pan: trackpad sends both deltaX and deltaY naturally.
+    // Shift+wheel maps the single-axis wheel delta to horizontal for mouse users.
+    const dx = e.shiftKey ? -e.deltaY : -e.deltaX;
+    const dy = e.shiftKey ?          0 : -e.deltaY;
+
+    // Track scroll velocity for momentum
+    velX = velX * VELOCITY_SMOOTHING + dx * (1 - VELOCITY_SMOOTHING);
+    velY = velY * VELOCITY_SMOOTHING + dy * (1 - VELOCITY_SMOOTHING);
+
+    applyPan(dx, dy);
+
+    // Momentum: wait for scrolling to stop, then coast
+    clearTimeout(wheelEndTimer);
+    wheelEndTimer = setTimeout(startMomentum, WHEEL_END_DELAY_MS);
   }
 
   emitAndRender();
@@ -313,6 +430,91 @@ function isEditableTarget(target) {
   if (!target || !(target instanceof Element)) return false;
   const tag = target.tagName;
   return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
+}
+
+/**
+ * Starts a momentum animation that continues scrolling after the user lifts
+ * their finger or stops swiping on the trackpad.
+ *
+ * Friction is lower in overview mode (zoomed out, navigating pages) so the
+ * canvas coasts further. In reading mode (zoomed in) friction is higher so
+ * the canvas stops quickly and feels precise.
+ *
+ * Only launched when velocity is above MIN_VELOCITY; otherwise no-ops.
+ */
+function startMomentum() {
+  cancelAnimationFrame(momentumRafId);
+
+  if (Math.abs(velX) < MIN_VELOCITY && Math.abs(velY) < MIN_VELOCITY) {
+    velX = 0;
+    velY = 0;
+    return;
+  }
+
+  const friction = viewportState.scale < OVERVIEW_SCALE_THRESHOLD
+    ? FRICTION_OVERVIEW
+    : FRICTION_READING;
+
+  function step() {
+    velX *= friction;
+    velY *= friction;
+
+    if (Math.abs(velX) < MIN_VELOCITY && Math.abs(velY) < MIN_VELOCITY) {
+      velX = 0;
+      velY = 0;
+      return;
+    }
+
+    applyPan(velX, velY);
+    emitAndRender();
+    momentumRafId = requestAnimationFrame(step);
+  }
+
+  momentumRafId = requestAnimationFrame(step);
+}
+
+// ---------------------------------------------------------------------------
+// Palm rejection helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Called when any pen pointer is lifted, anywhere on the window.
+ * Starts the grace period: touch events remain blocked for PALM_REJECTION_GRACE_MS
+ * after the last pen contact ends, covering the typical wrist-lift delay.
+ */
+function onWindowPenUp(e) {
+  if (e.pointerType !== 'pen') return;
+  activePenPointers.delete(e.pointerId);
+  if (activePenPointers.size === 0) {
+    palmRejectionTimer = setTimeout(() => {
+      palmRejectionActive = false;
+    }, PALM_REJECTION_GRACE_MS);
+  }
+}
+
+/**
+ * Called when a pen contact is cancelled (e.g. palm rejection by the OS,
+ * app switching). Clears immediately without a grace period.
+ */
+function onWindowPenCancel(e) {
+  if (e.pointerType !== 'pen') return;
+  activePenPointers.delete(e.pointerId);
+  if (activePenPointers.size === 0) {
+    clearTimeout(palmRejectionTimer);
+    palmRejectionActive = false;
+  }
+}
+
+/**
+ * Cancels any active momentum animation and clears velocity state.
+ * Call this when the user initiates a new gesture.
+ */
+function stopMomentum() {
+  cancelAnimationFrame(momentumRafId);
+  clearTimeout(wheelEndTimer);
+  momentumRafId = null;
+  velX = 0;
+  velY = 0;
 }
 
 /**

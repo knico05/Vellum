@@ -27,9 +27,9 @@
 
 'use strict';
 
-import { toCanvas, state as viewportState } from '../canvas/viewport.js';
-import { registerOverlay, requestRender }   from '../canvas/renderer.js';
-import { getAll, batchUpdate }              from './manager.js';
+import { toCanvas, toScreen, state as viewportState } from '../canvas/viewport.js';
+import { registerOverlay, requestRender }             from '../canvas/renderer.js';
+import { getAll, batchUpdate, add, remove }           from './manager.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -47,6 +47,9 @@ const MIN_LASSO_DISTANCE = 3;
 
 let active    = false;
 let container = null;
+
+/** Floating action bar DOM element (duplicate + delete buttons) */
+let actionBarEl = null;
 
 /** Points of the lasso being drawn (canvas coordinates), or null */
 let lassoPoints = null;
@@ -89,7 +92,43 @@ function init() {
   container.addEventListener('pointercancel', onPointerUp);
 
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && active) clearSelection();
+    if (e.key === 'Escape' && active) {
+      clearSelection();
+      return;
+    }
+    // Ctrl+D: duplicate selected annotations
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D') &&
+        active && selectedIds.size > 0) {
+      e.preventDefault();
+      duplicateSelection();
+    }
+  });
+
+  // Build floating action bar (tablet-friendly buttons above selection)
+  actionBarEl = document.createElement('div');
+  actionBarEl.className = 'selection-action-bar hidden';
+  actionBarEl.innerHTML = `
+    <button class="selection-action-btn" id="btn-sel-duplicate" title="Duplicate">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="7" y="7" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M5 13H4a1.5 1.5 0 01-1.5-1.5V4A1.5 1.5 0 014 2.5h7.5A1.5 1.5 0 0113 4v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+    </button>
+    <button class="selection-action-btn selection-action-btn-delete" id="btn-sel-delete" title="Delete">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4 6h12M8 6V4h4v2M7 9v6M10 9v6M13 9v6M5 6l1 11h8l1-11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  `;
+  document.body.appendChild(actionBarEl);
+
+  actionBarEl.querySelector('#btn-sel-duplicate').addEventListener('click', (e) => {
+    e.stopPropagation();
+    duplicateSelection();
+  });
+  actionBarEl.querySelector('#btn-sel-delete').addEventListener('click', (e) => {
+    e.stopPropagation();
+    deleteSelection();
   });
 
   registerOverlay(drawOverlay);
@@ -197,25 +236,38 @@ function finaliseSelection() {
   selectionBounds = selectedIds.size > 0
     ? computeUnionBounds(selectedIds)
     : null;
+  updateActionBar();
 }
 
 /**
  * Commits the drag delta to the manager.
+ * Captures the before-state (undoPatch) so the move can be undone with Ctrl+Z.
  * Uses batchUpdate so only one 'annotations-changed' event fires.
  */
 function commitDrag() {
   if (deltaX === 0 && deltaY === 0) return;
 
-  const updates = [];
+  const updates   = [];
+  const undoPatch = [];
+
   for (const anno of getAll()) {
     if (!selectedIds.has(anno.id)) continue;
 
     if (anno.points) {
+      // Capture old points for undo before computing the new positions
+      undoPatch.push({
+        id:      anno.id,
+        changes: { points: anno.points },
+      });
       updates.push({
         id:      anno.id,
         changes: { points: anno.points.map(p => ({ ...p, x: p.x + deltaX, y: p.y + deltaY })) },
       });
     } else {
+      undoPatch.push({
+        id:      anno.id,
+        changes: { canvasX: anno.canvasX, canvasY: anno.canvasY },
+      });
       updates.push({
         id:      anno.id,
         changes: { canvasX: anno.canvasX + deltaX, canvasY: anno.canvasY + deltaY },
@@ -223,7 +275,7 @@ function commitDrag() {
     }
   }
 
-  if (updates.length > 0) batchUpdate(updates);
+  if (updates.length > 0) batchUpdate(updates, undoPatch);
 
   if (selectionBounds) {
     selectionBounds = {
@@ -238,6 +290,53 @@ function commitDrag() {
   deltaY = 0;
 }
 
+/**
+ * Duplicates all selected annotations with a small canvas offset and selects
+ * the new copies. Each copy is added via manager.add() so it lands on the
+ * undo stack individually and can be reversed with Ctrl+Z.
+ *
+ * Offset (16 canvas units) is large enough to be visible but small enough
+ * that the duplicate clearly belongs near the original.
+ */
+function duplicateSelection() {
+  const OFFSET = 16;
+  const newIds  = [];
+
+  for (const anno of getAll()) {
+    if (!selectedIds.has(anno.id)) continue;
+
+    // Strip manager-assigned fields so add() generates fresh ones
+    const { id, createdAt, updatedAt, ...rest } = anno;
+
+    let copy;
+    if (rest.points) {
+      // Path-based annotation (draw, highlight) — offset every point
+      copy = { ...rest, points: rest.points.map(p => ({ ...p, x: p.x + OFFSET, y: p.y + OFFSET })) };
+    } else {
+      // Position-based annotation (textBox, image) — offset canvasX/Y
+      copy = { ...rest, canvasX: rest.canvasX + OFFSET, canvasY: rest.canvasY + OFFSET };
+    }
+
+    const added = add(copy);
+    newIds.push(added.id);
+  }
+
+  // Switch selection to the new copies
+  selectedIds.clear();
+  for (const newId of newIds) selectedIds.add(newId);
+  selectionBounds = selectedIds.size > 0 ? computeUnionBounds(selectedIds) : null;
+  updateActionBar();
+  requestRender();
+}
+
+/**
+ * Removes all selected annotations from the manager.
+ */
+function deleteSelection() {
+  for (const id of selectedIds) remove(id);
+  clearSelection();
+}
+
 function clearSelection() {
   selectedIds.clear();
   lassoPoints     = null;
@@ -246,7 +345,29 @@ function clearSelection() {
   dragStart       = null;
   deltaX          = 0;
   deltaY          = 0;
+  updateActionBar();
   requestRender();
+}
+
+/**
+ * Positions the floating action bar above the selection bounding box.
+ * Called every frame from drawOverlay so it tracks pan/zoom correctly.
+ */
+function updateActionBar() {
+  if (!actionBarEl) return;
+  if (!selectedIds.size || !selectionBounds) {
+    actionBarEl.classList.add('hidden');
+    return;
+  }
+  actionBarEl.classList.remove('hidden');
+  // Place bar above the centre-top of the selection bounding box
+  const midCanvasX = selectionBounds.x + selectionBounds.w / 2;
+  const topCanvasY = selectionBounds.y + (dragging ? deltaY : 0);
+  const { x: sx, y: sy } = toScreen(midCanvasX, topCanvasY);
+  const barW = actionBarEl.offsetWidth  || 80;
+  const barH = actionBarEl.offsetHeight || 36;
+  actionBarEl.style.left = `${Math.round(sx - barW / 2)}px`;
+  actionBarEl.style.top  = `${Math.round(sy - barH - 8)}px`;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +381,9 @@ function clearSelection() {
  * @param {CanvasRenderingContext2D} ctx — already in canvas space
  */
 function drawOverlay(ctx) {
+  // Keep the DOM action bar in sync with the current viewport each frame
+  updateActionBar();
+
   const scale    = viewportState.scale;
   const hairline = 1.5 / scale;
   const dash     = 5   / scale;

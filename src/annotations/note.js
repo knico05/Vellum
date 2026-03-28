@@ -585,14 +585,26 @@ function onResizeEnd(e, handle) {
  */
 const DRAG_STRIP_H = 8;
 
+/**
+ * Maximum height a text box can auto-grow to (canvas units).
+ * Beyond this the body scrolls rather than the box growing indefinitely.
+ * ~35 lines of 14px text at scale=1. User can still resize manually past this.
+ */
+const MAX_BOX_HEIGHT = 500;
+
 function syncHeight(annotationId, containerEl, bodyEl) {
-  const needed  = Math.max(MIN_BOX_HEIGHT, bodyEl.scrollHeight + DRAG_STRIP_H);
-  const current = getAll().find(a => a.id === annotationId)?.height ?? 0;
+  const uncapped = Math.max(MIN_BOX_HEIGHT, bodyEl.scrollHeight + DRAG_STRIP_H);
+  const needed   = Math.min(uncapped, MAX_BOX_HEIGHT);
+  const current  = getAll().find(a => a.id === annotationId)?.height ?? 0;
   if (Math.abs(needed - current) < 1) return; // no meaningful change
 
   // Update DOM immediately for smooth feel, then persist to the store
   containerEl.style.height = `${needed}px`;
   update(annotationId, { height: needed });
+
+  // When the content exceeds the cap, switch the body to scrollable so text
+  // isn't silently clipped. Class is toggled each sync so it tracks content.
+  containerEl.classList.toggle('scrollable', uncapped > MAX_BOX_HEIGHT);
 }
 
 function scheduleTextSave(annotationId, bodyEl) {

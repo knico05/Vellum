@@ -42,9 +42,24 @@
       <button class="toolbar-btn" id="btn-new-page" title="Add a blank page to sketch on">New Page</button>
       <button class="toolbar-btn" id="btn-export" title="Export as PDF — flatten annotations into a shareable PDF">Export PDF</button>
       <div class="toolbar-sep"></div>
+      <button class="tool-btn" id="btn-undo" title="Undo (Ctrl+Z)">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 8a7 7 0 117 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 4v4h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button class="tool-btn" id="btn-redo" title="Redo (Ctrl+Shift+Z)">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M16 8a7 7 0 11-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M16 4v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <div class="toolbar-sep"></div>
       <div id="tool-group" style="display:flex;gap:2px;align-items:center;"></div>
       <div id="colour-picker" style="display:none;align-items:center;gap:6px;margin-left:8px;"></div>
       <div id="stroke-picker" style="display:none;align-items:center;gap:4px;margin-left:4px;"></div>
+      <div id="eraser-mode-picker" style="display:none;align-items:center;gap:4px;margin-left:4px;"></div>
+      <div id="pressure-toggle" style="display:none;align-items:center;margin-left:4px;"></div>
       <div class="toolbar-sep" id="colour-sep" style="display:none;"></div>
       <div class="toolbar-spacer"></div>
       <span class="toolbar-label" id="lbl-save-status"></span>

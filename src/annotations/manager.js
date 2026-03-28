@@ -15,8 +15,8 @@
  * Annotation ID format: "anno_{timestamp}_{6 random chars}"
  * This is unique enough for a local single-user app without needing a UUID lib.
  *
- * Exports: add(), remove(), update(), getByPage(), getAll(),
- *          loadFromJSON(), toJSON(), clear(), undo()
+ * Exports: add(), remove(), update(), batchUpdate(), getByPage(), getAll(),
+ *          loadFromJSON(), toJSON(), clear(), undo(), redo()
  */
 
 'use strict';
@@ -34,13 +34,21 @@ let annotations = [];
 
 /**
  * Stack of reversible actions. Each entry is one of:
- *   { action: 'add',    id: string }                  — undo removes the annotation
- *   { action: 'remove', annotation: object }           — undo re-inserts the annotation
+ *   { action: 'add',    id, annotation }          — undo removes; redo re-adds
+ *   { action: 'remove', annotation }              — undo re-inserts; redo removes
+ *   { action: 'move',   undo: patches, redo: patches } — undo/redo apply position patches
  *
  * Maximum 50 entries. When full, the oldest entry is dropped.
+ * Any new user action (add/remove/move) clears the redo stack.
  */
 const MAX_UNDO = 50;
 let undoStack = [];
+
+/**
+ * Stack of actions that can be redone after an undo. Mirrors undoStack format.
+ * Cleared whenever the user performs a new annotation action.
+ */
+let redoStack = [];
 
 // ---------------------------------------------------------------------------
 // ID generation
@@ -91,9 +99,11 @@ function add(partial) {
   };
   annotations.push(annotation);
 
-  // Record for undo — push add entry, cap at MAX_UNDO
-  undoStack.push({ action: 'add', id: annotation.id });
+  // Record for undo — store full annotation so redo can re-insert it exactly.
+  // New user action clears redo history.
+  undoStack.push({ action: 'add', id: annotation.id, annotation });
   if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack = [];
 
   emit();
   return annotation;
@@ -109,9 +119,11 @@ function remove(id) {
   const target = annotations.find(a => a.id === id);
   if (!target) return; // Not found — no-op
 
-  // Record for undo BEFORE removing, so we can restore the full object
+  // Record for undo BEFORE removing, so we can restore the full object.
+  // New user action clears redo history.
   undoStack.push({ action: 'remove', annotation: { ...target } });
   if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack = [];
 
   annotations = annotations.filter(a => a.id !== id);
   emit();
@@ -201,15 +213,13 @@ function clear() {
   const hadContent = annotations.length > 0;
   annotations = [];
   undoStack   = [];
+  redoStack   = [];
   if (hadContent) emit();
 }
 
 /**
- * Reverses the most recent add or remove action.
- *
- * - Undoing an 'add' removes the annotation by ID.
- * - Undoing a 'remove' re-inserts the annotation object exactly.
- *   The re-insert does NOT push to undoStack (it is a restoration, not a new action).
+ * Reverses the most recent add, remove, or move action, and pushes the
+ * inverse onto the redo stack so the action can be reapplied.
  *
  * No-ops silently if the stack is empty.
  */
@@ -219,13 +229,50 @@ function undo() {
   const entry = undoStack.pop();
 
   if (entry.action === 'add') {
-    // Remove without pushing a new undo entry
+    // Undo add → remove. Store full annotation on redo stack so it can be re-added.
+    const removed = annotations.find(a => a.id === entry.id) ?? entry.annotation;
     annotations = annotations.filter(a => a.id !== entry.id);
+    redoStack.push({ action: 'add', id: removed.id, annotation: removed });
     emit();
   } else if (entry.action === 'remove') {
-    // Re-insert the annotation directly without calling add() to avoid
-    // pushing a duplicate undo entry
+    // Undo remove → re-insert. Redo will remove it again.
     annotations.push(entry.annotation);
+    redoStack.push({ action: 'remove', annotation: entry.annotation });
+    emit();
+  } else if (entry.action === 'move') {
+    // Undo move → restore before-positions using the stored undo patches.
+    applyPatches(entry.undo);
+    redoStack.push({ action: 'move', undo: entry.undo, redo: entry.redo });
+    emit();
+  }
+}
+
+/**
+ * Reapplies the most recently undone action.
+ * No-ops silently if the redo stack is empty.
+ */
+function redo() {
+  if (redoStack.length === 0) return;
+
+  const entry = redoStack.pop();
+
+  if (entry.action === 'add') {
+    // Redo add → re-insert the annotation.
+    annotations.push(entry.annotation);
+    undoStack.push({ action: 'add', id: entry.annotation.id, annotation: entry.annotation });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    emit();
+  } else if (entry.action === 'remove') {
+    // Redo remove → delete the annotation again.
+    undoStack.push({ action: 'remove', annotation: entry.annotation });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    annotations = annotations.filter(a => a.id !== entry.annotation.id);
+    emit();
+  } else if (entry.action === 'move') {
+    // Redo move → re-apply the after-positions using the stored redo patches.
+    applyPatches(entry.redo);
+    undoStack.push({ action: 'move', undo: entry.undo, redo: entry.redo });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
     emit();
   }
 }
@@ -235,15 +282,30 @@ function undo() {
 // ---------------------------------------------------------------------------
 
 /**
- * Applies multiple position updates in one operation, emitting a single
- * 'annotations-changed' event. Used by the select tool to commit a drag move.
- * Does NOT push to the undo stack (move undo is not yet supported).
+ * Deep-clones an array of {id, changes} patches so that stored undo/redo
+ * entries are not affected by later mutations to the points arrays.
  *
- * @param {Array<{id: string, changes: object}>} updates
+ * @param {Array<{id:string, changes:object}>} patches
+ * @returns {Array<{id:string, changes:object}>}
  */
-function batchUpdate(updates) {
+function deepClonePatches(patches) {
+  return patches.map(({ id, changes }) => ({
+    id,
+    changes: changes.points
+      ? { ...changes, points: changes.points.map(p => ({ ...p })) }
+      : { ...changes },
+  }));
+}
+
+/**
+ * Applies an array of {id, changes} patches to the annotations array.
+ * Does not emit — callers are responsible for emitting after calling this.
+ *
+ * @param {Array<{id:string, changes:object}>} patches
+ */
+function applyPatches(patches) {
   const now = new Date().toISOString();
-  for (const { id, changes } of updates) {
+  for (const { id, changes } of patches) {
     const idx = annotations.findIndex(a => a.id === id);
     if (idx === -1) continue;
     annotations[idx] = {
@@ -254,7 +316,30 @@ function batchUpdate(updates) {
       updatedAt: now,
     };
   }
+}
+
+/**
+ * Applies multiple position updates in one operation, emitting a single
+ * 'annotations-changed' event. Used by the select tool to commit a drag move.
+ *
+ * Pass undoPatch (the before-state) to enable undo/redo for the move.
+ * New user actions (even moves) clear the redo stack.
+ *
+ * @param {Array<{id: string, changes: object}>} updates   — new positions to apply
+ * @param {Array<{id: string, changes: object}>} [undoPatch] — old positions for undo
+ */
+function batchUpdate(updates, undoPatch = null) {
+  if (undoPatch) {
+    undoStack.push({
+      action: 'move',
+      undo: deepClonePatches(undoPatch),
+      redo: deepClonePatches(updates),
+    });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack = [];
+  }
+  applyPatches(updates);
   emit();
 }
 
-export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo };
+export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo };
