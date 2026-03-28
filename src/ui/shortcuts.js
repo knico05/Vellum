@@ -171,7 +171,13 @@ function handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, ne
       break;
 
     case 'Escape':
-      setTool(null);
+      // Close the shortcut modal if open — do NOT also deactivate the tool,
+      // since the user likely had a tool active before opening the modal.
+      if (modalVisible) {
+        hideModal();
+      } else {
+        setTool(null);
+      }
       break;
 
     case 'p':

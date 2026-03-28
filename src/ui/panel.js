@@ -21,7 +21,7 @@
 
 'use strict';
 
-import { getPageList, addBlankPage, removePage, getCurrentPageId, goToPage,
+import { getPageList, addBlankPage, removePage, movePage, getCurrentPageId, goToPage,
          goToPageIndex, getPageCount, getPdfDoc }
   from '../pages/pageManager.js';
 import { requestRender } from '../canvas/renderer.js';
@@ -58,6 +58,14 @@ let jumpInput   = null;
  */
 let lastPageListKey = '';
 
+/** Drag-to-reorder state for the page overview */
+let dragFromIdx  = -1;
+let dragOverIdx  = -1;
+let dragPointerY = 0;
+
+/** Template picker popup element (one at a time) */
+let templatePickerEl = null;
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
@@ -86,7 +94,7 @@ function init() {
   addBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 13 13" fill="none">
     <path d="M6.5 1v11M1 6.5h11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
   </svg>`;
-  addBtn.addEventListener('click', addBlankPage);
+  addBtn.addEventListener('click', () => showTemplatePickerAt(addBtn, addBlankPage));
 
   pagesHeader.appendChild(pagesTitle);
   pagesHeader.appendChild(addBtn);
@@ -216,6 +224,21 @@ function rebuildList() {
     card.className  = 'page-card';
     card.dataset.id = page.id;
 
+    // Drag grip — touch-action:none so pointer capture works on tablet
+    const grip = document.createElement('div');
+    grip.className = 'page-card-grip';
+    grip.title     = 'Drag to reorder';
+    grip.innerHTML = `<svg width="10" height="14" viewBox="0 0 10 14" fill="none">
+      <circle cx="3" cy="2"  r="1.5" fill="currentColor"/>
+      <circle cx="7" cy="2"  r="1.5" fill="currentColor"/>
+      <circle cx="3" cy="7"  r="1.5" fill="currentColor"/>
+      <circle cx="7" cy="7"  r="1.5" fill="currentColor"/>
+      <circle cx="3" cy="12" r="1.5" fill="currentColor"/>
+      <circle cx="7" cy="12" r="1.5" fill="currentColor"/>
+    </svg>`;
+    grip.addEventListener('pointerdown', (e) => _startDrag(e, idx));
+    card.appendChild(grip);
+
     // Thumbnail — proportionally sized, contains a canvas for the page preview
     const aspectRatio = page.width / page.height;
     const thumbW      = Math.round(Math.min(THUMB_H * aspectRatio, 60));
@@ -283,12 +306,9 @@ function rebuildList() {
 }
 
 /**
- * Renders page-preview thumbnails into each card's <canvas> element.
- * Runs asynchronously so it doesn't block the initial list paint.
- *
- * PDF pages are rendered via PDF.js at a scale that fills the canvas height.
- * Blank pages get a solid white fill.
- * Each canvas is 2× its CSS size for sharpness on high-DPI screens.
+ * Renders page-preview thumbnails — visible cards first, then the rest in
+ * batches of 5 with a setTimeout yield between batches to stay responsive
+ * on large (200+ page) PDFs.
  *
  * @param {Array} pages — The full page list from getPageList()
  */
@@ -296,30 +316,257 @@ async function _renderThumbnails(pages) {
   if (!listEl) return;
   const pdfDoc = getPdfDoc();
 
+  // Split into visible-first and deferred lists
+  const listRect = listEl.getBoundingClientRect();
+  const visible  = [];
+  const deferred = [];
+
   for (const page of pages) {
     const cardEl = listEl.querySelector(`[data-id="${page.id}"]`);
-    if (!cardEl) continue; // list was rebuilt before we finished — stop
-
-    const canvas = cardEl.querySelector('.page-thumb-canvas');
-    if (!canvas) continue;
-    const ctx = canvas.getContext('2d');
-
-    if (page.kind === 'blank') {
-      ctx.fillStyle = '#f5f5f5';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    } else if (pdfDoc) {
-      try {
-        // canvas.height is already 2× the CSS height for retina sharpness
-        const renderScale = canvas.height / page.height;
-        const pdfPage     = await pdfDoc.getPage(page.pdfPageIndex + 1);
-        const vp          = pdfPage.getViewport({ scale: renderScale });
-        await pdfPage.render({ canvasContext: ctx, viewport: vp }).promise;
-      } catch (err) {
-        // Leave as grey placeholder if rendering fails (e.g. encrypted PDF)
-        console.warn(`Thumbnail failed for page ${page.pdfPageIndex}:`, err.message);
-      }
+    if (!cardEl) continue;
+    const rect = cardEl.getBoundingClientRect();
+    if (rect.bottom > listRect.top && rect.top < listRect.bottom) {
+      visible.push(page);
+    } else {
+      deferred.push(page);
     }
   }
+
+  // Render visible thumbnails immediately (parallel within this batch)
+  await _renderBatch(visible, pdfDoc);
+
+  // Render the rest in batches of 5, yielding between each batch
+  const BATCH = 5;
+  for (let i = 0; i < deferred.length; i += BATCH) {
+    if (!listEl) return; // list was rebuilt — abort
+    await _renderBatch(deferred.slice(i, i + BATCH), pdfDoc);
+    await new Promise(r => setTimeout(r, 0));
+  }
+}
+
+/**
+ * Renders a batch of thumbnails in parallel.
+ *
+ * @param {Array} pages
+ * @param {import('pdfjs-dist').PDFDocumentProxy|null} pdfDoc
+ */
+async function _renderBatch(pages, pdfDoc) {
+  await Promise.all(pages.map(page => _renderOneThumbnail(page, pdfDoc)));
+}
+
+/**
+ * Renders a single thumbnail into its card's <canvas>.
+ *
+ * @param {object} page
+ * @param {import('pdfjs-dist').PDFDocumentProxy|null} pdfDoc
+ */
+async function _renderOneThumbnail(page, pdfDoc) {
+  if (!listEl) return;
+  const cardEl = listEl.querySelector(`[data-id="${page.id}"]`);
+  if (!cardEl) return;
+  const canvas = cardEl.querySelector('.page-thumb-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+
+  if (page.kind === 'blank') {
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  } else if (pdfDoc) {
+    try {
+      const renderScale = canvas.height / page.height;
+      const pdfPage     = await pdfDoc.getPage(page.pdfPageIndex + 1);
+      const vp          = pdfPage.getViewport({ scale: renderScale });
+      await pdfPage.render({ canvasContext: ctx, viewport: vp }).promise;
+    } catch (err) {
+      console.warn(`Thumbnail failed for page ${page.pdfPageIndex}:`, err.message);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Drag-to-reorder
+// ---------------------------------------------------------------------------
+
+/**
+ * Begins a drag-reorder gesture from the grip handle of the card at fromIdx.
+ * Uses setPointerCapture so all subsequent pointer events route to the grip
+ * element — essential for reliable drag on tablet when the pointer exits the grip.
+ *
+ * @param {PointerEvent} e
+ * @param {number} fromIdx
+ */
+function _startDrag(e, fromIdx) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  dragFromIdx  = fromIdx;
+  dragOverIdx  = -1;
+  dragPointerY = e.clientY;
+
+  e.currentTarget.setPointerCapture(e.pointerId);
+  e.currentTarget.addEventListener('pointermove',   _onDragMove);
+  e.currentTarget.addEventListener('pointerup',     _onDragEnd);
+  e.currentTarget.addEventListener('pointercancel', _onDragCancel);
+
+  // Dim the card being dragged
+  listEl.querySelectorAll('.page-card')[fromIdx]?.classList.add('dragging');
+}
+
+function _onDragMove(e) {
+  dragPointerY = e.clientY;
+  _updateDragTarget();
+}
+
+function _onDragEnd(e) {
+  if (dragFromIdx !== -1 && dragOverIdx !== -1 && dragFromIdx !== dragOverIdx) {
+    movePage(dragFromIdx, dragOverIdx);
+  }
+  _cleanupDrag(e.currentTarget);
+}
+
+function _onDragCancel(e) {
+  _cleanupDrag(e.currentTarget);
+}
+
+function _cleanupDrag(grip) {
+  grip.removeEventListener('pointermove',   _onDragMove);
+  grip.removeEventListener('pointerup',     _onDragEnd);
+  grip.removeEventListener('pointercancel', _onDragCancel);
+
+  listEl?.querySelectorAll('.page-card.dragging').forEach(c => c.classList.remove('dragging'));
+  listEl?.querySelectorAll('.drop-indicator').forEach(el => el.remove());
+
+  dragFromIdx = -1;
+  dragOverIdx = -1;
+}
+
+/**
+ * Finds the closest card to the pointer and updates the drop indicator.
+ * "Closest" = card whose vertical centre is nearest dragPointerY,
+ * excluding the card being dragged.
+ */
+function _updateDragTarget() {
+  if (!listEl || dragFromIdx === -1) return;
+
+  const cards = [...listEl.querySelectorAll('.page-card')];
+  let closest     = -1;
+  let closestDist = Infinity;
+
+  for (let i = 0; i < cards.length; i++) {
+    if (i === dragFromIdx) continue;
+    const rect   = cards[i].getBoundingClientRect();
+    const centre = rect.top + rect.height / 2;
+    const dist   = Math.abs(dragPointerY - centre);
+    if (dist < closestDist) { closestDist = dist; closest = i; }
+  }
+
+  if (closest === dragOverIdx) return;
+  dragOverIdx = closest;
+
+  // Reposition the drop indicator
+  listEl.querySelectorAll('.drop-indicator').forEach(el => el.remove());
+  if (dragOverIdx === -1) return;
+
+  const indicator = document.createElement('div');
+  indicator.className = 'drop-indicator';
+
+  // Indicator goes above the target if dragging up, below if dragging down
+  if (dragOverIdx < dragFromIdx) {
+    cards[dragOverIdx].insertAdjacentElement('beforebegin', indicator);
+  } else {
+    cards[dragOverIdx].insertAdjacentElement('afterend', indicator);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Template picker
+// ---------------------------------------------------------------------------
+
+const TEMPLATES = [
+  { id: 'plain',   label: 'Plain'   },
+  { id: 'lined',   label: 'Lined'   },
+  { id: 'dotted',  label: 'Dotted'  },
+  { id: 'graph',   label: 'Graph'   },
+  { id: 'cornell', label: 'Cornell' },
+];
+
+/**
+ * Shows a template-picker popup anchored below (or above) anchorEl.
+ * Calls onSelect(templateId) when the user taps an option, then closes.
+ *
+ * @param {HTMLElement} anchorEl
+ * @param {function(string): void} onSelect
+ */
+function showTemplatePickerAt(anchorEl, onSelect) {
+  _closeTemplatePicker();
+
+  templatePickerEl = document.createElement('div');
+  templatePickerEl.className = 'template-picker';
+
+  for (const tpl of TEMPLATES) {
+    const btn = document.createElement('button');
+    btn.className = 'template-picker-btn';
+
+    const preview = document.createElement('div');
+    preview.className = `template-preview template-preview-${tpl.id}`;
+
+    const label = document.createElement('span');
+    label.className   = 'template-picker-label';
+    label.textContent = tpl.label;
+
+    btn.appendChild(preview);
+    btn.appendChild(label);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onSelect(tpl.id);
+      _closeTemplatePicker();
+    });
+
+    templatePickerEl.appendChild(btn);
+  }
+
+  document.body.appendChild(templatePickerEl);
+
+  // Position: below the anchor by default, above if there's not enough space
+  const rect    = anchorEl.getBoundingClientRect();
+  const pickerW = templatePickerEl.offsetWidth  || 340;
+  const pickerH = templatePickerEl.offsetHeight || 90;
+
+  let left = rect.left;
+  let top  = rect.bottom + 6;
+
+  if (left + pickerW > window.innerWidth  - 8) left = window.innerWidth  - pickerW - 8;
+  if (top  + pickerH > window.innerHeight - 8) top  = rect.top - pickerH - 6;
+
+  templatePickerEl.style.left = `${Math.max(8, left)}px`;
+  templatePickerEl.style.top  = `${Math.max(8, top)}px`;
+
+  // Close on any tap outside the picker
+  setTimeout(() => {
+    document.addEventListener('pointerdown', _closePickerOnOutside, { capture: true });
+  }, 0);
+}
+
+function _closePickerOnOutside(e) {
+  if (templatePickerEl && !templatePickerEl.contains(e.target)) {
+    _closeTemplatePicker();
+  }
+}
+
+function _closeTemplatePicker() {
+  templatePickerEl?.remove();
+  templatePickerEl = null;
+  document.removeEventListener('pointerdown', _closePickerOnOutside, { capture: true });
+}
+
+/**
+ * Convenience wrapper used by app.js for the toolbar "New Page" button.
+ * Shows the template picker anchored to the given element.
+ *
+ * @param {HTMLElement} anchorEl
+ */
+function addBlankPageWithPicker(anchorEl) {
+  showTemplatePickerAt(anchorEl, addBlankPage);
 }
 
 /**
@@ -502,4 +749,4 @@ function _restorePanelState() {
   }
 }
 
-export { init, getPageNotes, loadPageNotes, getCurrentPageListIndexFromPanel as getCurrentPageIndex, togglePanel };
+export { init, getPageNotes, loadPageNotes, getCurrentPageListIndexFromPanel as getCurrentPageIndex, togglePanel, addBlankPageWithPicker };

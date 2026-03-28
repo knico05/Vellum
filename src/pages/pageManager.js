@@ -218,12 +218,13 @@ function loadPageList(savedPages) {
       };
     } else {
       return {
-        id:      p.id,
-        kind:    'blank',
-        width:   p.width,
-        height:  p.height,
-        canvasX: 0,
-        canvasY: 0,
+        id:       p.id,
+        kind:     'blank',
+        template: p.template ?? 'plain',
+        width:    p.width,
+        height:   p.height,
+        canvasX:  0,
+        canvasY:  0,
       };
     }
   });
@@ -243,10 +244,12 @@ function loadPageList(savedPages) {
  * Inserts a new blank page immediately after the page currently nearest the
  * viewport centre. Falls back to appending if no pages exist.
  * Dispatches 'pages-changed'.
+ *
+ * @param {string} [template='plain'] — 'plain' | 'lined' | 'dotted' | 'graph' | 'cornell'
  */
-function addBlankPage() {
+function addBlankPage(template = 'plain') {
   if (pages.length === 0) {
-    _insertBlankPageAt(0);
+    _insertBlankPageAt(0, template);
     return;
   }
 
@@ -261,7 +264,7 @@ function addBlankPage() {
     if (d < bestDist) { bestDist = d; bestIdx = i; }
   }
 
-  _insertBlankPageAt(bestIdx + 1);
+  _insertBlankPageAt(bestIdx + 1, template);
 }
 
 /**
@@ -298,22 +301,24 @@ function removePage(id) {
  * Mounts a BlankPage instance and dispatches 'pages-changed'.
  *
  * @param {number} listIndex — Index at which to splice in the new page
+ * @param {string} [template='plain'] — Template to apply to the blank page
  */
-function _insertBlankPageAt(listIndex) {
+function _insertBlankPageAt(listIndex, template = 'plain') {
   const id   = `blank-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const page = {
     id,
-    kind:    'blank',
-    width:   BLANK_WIDTH,
-    height:  BLANK_HEIGHT,
-    canvasX: 0,
-    canvasY: 0,
+    kind:     'blank',
+    template,
+    width:    BLANK_WIDTH,
+    height:   BLANK_HEIGHT,
+    canvasX:  0,
+    canvasY:  0,
   };
 
   pages.splice(listIndex, 0, page);
   recomputeLayout(); // sets page.canvasX/canvasY
 
-  const inst = new BlankPage(page.width, page.height);
+  const inst = new BlankPage(page.width, page.height, template);
   inst.canvasX = page.canvasX;
   inst.canvasY = page.canvasY;
   inst.mount(container);
@@ -334,7 +339,7 @@ function _mountAllPages() {
     if (page.kind === 'pdf') {
       inst = new PDFPage(page.pdfPageIndex, page.canvasX, page.canvasY, page.width, page.height);
     } else {
-      inst = new BlankPage(page.width, page.height);
+      inst = new BlankPage(page.width, page.height, page.template ?? 'plain');
       inst.canvasX = page.canvasX;
       inst.canvasY = page.canvasY;
     }
@@ -455,6 +460,26 @@ function fitPage() {
 // ---------------------------------------------------------------------------
 
 /**
+ * Moves a page from one list position to another.
+ * Recomputes layout and dispatches 'pages-changed'.
+ *
+ * @param {number} fromIdx — Current 0-based index of the page
+ * @param {number} toIdx   — Target 0-based index (after the move)
+ */
+function movePage(fromIdx, toIdx) {
+  if (fromIdx === toIdx) return;
+  if (fromIdx < 0 || fromIdx >= pages.length) return;
+  if (toIdx   < 0 || toIdx   >= pages.length) return;
+
+  const [page] = pages.splice(fromIdx, 1);
+  pages.splice(toIdx, 0, page);
+
+  recomputeLayout();
+  document.dispatchEvent(new CustomEvent('pages-changed'));
+  requestRender();
+}
+
+/**
  * Returns a read-only snapshot of the ordered page list.
  * Each entry: { id, kind, width, height, canvasX, canvasY, pdfPageIndex? }
  *
@@ -540,10 +565,12 @@ function getPdfDoc() { return pdfDoc; }
 function tearDown() {
   for (const inst of pageInstances.values()) inst.destroy();
   pageInstances.clear();
-  pages             = [];
+  pages              = [];
   pdfPageDims.clear();
-  pdfDoc            = null;
-  currentPath       = null;
+  // Release PDF.js memory (worker buffers, decoded image data)
+  if (pdfDoc) { pdfDoc.destroy().catch(() => {}); }
+  pdfDoc             = null;
+  currentPath        = null;
   currentFingerprint = null;
 }
 
@@ -610,6 +637,7 @@ export {
   getPageList,
   addBlankPage,
   removePage,
+  movePage,
   resolvePageId,
   recomputeLayout,
   getCurrentPageId,

@@ -1319,6 +1319,39 @@ button:focus-visible {
   color: var(--text-primary);
 }
 
+/* Drag grip — shown on hover, touch-action:none for pointer capture on tablet */
+.page-card-grip {
+  flex-shrink: 0;
+  width: 18px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  color: var(--text-muted);
+  touch-action: none;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.page-card:hover .page-card-grip {
+  opacity: 1;
+}
+
+.page-card.dragging {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* Drop indicator line between cards during drag */
+.drop-indicator {
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  margin: 1px 8px;
+  pointer-events: none;
+}
+
 /* Delete button — blank pages only, shown on hover */
 .page-card-delete {
   position: absolute;
@@ -1347,6 +1380,83 @@ button:focus-visible {
 .page-card-delete:hover {
   background: #e53e3e;
   color: #fff;
+}
+
+/* ---------------------------------------------------------------------------
+   Template picker popup
+--------------------------------------------------------------------------- */
+
+.template-picker {
+  position: fixed;
+  z-index: 300;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.template-picker-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.template-picker-btn:hover {
+  background: var(--surface-3);
+  border-color: var(--border-subtle);
+}
+
+.template-picker-label {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* Mini CSS previews of each template pattern */
+.template-preview {
+  width: 40px;
+  height: 52px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.template-preview-lined {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent,      transparent 9px,
+    #d8d8d8 9px,      #d8d8d8 10px
+  );
+}
+
+.template-preview-dotted {
+  background-image: radial-gradient(circle, #bbb 1px, transparent 1px);
+  background-size: 7px 7px;
+  background-position: 3px 3px;
+}
+
+.template-preview-graph {
+  background-image:
+    repeating-linear-gradient(to right, #e0e0e0 0, #e0e0e0 1px, transparent 1px, transparent 7px),
+    repeating-linear-gradient(to bottom, #e0e0e0 0, #e0e0e0 1px, transparent 1px, transparent 7px);
+}
+
+.template-preview-cornell {
+  background-image:
+    linear-gradient(to right, transparent 28%, #bbb 28%, #bbb 29.5%, transparent 29.5%),
+    linear-gradient(to bottom, transparent 75%, #bbb 75%, #bbb 76.5%, transparent 76.5%);
 }
 
 /* ── Divider between list and notes ── */

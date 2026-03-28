@@ -34,7 +34,8 @@ import { initSelect }                             from './annotations/select.js'
 import { init as initToolbar, setActiveTool, getActiveTool, updateStatus } from './ui/toolbar.js';
 import { init as initShortcuts }                  from './ui/shortcuts.js';
 import { initScreenshot, activateScreenshot }     from './ui/screenshot.js';
-import { init as initPanel, loadPageNotes, getCurrentPageIndex, togglePanel } from './ui/panel.js';
+import { init as initPanel, loadPageNotes, getCurrentPageIndex, togglePanel,
+         addBlankPageWithPicker } from './ui/panel.js';
 import { initLibrary, addToLibrary }              from './ui/library.js';
 import { exportToPdf }                            from './export/pdfExport.js';
 
@@ -97,7 +98,9 @@ btnOpen.addEventListener('click', handleOpen);
 
 document.getElementById('btn-fit-page').addEventListener('click', fitPage);
 document.getElementById('btn-screenshot').addEventListener('click', activateScreenshot);
-document.getElementById('btn-new-page').addEventListener('click', addBlankPage);
+document.getElementById('btn-new-page').addEventListener('click', (e) => {
+  addBlankPageWithPicker(e.currentTarget);
+});
 document.getElementById('btn-export').addEventListener('click', handleExport);
 document.getElementById('btn-undo').addEventListener('click', undo);
 document.getElementById('btn-redo').addEventListener('click', redo);
@@ -166,6 +169,10 @@ async function openFromLibrary(filePath) {
 async function loadFile(filePath) {
   btnOpen.disabled    = true;
   btnOpen.textContent = 'Loading…';
+
+  // Update window title to reflect the open file
+  const filename = filePath.replace(/\\/g, '/').split('/').pop();
+  document.title = `${filename} — QuickNotes`;
 
   try {
     // 1. Load the PDF — builds the default page list (PDF pages only)

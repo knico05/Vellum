@@ -48,7 +48,7 @@ function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}) 
   // from the page list before saving — layout is recomputed at load time.
   const savedPages = pageList.map(p => p.kind === 'pdf'
     ? { id: p.id, kind: 'pdf', pdfPageIndex: p.pdfPageIndex }
-    : { id: p.id, kind: 'blank', width: p.width, height: p.height }
+    : { id: p.id, kind: 'blank', width: p.width, height: p.height, template: p.template ?? 'plain' }
   );
 
   return JSON.stringify({
