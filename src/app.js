@@ -21,6 +21,7 @@ import {
   initPageManager, openPDF as openPDFPages, loadPageList, getPageCount,
   getCurrentFingerprint, getCurrentPdfPath, goToPageIndex, fitPage, addBlankPage,
   getCurrentPageListIndex, spliceBlankPagesFromMigration,
+  getPdfDoc, getPageList, goToPage,
 } from './pages/pageManager.js';
 import { clear, loadFromJSON, undo, redo }         from './annotations/manager.js';
 import { initAutosave }                           from './storage/autosave.js';
@@ -38,6 +39,8 @@ import { init as initPanel, loadPageNotes, getCurrentPageIndex, togglePanel,
          addBlankPageWithPicker } from './ui/panel.js';
 import { initLibrary, addToLibrary }              from './ui/library.js';
 import { exportToPdf }                            from './export/pdfExport.js';
+import { initSearch, showSearch }                 from './ui/search.js';
+import { search as searchText, clearCache as clearSearchCache } from './pdf/textSearch.js';
 
 // ---------------------------------------------------------------------------
 // Title bar window controls
@@ -84,10 +87,15 @@ initShortcuts({       // Wires up global keyboard shortcuts
     if (cur < getPageCount() - 1) goToPageIndex(cur + 1);
   },
   togglePanel,
+  openSearch: showSearch,
 });
 initAutosave();       // Listens for changes, writes to disk
 initScreenshot();     // Creates screenshot overlay DOM, attaches listeners
 initLibrary(openFromLibrary); // File library drawer
+initSearch({          // Search bar (Ctrl+F)
+  onSearch: (query) => searchText(getPdfDoc(), getPageList(), query),
+  onNavigate: (match) => goToPage(match.pageId),
+});
 
 // ---------------------------------------------------------------------------
 // Toolbar — Open button and action buttons
@@ -178,8 +186,9 @@ async function loadFile(filePath) {
     // 1. Load the PDF — builds the default page list (PDF pages only)
     await openPDFPages(filePath);
 
-    // 2. Discard annotations from any previous document
+    // 2. Discard annotations and search state from any previous document
     clear();
+    clearSearchCache();
 
     // 3. Load saved annotations and page list (if any)
     await tryLoadAnnotations(filePath);

@@ -37,6 +37,7 @@ const SHORTCUT_DOCS = [
   { key: 'F',           description: 'Fit page to window'      },
   { key: 'P',           description: 'Toggle pages panel'      },
   { key: 'Escape',      description: 'Deselect / cancel'       },
+  { key: 'Ctrl+F',      description: 'Search text in PDF'      },
   { key: 'Ctrl+Shift+S', description: 'Screenshot to clipboard' },
   { key: 'Ctrl + O',    description: 'Open file'               },
   { key: 'Ctrl + Z',    description: 'Undo last annotation'    },
@@ -66,17 +67,18 @@ let modalEl = null;
  * Sets up the global keydown listener and populates the shortcuts modal.
  * Must be called once after the DOM is ready.
  *
- * @param {{ openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel }} callbacks
- *   openFile — called when Ctrl+O is pressed
- *   setTool  — (toolName: string|null) => void, called for tool shortcuts
- *   undo     — called when Ctrl+Z is pressed
- *   redo     — called when Ctrl+Shift+Z is pressed
+ * @param {{ openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel, openSearch }} callbacks
+ *   openFile   — called when Ctrl+O is pressed
+ *   setTool    — (toolName: string|null) => void, called for tool shortcuts
+ *   undo       — called when Ctrl+Z is pressed
+ *   redo       — called when Ctrl+Shift+Z is pressed
+ *   openSearch — called when Ctrl+F is pressed
  */
-function init({ openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel }) {
+function init({ openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel, openSearch }) {
   buildModal();
 
   window.addEventListener('keydown', (e) => {
-    handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel });
+    handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel, openSearch });
   });
 }
 
@@ -88,13 +90,20 @@ function init({ openFile, setTool, undo, redo, fitPage, prevPage, nextPage, scre
  * Dispatches a keydown event to the appropriate action.
  *
  * @param {KeyboardEvent} e
- * @param {{ openFile: Function, setTool: Function, undo: Function }} callbacks
+ * @param {{ openFile: Function, setTool: Function, undo: Function, openSearch: Function }} callbacks
  */
-function handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel }) {
+function handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel, openSearch }) {
   // Ctrl+O: open file (fires regardless of editable target)
   if (e.ctrlKey && !e.shiftKey && e.key === 'o') {
     e.preventDefault();
     openFile();
+    return;
+  }
+
+  // Ctrl+F: search (fires regardless of editable target so it works in notes)
+  if (e.ctrlKey && !e.shiftKey && e.key === 'f') {
+    e.preventDefault();
+    openSearch?.();
     return;
   }
 

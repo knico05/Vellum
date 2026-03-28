@@ -141,6 +141,15 @@
     </div>
   </div>
 
+  <!-- Search bar — floating overlay, opened by Ctrl+F, closed by Escape -->
+  <div id="search-bar" class="hidden">
+    <input id="search-input" type="text" placeholder="Search…" autocomplete="off" spellcheck="false" />
+    <span id="search-count" class="search-count"></span>
+    <button class="search-btn" id="btn-search-prev" title="Previous match (Shift+Enter)">▲</button>
+    <button class="search-btn" id="btn-search-next" title="Next match (Enter)">▼</button>
+    <button class="search-btn" id="btn-search-close" title="Close (Escape)">✕</button>
+  </div>
+
   <script type="module" src="app.js"></script>
 </body>
 </html>
