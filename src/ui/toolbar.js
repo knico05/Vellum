@@ -479,6 +479,7 @@ async function _checkForUpdates() {
   } catch {
     // Network unavailable or repo not configured — silently do nothing
   }
+}
 
 // ---------------------------------------------------------------------------
 // Tool switching

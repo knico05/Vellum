@@ -825,6 +825,10 @@ button:focus-visible {
   color: var(--accent-hover);
 }
 
+.update-badge.hidden {
+  display: none;
+}
+
 /* ---------------------------------------------------------------------------
    Tool buttons (icon-only, 32×32, in the toolbar tool group)
 --------------------------------------------------------------------------- */

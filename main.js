@@ -54,6 +54,11 @@ function _isNewerVersion(latest, current) {
   return lPatch > cPatch;
 }
 
+// Prevent Windows Xbox Game Bar from injecting its overlay into the Electron
+// window. Without this, Chromium registers as a "game" and Windows pops up an
+// "ms-gamingoverlay" dialog every time the app launches.
+app.commandLine.appendSwitch('disable-features', 'GameOverlayEmbeddedBrowser');
+
 // ---------------------------------------------------------------------------
 // Window creation
 // ---------------------------------------------------------------------------
