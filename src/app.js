@@ -290,12 +290,54 @@ document.getElementById('canvas-container').addEventListener('viewport-changed',
   requestRender();
 });
 
-// Pen auto-draw — when cursor (no tool) is active and the user touches down
-// with a stylus, automatically switch to draw so sketching starts immediately.
-document.getElementById('canvas-container').addEventListener('pointerdown', (e) => {
+// ---------------------------------------------------------------------------
+// Pen barrel-button / eraser-end → temporary eraser mode
+//
+// Two hardware signals map to "erase":
+//   e.buttons & 2  — barrel button held (side button on most styluses)
+//   e.buttons & 32 — physical eraser end (e.g. Surface Pen flipped over)
+//
+// On pen down with either signal active: save the current tool and switch
+// to eraser. On pen up: restore the saved tool automatically, just like
+// GoodNotes / OneNote.
+//
+// Normal pen down (no button): auto-switch to draw when no tool is active
+// (existing behaviour, unchanged).
+// ---------------------------------------------------------------------------
+
+/** Tool that was active before a barrel/eraser-end pen gesture started, or null */
+let _penEraserPreviousTool = null;
+
+const _canvasContainer = document.getElementById('canvas-container');
+
+_canvasContainer.addEventListener('pointerdown', (e) => {
   if (e.pointerType !== 'pen') return;
-  if (getActiveTool() === null) setActiveTool('draw');
+
+  const isBarrel = !!(e.buttons & 2);   // barrel / side button
+  const isEraser = !!(e.buttons & 32);  // physical eraser end
+
+  if (isBarrel || isEraser) {
+    // Only save the previous tool once (guard against repeated pointerdown events)
+    if (_penEraserPreviousTool === null) {
+      _penEraserPreviousTool = getActiveTool();
+    }
+    if (getActiveTool() !== 'eraser') setActiveTool('eraser');
+  } else {
+    // Normal pen tip — auto-switch to draw when no tool is selected
+    if (getActiveTool() === null) setActiveTool('draw');
+  }
 }, { capture: true });
+
+function _onPenLift(e) {
+  if (e.pointerType !== 'pen') return;
+  if (_penEraserPreviousTool === null) return;
+  // Restore the tool that was active before barrel/eraser-end was pressed
+  setActiveTool(_penEraserPreviousTool);
+  _penEraserPreviousTool = null;
+}
+
+_canvasContainer.addEventListener('pointerup',     _onPenLift, { capture: true });
+_canvasContainer.addEventListener('pointercancel', _onPenLift, { capture: true });
 
 // Ctrl+V — paste clipboard image onto canvas
 document.addEventListener('keydown', async (e) => {
