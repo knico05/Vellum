@@ -239,16 +239,9 @@ function buildModal() {
       if (e.target === modalEl) hideModal();
     });
   }
-
-  // Escape key also closes the modal (handled above, but belt-and-suspenders)
-  // Note: this is handled via the main keydown handler's 'Escape' case setting
-  // setTool(null) — but we also need to close the modal specifically.
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && modalVisible) {
-      e.preventDefault();
-      hideModal();
-    }
-  });
+  // Note: Escape is handled by the main keydown handler in handleKeyDown().
+  // A separate listener here would fire first, zero out modalVisible, and cause
+  // the main handler to also call setTool(null) — deactivating the active tool.
 }
 
 /**

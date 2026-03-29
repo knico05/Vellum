@@ -14,7 +14,7 @@
  *   - Segments use round line caps and joins for a smooth, natural feel.
  *   - Live preview draws on the foreground canvas each frame via registerOverlay.
  *
- * Exports: init(), activate(), deactivate(), setColour(), setStrokeWidth()
+ * Exports: init(), activate(), deactivate(), setColour(), setStrokeWidth(), setPressureSensitive(), setShapeSnap()
  */
 
 'use strict';
@@ -24,6 +24,7 @@ import { registerOverlay, requestRender } from '../canvas/renderer.js';
 import { add, getAll }                    from './manager.js';
 import { resolvePageId }                  from '../pages/pageManager.js';
 import { getDragOffset }                  from './select.js';
+import { detectShape }                    from './shape.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,6 +69,19 @@ let drawing = false;
 /** Whether stroke width varies with stylus pressure (default on) */
 let pressureSensitive = true;
 
+/** Whether hold-to-snap shape recognition is enabled */
+let shapeSnapOn = true;
+
+/** setTimeout handle for the 1-second hold timer */
+let holdTimer = null;
+
+/**
+ * Shape snap result from detectShape(), set by the hold timer.
+ * Structure: { shapeType, idealPoints? } for line/rect, or { shapeType, cx, cy, r } for circle.
+ * When set, the live preview and commit use this instead of livePoints.
+ */
+let snappedData = null;
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
@@ -96,9 +110,12 @@ function activate() {
 }
 
 function deactivate() {
-  active     = false;
-  drawing    = false;
-  livePoints = [];
+  clearTimeout(holdTimer);
+  holdTimer   = null;
+  active      = false;
+  drawing     = false;
+  livePoints  = [];
+  snappedData = null;
   container.classList.remove('tool-active');
   requestRender();
 }
@@ -116,6 +133,11 @@ function setStrokeWidth(width) {
 /** @param {boolean} enabled — Whether stylus pressure affects stroke width */
 function setPressureSensitive(enabled) {
   pressureSensitive = enabled;
+}
+
+/** @param {boolean} enabled — Whether hold-to-snap shape recognition is active */
+function setShapeSnap(enabled) {
+  shapeSnapOn = enabled;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +161,10 @@ function onMove(e) {
   if (!active || !drawing) return;
   if (e.pointerType === 'touch') return;
 
+  // Once a shape has snapped, lock the preview — micro-tremor must not un-snap it.
+  // The user will commit on pen-up or naturally move away if they changed their mind.
+  if (snappedData) return;
+
   const pt   = makePoint(e);
   const last = livePoints[livePoints.length - 1];
 
@@ -148,6 +174,13 @@ function onMove(e) {
   const dy = pt.y - last.y;
   if (Math.sqrt(dx * dx + dy * dy) >= minPointDistance(currentWidth)) {
     livePoints.push(pt);
+
+    // Movement detected: cancel any pending snap and restart the hold timer
+    clearTimeout(holdTimer);
+    if (shapeSnapOn) {
+      holdTimer = setTimeout(_trySnapHold, 500);
+    }
+
     requestRender();
   }
 }
@@ -156,20 +189,48 @@ function onUp(e) {
   if (!active || !drawing) return;
   if (e.pointerType === 'touch') return;
 
+  // Cancel hold timer — commit happens now regardless
+  clearTimeout(holdTimer);
+  holdTimer = null;
+
   // Push the exact release position so the stroke ends precisely
   livePoints.push(makePoint(e));
   commitStroke();
 
-  drawing    = false;
-  livePoints = [];
+  drawing     = false;
+  livePoints  = [];
+  snappedData = null;
   requestRender();
 }
 
 function onCancel() {
   // Stylus lifted out of range, or touch cancelled — discard the stroke
-  drawing    = false;
-  livePoints = [];
+  clearTimeout(holdTimer);
+  holdTimer   = null;
+  drawing     = false;
+  livePoints  = [];
+  snappedData = null;
   requestRender();
+}
+
+// ---------------------------------------------------------------------------
+// Shape snap (hold-to-snap)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fired by the hold timer after 1 second of no pen movement.
+ * Runs shape detection on the current livePoints and stores the idealised
+ * replacement data in snappedData. The live preview immediately shows
+ * the snapped shape while the pen is still held down.
+ */
+function _trySnapHold() {
+  holdTimer = null;
+  if (!drawing || livePoints.length < 5) return;
+  const snap = detectShape(livePoints);
+  if (snap) {
+    snappedData = snap; // { shapeType, idealPoints? } or { shapeType, cx, cy, r }
+    requestRender();    // immediately show snapped shape in live preview
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +240,31 @@ function onCancel() {
 function commitStroke() {
   if (livePoints.length < 2) return; // Tap with no drag — ignore
 
-  // Compute centroid to resolve which page the stroke belongs to
+  if (snappedData) {
+    // Commit the recognised shape with its geometry stored explicitly
+    const base = {
+      type:        'draw',
+      shapeType:   snappedData.shapeType,
+      strokeWidth: currentWidth,
+      colour:      currentColour,
+    };
+
+    if (snappedData.shapeType === 'circle') {
+      add({ ...base, pageId: resolvePageId(snappedData.cx, snappedData.cy),
+                     cx: snappedData.cx, cy: snappedData.cy, r: snappedData.r,
+                     points: [] });
+    } else {
+      // line or rect — use idealPoints
+      const pts = snappedData.idealPoints;
+      let pcx = 0, pcy = 0;
+      for (const p of pts) { pcx += p.x; pcy += p.y; }
+      add({ ...base, pageId: resolvePageId(pcx / pts.length, pcy / pts.length),
+                     points: pts.slice() });
+    }
+    return;
+  }
+
+  // Normal freehand stroke
   let cx = 0, cy = 0;
   for (const p of livePoints) { cx += p.x; cy += p.y; }
   cx /= livePoints.length;
@@ -206,17 +291,31 @@ function drawExisting(ctx) {
     if (offset) {
       ctx.save();
       ctx.translate(offset.dx, offset.dy);
-      drawPath(ctx, anno.points, anno.strokeWidth, anno.colour);
+      _renderAnnotation(ctx, anno);
       ctx.restore();
     } else {
-      drawPath(ctx, anno.points, anno.strokeWidth, anno.colour);
+      _renderAnnotation(ctx, anno);
     }
   }
 }
 
 /** Draws the stroke in progress while the pointer is still held. */
 function drawLivePreview(ctx) {
-  if (!drawing || livePoints.length < 2) return;
+  if (!drawing) return;
+
+  if (snappedData) {
+    // Render the snapped shape using its proper geometry
+    const w = _shapeWidth(currentWidth);
+    if (snappedData.shapeType === 'circle') {
+      drawCircle(ctx, snappedData.cx, snappedData.cy, snappedData.r, w, currentColour);
+    } else {
+      drawShapePath(ctx, snappedData.idealPoints,
+                    snappedData.shapeType === 'rect', w, currentColour);
+    }
+    return;
+  }
+
+  if (livePoints.length < 2) return;
   drawPath(ctx, livePoints, currentWidth, currentColour);
 }
 
@@ -276,6 +375,89 @@ function drawPath(ctx, points, baseWidth, colour) {
 }
 
 // ---------------------------------------------------------------------------
+// Shape rendering helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Dispatches to the correct renderer based on anno.shapeType.
+ * Falls back to drawPath for normal freehand strokes (no shapeType).
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {object} anno — draw annotation
+ */
+function _renderAnnotation(ctx, anno) {
+  const w = anno.shapeType ? _shapeWidth(anno.strokeWidth) : null;
+  switch (anno.shapeType) {
+    case 'line':
+      drawShapePath(ctx, anno.points, false, w, anno.colour);
+      break;
+    case 'rect':
+      drawShapePath(ctx, anno.points, true, w, anno.colour);
+      break;
+    case 'circle':
+      drawCircle(ctx, anno.cx, anno.cy, anno.r, w, anno.colour);
+      break;
+    default:
+      drawPath(ctx, anno.points, anno.strokeWidth, anno.colour);
+  }
+}
+
+/**
+ * Computes the stroke width for a shape annotation, enforcing a minimum of
+ * 1.5 physical pixels regardless of zoom level.
+ *
+ * @param {number} baseWidth — Canvas-unit stroke width
+ * @returns {number}
+ */
+function _shapeWidth(baseWidth) {
+  const dpr = window.devicePixelRatio || 1;
+  return Math.max(baseWidth, 1.5 / (viewport.scale * dpr));
+}
+
+/**
+ * Renders a line or rectangle using straight lineTo segments.
+ * For rects, closePath() is called to close the fourth side with a sharp corner.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Array<{x,y}>} points    — corner points (2 for line, 4 for rect)
+ * @param {boolean} close          — true for rect (closePath), false for line
+ * @param {number} width           — stroke width in canvas units
+ * @param {string} colour          — CSS colour string
+ */
+function drawShapePath(ctx, points, close, width, colour) {
+  if (points.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  if (close) ctx.closePath();
+  ctx.strokeStyle = colour;
+  ctx.lineWidth   = width;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'miter'; // sharp corners for rectangles
+  ctx.stroke();
+}
+
+/**
+ * Renders a circle using ctx.arc() — geometrically perfect, no bezier distortion.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} cx     — centre x in canvas units
+ * @param {number} cy     — centre y in canvas units
+ * @param {number} r      — radius in canvas units
+ * @param {number} width  — stroke width in canvas units
+ * @param {string} colour — CSS colour string
+ */
+function drawCircle(ctx, cx, cy, r, width, colour) {
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+  ctx.strokeStyle = colour;
+  ctx.lineWidth   = width;
+  ctx.stroke();
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -300,4 +482,4 @@ function makePoint(e) {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init as initDraw, activate, deactivate, setColour, setStrokeWidth, setPressureSensitive };
+export { init as initDraw, activate, deactivate, setColour, setStrokeWidth, setPressureSensitive, setShapeSnap };
