@@ -808,6 +808,23 @@ button:focus-visible {
   background: var(--surface-1);
 }
 
+/* Update available badge — shown in toolbar when a newer version exists */
+.update-badge {
+  background: rgba(91, 138, 245, 0.15);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  gap: 4px;
+}
+
+.update-badge:hover {
+  background: rgba(91, 138, 245, 0.25);
+  border-color: var(--accent-hover);
+  color: var(--accent-hover);
+}
+
 /* ---------------------------------------------------------------------------
    Tool buttons (icon-only, 32×32, in the toolbar tool group)
 --------------------------------------------------------------------------- */

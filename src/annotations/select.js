@@ -285,6 +285,18 @@ function onPointerUp() {
 
   if (lassoPoints && lassoPoints.length >= 3) {
     finaliseSelection();
+  } else if (lassoPoints && lassoPoints.length < 3) {
+    // Click (not a drag) — hit-test for a single annotation to select
+    const { x: cx, y: cy } = lassoPoints[0];
+    const hit = hitTestAnnotation(cx, cy);
+    if (hit) {
+      selectedIds.clear();
+      selectedIds.add(hit.id);
+      selectionBounds = computeUnionBounds(selectedIds);
+      updateActionBar();
+    } else {
+      clearSelection();
+    }
   }
   lassoPoints = null;
   requestRender();
@@ -672,10 +684,12 @@ function updateActionBar() {
   const midCanvasX = selectionBounds.x + selectionBounds.w / 2;
   const topCanvasY = selectionBounds.y + (dragging ? deltaY : 0);
   const { x: sx, y: sy } = toScreen(midCanvasX, topCanvasY);
+  // toScreen() is container-relative; action bar is position:fixed (viewport-relative)
+  const cRect = container.getBoundingClientRect();
   const barW = actionBarEl.offsetWidth  || 80;
   const barH = actionBarEl.offsetHeight || 36;
-  actionBarEl.style.left = `${Math.round(sx - barW / 2)}px`;
-  actionBarEl.style.top  = `${Math.round(sy - barH - 8)}px`;
+  actionBarEl.style.left = `${Math.round(sx + cRect.left - barW / 2)}px`;
+  actionBarEl.style.top  = `${Math.round(sy + cRect.top - barH - 8)}px`;
 }
 
 /**
@@ -760,12 +774,15 @@ function updateHandles() {
 
 /**
  * Shows a handle element at screen position (sx, sy) with the given cursor.
+ * sx/sy are container-relative (from toScreen()). Since handles are
+ * position:fixed, we must add the container's viewport offset.
  */
 function placeHandle(pos, { x: sx, y: sy }, cursor) {
+  const rect = container.getBoundingClientRect();
   const el = handleEls[pos];
   el.classList.remove('hidden');
-  el.style.left   = `${Math.round(sx)}px`;
-  el.style.top    = `${Math.round(sy)}px`;
+  el.style.left   = `${Math.round(sx + rect.left)}px`;
+  el.style.top    = `${Math.round(sy + rect.top)}px`;
   if (el.style.cursor !== cursor) el.style.cursor = cursor;
 }
 
@@ -857,6 +874,64 @@ function drawOverlay(ctx) {
     // For line/rect/circle modes the dashed overlay is replaced by the shape
     // handles themselves (no separate bounding box drawn — it's visually redundant)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Hit testing
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the topmost annotation that contains the canvas-space point (cx, cy),
+ * or null if nothing is there.
+ *
+ * Hit regions:
+ *   textBox / image  — rectangle
+ *   circle           — filled circle with 8px tolerance
+ *   draw / highlight — bounding box of points with 8px tolerance
+ *   blankPage        — ignored
+ *
+ * @param {number} cx — Canvas x
+ * @param {number} cy — Canvas y
+ * @returns {object|null}
+ */
+function hitTestAnnotation(cx, cy) {
+  const PAD = 8; // canvas units tolerance for thin strokes / small shapes
+  const all = getAll();
+
+  // Iterate in reverse so topmost (last-drawn) wins
+  for (let i = all.length - 1; i >= 0; i--) {
+    const anno = all[i];
+    if (anno.type === 'blankPage') continue;
+
+    if (anno.type === 'textBox' || anno.type === 'image') {
+      if (cx >= anno.canvasX - PAD && cx <= anno.canvasX + anno.width  + PAD &&
+          cy >= anno.canvasY - PAD && cy <= anno.canvasY + anno.height + PAD) {
+        return anno;
+      }
+    } else if (anno.shapeType === 'circle') {
+      const dx = cx - anno.cx;
+      const dy = cy - anno.cy;
+      if (Math.sqrt(dx * dx + dy * dy) <= anno.r + PAD) return anno;
+    } else if (anno.points?.length) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const p of anno.points) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+      if (cx >= minX - PAD && cx <= maxX + PAD &&
+          cy >= minY - PAD && cy <= maxY + PAD) {
+        return anno;
+      }
+    } else if (anno.canvasX !== undefined) {
+      if (cx >= anno.canvasX - PAD && cx <= anno.canvasX + (anno.width  ?? 0) + PAD &&
+          cy >= anno.canvasY - PAD && cy <= anno.canvasY + (anno.height ?? 0) + PAD) {
+        return anno;
+      }
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

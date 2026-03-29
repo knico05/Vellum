@@ -1,5 +1,5 @@
 {
-  "name": "pdf-annotator",
+  "name": "vellum",
   "version": "1.0.0",
   "description": "A personal desktop app for annotating PDFs and taking notes",
   "main": "main.js",
@@ -16,8 +16,9 @@
     "electron-builder": "^26.8.1"
   },
   "build": {
-    "appId": "com.marco.pdf-annotator",
-    "productName": "PDF Annotator",
+    "appId": "com.knico05.vellum",
+    "productName": "Vellum",
+    "artifactName": "Vellum-Setup.exe",
     "directories": {
       "output": "dist"
     },

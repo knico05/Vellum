@@ -180,7 +180,7 @@ async function loadFile(filePath) {
 
   // Update window title to reflect the open file
   const filename = filePath.replace(/\\/g, '/').split('/').pop();
-  document.title = `${filename} — QuickNotes`;
+  document.title = `${filename} — Vellum`;
 
   try {
     // 1. Load the PDF — builds the default page list (PDF pages only)

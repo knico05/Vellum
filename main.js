@@ -19,10 +19,40 @@
 
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const https = require('https');
+
+// ---------------------------------------------------------------------------
+// Update check config — fill in YOUR GitHub username/repo before publishing
+// ---------------------------------------------------------------------------
+
+/**
+ * The GitHub repo to check for new releases.
+ * Format: 'username/repo-name'
+ * Tag format expected: 'v1.2.3'
+ */
+const GITHUB_REPO = 'knico05/Vellum';
+
+/**
+ * Returns true if `latest` is a strictly newer semver than `current`.
+ * Both strings should be in 'major.minor.patch' format (no 'v' prefix).
+ *
+ * @param {string} latest
+ * @param {string} current
+ * @returns {boolean}
+ */
+function _isNewerVersion(latest, current) {
+  if (!latest || !current) return false;
+  const parse = v => v.split('.').map(n => parseInt(n, 10) || 0);
+  const [lMaj, lMin, lPatch] = parse(latest);
+  const [cMaj, cMin, cPatch] = parse(current);
+  if (lMaj !== cMaj) return lMaj > cMaj;
+  if (lMin !== cMin) return lMin > cMin;
+  return lPatch > cPatch;
+}
 
 // ---------------------------------------------------------------------------
 // Window creation
@@ -429,6 +459,68 @@ function setupIPC(win) {
       case 'minimise': win.minimize(); break;
       case 'maximise': win.isMaximized() ? win.unmaximize() : win.maximize(); break;
       case 'close':    win.close(); break;
+    }
+  });
+
+  /**
+   * check-for-updates — fetches the latest GitHub release and compares it
+   * against the current app version.
+   *
+   * Returns:
+   *   { currentVersion, latestVersion, releaseUrl, hasUpdate }
+   *
+   * On network error or timeout, resolves with hasUpdate: false so the app
+   * starts cleanly even when offline.
+   */
+  ipcMain.handle('check-for-updates', () => {
+    const currentVersion = app.getVersion();
+
+    return new Promise((resolve) => {
+      const options = {
+        hostname: 'api.github.com',
+        path:     `/repos/${GITHUB_REPO}/releases/latest`,
+        headers:  { 'User-Agent': 'PDF-Annotator-UpdateCheck' },
+      };
+
+      const req = https.get(options, (res) => {
+        let raw = '';
+        res.on('data', chunk => { raw += chunk; });
+        res.on('end', () => {
+          try {
+            const release      = JSON.parse(raw);
+            const tag          = release.tag_name  ?? '';
+            const latestVersion = tag.replace(/^v/, '');
+            const releaseUrl   = release.html_url  ?? '';
+            const hasUpdate    = _isNewerVersion(latestVersion, currentVersion);
+            resolve({ currentVersion, latestVersion, releaseUrl, hasUpdate });
+          } catch {
+            resolve({ currentVersion, latestVersion: null, releaseUrl: null, hasUpdate: false });
+          }
+        });
+      });
+
+      // Network error (offline, DNS fail, etc.) — fail gracefully
+      req.on('error', () => {
+        resolve({ currentVersion, latestVersion: null, releaseUrl: null, hasUpdate: false });
+      });
+
+      // 8-second timeout — avoids hanging on a slow connection at startup
+      req.setTimeout(8000, () => {
+        req.destroy();
+        resolve({ currentVersion, latestVersion: null, releaseUrl: null, hasUpdate: false });
+      });
+    });
+  });
+
+  /**
+   * open-external — opens a URL in the user's default browser.
+   * The renderer cannot call shell.openExternal directly (sandboxed), so it
+   * goes through this handler instead.
+   */
+  ipcMain.handle('open-external', (_event, url) => {
+    // Only allow https:// URLs — prevents accidental file:// or js: navigation
+    if (typeof url === 'string' && url.startsWith('https://')) {
+      shell.openExternal(url);
     }
   });
 }

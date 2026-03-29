@@ -188,4 +188,21 @@ contextBridge.exposeInMainWorld('api', {
   windowControl: (action) =>
     ipcRenderer.send('window-control', action),
 
+  /**
+   * Checks GitHub for a newer release.
+   * Resolves to { currentVersion, latestVersion, releaseUrl, hasUpdate }.
+   * Always resolves (never rejects) — returns hasUpdate: false when offline.
+   * @returns {Promise<{currentVersion:string, latestVersion:string|null, releaseUrl:string|null, hasUpdate:boolean}>}
+   */
+  checkForUpdates: () =>
+    ipcRenderer.invoke('check-for-updates'),
+
+  /**
+   * Opens a URL in the user's default browser.
+   * Only https:// URLs are accepted by the main process.
+   * @param {string} url
+   */
+  openExternal: (url) =>
+    ipcRenderer.invoke('open-external', url),
+
 });

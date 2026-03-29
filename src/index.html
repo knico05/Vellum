@@ -14,14 +14,14 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self' file:; script-src 'self' file:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: file:; worker-src blob: file:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PDF Annotator</title>
+  <title>Vellum</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="app">
     <!-- Title bar — rendered by us because window is frameless -->
     <div id="titlebar">
-      <span id="titlebar-title">PDF Annotator</span>
+      <span id="titlebar-title">Vellum</span>
       <div id="titlebar-controls">
         <button class="titlebar-btn" id="btn-minimise" title="Minimise">&#x2212;</button>
         <button class="titlebar-btn" id="btn-maximise" title="Maximise">&#x25A1;</button>
@@ -58,11 +58,13 @@
       <div id="stroke-picker" style="display:none;align-items:center;gap:4px;margin-left:4px;"></div>
       <div id="eraser-mode-picker" style="display:none;align-items:center;gap:4px;margin-left:4px;"></div>
       <div id="pressure-toggle" style="display:none;align-items:center;margin-left:4px;"></div>
+      <div id="shape-snap-toggle" style="display:none;align-items:center;margin-left:4px;"></div>
       <div class="toolbar-sep" id="colour-sep" style="display:none;"></div>
       <div class="toolbar-spacer"></div>
       <span class="toolbar-label" id="lbl-save-status"></span>
       <span class="toolbar-label" id="lbl-page"></span>
       <span class="toolbar-label" id="lbl-zoom"></span>
+      <button class="toolbar-btn update-badge hidden" id="btn-update" title="Update available — click to download"></button>
       <div class="toolbar-sep"></div>
       <button class="tool-btn" id="btn-screenshot" title="Screenshot to clipboard (Ctrl+Shift+S)">
         <svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">

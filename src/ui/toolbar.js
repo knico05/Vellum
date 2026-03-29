@@ -32,6 +32,7 @@ import {
   setColour          as setDrawColour,
   setStrokeWidth     as setDrawStrokeWidth,
   setPressureSensitive,
+  setShapeSnap,
 } from '../annotations/draw.js';
 
 import {
@@ -240,6 +241,12 @@ let pressureToggleEl = null;
 /** Whether pressure sensitivity is currently on */
 let pressureOn = true;
 
+/** The #shape-snap-toggle container element */
+let shapeSnapToggleEl = null;
+
+/** Whether hold-to-snap shape recognition is currently on */
+let shapeSnapOn = true;
+
 /** The #lbl-page label element */
 let lblPageEl = null;
 
@@ -261,6 +268,7 @@ function init() {
   strokePickerEl     = document.getElementById('stroke-picker');
   eraserModePickerEl = document.getElementById('eraser-mode-picker');
   pressureToggleEl   = document.getElementById('pressure-toggle');
+  shapeSnapToggleEl  = document.getElementById('shape-snap-toggle');
   lblPageEl          = document.getElementById('lbl-page');
   lblZoomEl          = document.getElementById('lbl-zoom');
 
@@ -416,6 +424,24 @@ function init() {
   });
   pressureToggleEl.appendChild(pressureBtn);
 
+  // ── Shape snap toggle (draw tool only) ─────────────────────────────────────
+  const shapeSnapBtn = document.createElement('button');
+  shapeSnapBtn.id        = 'btn-shape-snap-toggle';
+  shapeSnapBtn.className = 'tool-btn shape-snap-toggle-btn';
+  shapeSnapBtn.title     = 'Shape snap — hold pen for 1 s to snap to line, rect, or circle';
+  shapeSnapBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="3" y="3" width="7" height="7" rx="1" stroke="currentColor" stroke-width="1.5"/>
+    <circle cx="14.5" cy="14.5" r="3" stroke="currentColor" stroke-width="1.5"/>
+  </svg>`;
+  shapeSnapBtn.classList.toggle('active', shapeSnapOn);
+  shapeSnapBtn.addEventListener('click', () => {
+    shapeSnapOn = !shapeSnapOn;
+    shapeSnapBtn.classList.toggle('active', shapeSnapOn);
+    setShapeSnap(shapeSnapOn);
+    saveToolSettings();
+  });
+  shapeSnapToggleEl.appendChild(shapeSnapBtn);
+
   // When a text box is placed, the note tool self-deactivates — switch to cursor
   document.addEventListener('note-placed', () => {
     setActiveTool(null);
@@ -425,7 +451,34 @@ function init() {
   document.addEventListener('request-cursor-tool', () => {
     if (activeTool !== null) setActiveTool(null);
   });
+
+  // Check for updates in the background — delayed so it doesn't compete with
+  // startup rendering. Shows a badge in the toolbar if a newer release exists.
+  setTimeout(_checkForUpdates, 4000);
 }
+
+/**
+ * Fetches the latest GitHub release and shows the update badge if a newer
+ * version is available. Fails silently — offline users see nothing.
+ */
+async function _checkForUpdates() {
+  try {
+    const result = await window.api.checkForUpdates();
+    if (!result?.hasUpdate) return;
+
+    const btn = document.getElementById('btn-update');
+    if (!btn) return;
+
+    btn.textContent = `⬆ v${result.latestVersion}`;
+    btn.title       = `Update available: v${result.latestVersion} — click to download`;
+    btn.classList.remove('hidden');
+
+    btn.addEventListener('click', () => {
+      if (result.releaseUrl) window.api.openExternal(result.releaseUrl);
+    });
+  } catch {
+    // Network unavailable or repo not configured — silently do nothing
+  }
 
 // ---------------------------------------------------------------------------
 // Tool switching
@@ -688,8 +741,9 @@ function saveToolSettings() {
   const entry = {};
   if (COLOUR_TOOLS.has(activeTool)) entry.colour    = activeColour;
   if (STROKE_TOOLS.has(activeTool)) entry.sizeId    = activeStrokeSize;
-  if (activeTool === 'eraser')      entry.eraseMode = activeEraseMode;
-  if (activeTool === 'draw')        entry.pressure  = pressureOn;
+  if (activeTool === 'eraser')      entry.eraseMode  = activeEraseMode;
+  if (activeTool === 'draw')        entry.pressure   = pressureOn;
+  if (activeTool === 'draw')        entry.shapeSnap  = shapeSnapOn;
   if (Object.keys(entry).length === 0) return;
   toolSettings[activeTool] = entry;
   localStorage.setItem(LS_TOOL_SETTINGS, JSON.stringify(toolSettings));
@@ -714,7 +768,8 @@ function restoreToolSettings(toolName) {
     activeEraseMode = saved?.eraseMode ?? 'partial';
   }
   if (toolName === 'draw') {
-    pressureOn = saved?.pressure ?? true;
+    pressureOn  = saved?.pressure  ?? true;
+    shapeSnapOn = saved?.shapeSnap ?? true;
   }
 }
 
@@ -743,12 +798,14 @@ function updateColourPickerVisibility() {
   const strokeVisible      = activeTool !== null && STROKE_TOOLS.has(activeTool);
   const eraserModeVisible  = activeTool === 'eraser';
   const pressureVisible    = activeTool === 'draw';
+  const shapeSnapVisible   = activeTool === 'draw';
 
   colourPickerEl.style.display      = colourVisible     ? 'flex'  : 'none';
   colourSepEl.style.display         = colourVisible     ? 'block' : 'none';
   strokePickerEl.style.display      = strokeVisible     ? 'flex'  : 'none';
   eraserModePickerEl.style.display  = eraserModeVisible ? 'flex'  : 'none';
   pressureToggleEl.style.display    = pressureVisible   ? 'flex'  : 'none';
+  shapeSnapToggleEl.style.display   = shapeSnapVisible  ? 'flex'  : 'none';
 
   if (colourVisible || strokeVisible || eraserModeVisible || pressureVisible) {
     restoreToolSettings(activeTool);
@@ -767,6 +824,10 @@ function updateColourPickerVisibility() {
     if (pressureVisible) {
       document.getElementById('btn-pressure-toggle')?.classList.toggle('active', pressureOn);
       setPressureSensitive(pressureOn);
+    }
+    if (shapeSnapVisible) {
+      document.getElementById('btn-shape-snap-toggle')?.classList.toggle('active', shapeSnapOn);
+      setShapeSnap(shapeSnapOn);
     }
   }
 }
