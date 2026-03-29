@@ -44,6 +44,12 @@ const BLANK_HEIGHT = 842;
 /** Maximum number of PDF.js renders running in parallel */
 const MAX_CONCURRENT_RENDERS = 3;
 
+/** Pages fetched per batch when loading dimensions for a mixed-size document */
+const DIM_BATCH_SIZE = 30;
+
+/** Number of sample pages used to detect uniform page size */
+const DIM_SAMPLE_COUNT = 5;
+
 // ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
@@ -132,6 +138,49 @@ function recomputeLayout() {
 // ---------------------------------------------------------------------------
 
 /**
+ * Loads page dimensions for all pages in a PDF document efficiently.
+ *
+ * Fast path (common case): samples DIM_SAMPLE_COUNT pages spread across the
+ * document. If all samples have identical dimensions (typical for academic PDFs),
+ * the sampled size is used for every page without further fetches.
+ *
+ * Slow path (mixed-size PDFs): falls back to batch-fetching all pages in groups
+ * of DIM_BATCH_SIZE to avoid overwhelming the PDF.js worker with hundreds of
+ * concurrent requests.
+ *
+ * @param {import('pdfjs-dist').PDFDocumentProxy} doc
+ * @param {number} numPages
+ * @returns {Promise<Array<{width: number, height: number}>>}
+ */
+async function _loadAllPageDimensions(doc, numPages) {
+  if (numPages === 0) return [];
+
+  // Sample pages spread evenly across the document
+  const sampleIndices = new Set();
+  for (let i = 0; i < DIM_SAMPLE_COUNT && i < numPages; i++) {
+    sampleIndices.add(Math.round(i * (numPages - 1) / Math.max(DIM_SAMPLE_COUNT - 1, 1)));
+  }
+  const samples = await Promise.all([...sampleIndices].map(i => getPageDimensions(doc, i)));
+
+  // Fast path: all sampled pages share the same size → assume the whole PDF is uniform
+  const { width, height } = samples[0];
+  if (samples.every(d => d.width === width && d.height === height)) {
+    return Array.from({ length: numPages }, () => ({ width, height }));
+  }
+
+  // Slow path: mixed page sizes — fetch in batches so the worker isn't overwhelmed
+  const dims = new Array(numPages);
+  for (let i = 0; i < numPages; i += DIM_BATCH_SIZE) {
+    const end = Math.min(i + DIM_BATCH_SIZE, numPages);
+    const batch = await Promise.all(
+      Array.from({ length: end - i }, (_, j) => getPageDimensions(doc, i + j))
+    );
+    batch.forEach((d, j) => { dims[i + j] = d; });
+  }
+  return dims;
+}
+
+/**
  * Opens a PDF file and builds the default page list (all PDF pages in order).
  * Called by app.js before loadPageList() — loadPageList() may then override
  * the default order with a saved order that includes blank pages.
@@ -152,9 +201,7 @@ async function openPDF(filePath) {
   pdfDoc = await loadPDF(bytes);
 
   const numPages = pdfDoc.numPages;
-  const dims     = await Promise.all(
-    Array.from({ length: numPages }, (_, i) => getPageDimensions(pdfDoc, i))
-  );
+  const dims     = await _loadAllPageDimensions(pdfDoc, numPages);
 
   // Cache dimensions for use by loadPageList()
   pdfPageDims.clear();

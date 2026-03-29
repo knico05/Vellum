@@ -143,7 +143,7 @@ function init() {
   container.addEventListener('click',   onSingleClick);
   container.addEventListener('dblclick', onDoubleClick);
 
-  document.addEventListener('annotations-changed', syncElements);
+  document.addEventListener('annotations-changed', (e) => syncElements(e?.detail?.fromLoad ?? false));
   register(updatePositions);
 }
 
@@ -215,7 +215,7 @@ function placeBox(e) {
 // DOM ↔ store synchronisation
 // ---------------------------------------------------------------------------
 
-function syncElements() {
+function syncElements(fromLoad = false) {
   const annotations = getAll().filter(a => a.type === 'textBox');
   const currentIds  = new Set(annotations.map(a => a.id));
 
@@ -232,10 +232,13 @@ function syncElements() {
       container.appendChild(el);
       boxElements.set(anno.id, el);
 
-      requestAnimationFrame(() => {
-        const body = el.querySelector('.text-box-body');
-        if (body) body.focus();
-      });
+      // Only auto-focus newly placed boxes, not ones restored from a saved file.
+      if (!fromLoad) {
+        requestAnimationFrame(() => {
+          const body = el.querySelector('.text-box-body');
+          if (body) body.focus();
+        });
+      }
     } else {
       const el   = boxElements.get(anno.id);
       const body = el.querySelector('.text-box-body');

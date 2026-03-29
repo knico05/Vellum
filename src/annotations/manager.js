@@ -192,7 +192,8 @@ function loadFromJSON(loadedAnnotations) {
   } else {
     annotations = loadedAnnotations.slice();
   }
-  emit();
+  // fromLoad: true tells note.js not to auto-focus restored text boxes
+  document.dispatchEvent(new CustomEvent('annotations-changed', { detail: { fromLoad: true } }));
 }
 
 /**

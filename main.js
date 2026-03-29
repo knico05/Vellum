@@ -57,7 +57,12 @@ function _isNewerVersion(latest, current) {
 // Prevent Windows Xbox Game Bar from injecting its overlay into the Electron
 // window. Without this, Chromium registers as a "game" and Windows pops up an
 // "ms-gamingoverlay" dialog every time the app launches.
-app.commandLine.appendSwitch('disable-features', 'GameOverlayEmbeddedBrowser');
+app.commandLine.appendSwitch('disable-features', 'GameOverlayEmbeddedBrowser,HardwareMediaKeyHandling,MediaSessionService');
+
+// Set the App User Model ID so Windows recognises this as a known app rather
+// than an unknown process, which prevents it from prompting the Microsoft Store
+// to find a handler for various Windows protocols.
+app.setAppUserModelId('com.vellum.app');
 
 // ---------------------------------------------------------------------------
 // Window creation
@@ -103,6 +108,7 @@ function createWindow() {
   // Show the window only once it has fully rendered its first frame.
   // This eliminates the white/blank flash that would otherwise appear.
   win.once('ready-to-show', () => {
+    win.maximize();
     win.show();
   });
 
