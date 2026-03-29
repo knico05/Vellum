@@ -1123,6 +1123,39 @@ button:focus-visible {
 }
 
 /* ---------------------------------------------------------------------------
+   Selection resize handles (4 corners of the selection bounding box)
+--------------------------------------------------------------------------- */
+
+.selection-handle {
+  position: fixed;
+  width: 10px;
+  height: 10px;
+  background: var(--bg-panel);
+  border: 2px solid var(--accent);
+  border-radius: 2px;
+  z-index: 201;
+  /* Centre the handle on its coordinate point */
+  transform: translate(-50%, -50%);
+  touch-action: none;
+  pointer-events: all;
+}
+
+.selection-handle.hidden {
+  display: none;
+}
+
+/* Diagonal resize cursors — opposite corners share the same cursor */
+.selection-handle-tl,
+.selection-handle-br {
+  cursor: nwse-resize;
+}
+
+.selection-handle-tr,
+.selection-handle-bl {
+  cursor: nesw-resize;
+}
+
+/* ---------------------------------------------------------------------------
    Notes panel — page overview + notes textarea
 --------------------------------------------------------------------------- */
 
