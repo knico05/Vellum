@@ -165,6 +165,17 @@ function eraseAt(screenX, screenY) {
       return;
     }
 
+    // Circle shapes (shapeType: 'circle', stored as cx/cy/r — no points array):
+    // Remove whole annotation when the eraser touches the circle outline.
+    if (anno.type === 'draw' && anno.shapeType === 'circle') {
+      const dist = Math.sqrt((cx - anno.cx) ** 2 + (cy - anno.cy) ** 2);
+      if (Math.abs(dist - anno.r) <= ERASE_RADIUS) {
+        remove(anno.id);
+        requestRender();
+        return;
+      }
+    }
+
     // Images: not erasable (use select tool → delete button)
     // Blank pages: not erasable (canvas structure)
   }

@@ -10,25 +10,21 @@
  *      annotations together.
  *   4. Release → positions are committed to the manager (one emit so autosave
  *      fires once).
- *   5. Pointer-down on a corner handle → drag to resize all selected
- *      annotations proportionally from the opposite corner anchor.
- *   6. Pointer-down outside the bounding box → clears selection and starts a
- *      new lasso.
+ *   5. Pointer-down on a handle → shape-specific edit (see Handle modes below).
+ *   6. Pointer-down outside → clears selection and starts a new lasso.
  *   7. Escape / deactivate → clears selection.
  *
- * Point-in-polygon check uses the ray-casting algorithm, which correctly handles
- * concave and self-intersecting shapes.
- *
- * Cross-module drag preview:
- *   getDragOffset(id) is called every frame by highlight.js, draw.js, note.js,
- *   and image.js. While dragging it returns {dx, dy} so each annotation draws
- *   itself at the offset position without permanently mutating state.
+ * Handle modes (single annotation selected):
+ *   line   — 2 handles at the two endpoints; drag to reposition either end.
+ *   rect   — 4 handles at the actual corner points; drag a corner to resize.
+ *   circle — center handle (drag to move) + radius handle at (cx+r, cy) (drag
+ *             to resize the radius).
+ *   bounds — fallback (freehand draw, textBox, image, multi-selection): 4
+ *             handles at the padded bounding-box corners, proportional scale.
  *
  * Annotation type support:
- *   - draw (points array, including shaped: line / rect)
- *   - draw circle (shapeType:'circle' with cx/cy/r — no points array)
- *   - highlight (points array or canvasX/Y/width/height)
- *   - textBox, image (canvasX/Y/width/height)
+ *   draw (points[], shaped line/rect), draw circle (cx/cy/r),
+ *   highlight (points[] or canvasX/Y/w/h), textBox, image.
  *
  * Exports: initSelect(), activate(), deactivate(), getDragOffset()
  */
@@ -43,10 +39,18 @@ import { getAll, batchUpdate, add, remove }           from './manager.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Minimum canvas-unit distance between consecutive lasso points. */
 const MIN_LASSO_DISTANCE = 3;
 
-/** Canvas-space padding applied around the selection bounding box. */
+/**
+ * Padding (canvas units) added around selectionBounds for the drag-move hit
+ * test. Keeps lines and tiny shapes interactive.
+ */
+const INTERACTION_PAD = 12;
+
+/**
+ * Padding (canvas units) added around selectionBounds when drawing the dashed
+ * outline and positioning bounds-mode corner handles.
+ */
 const BOUNDS_PAD_CANVAS = 6;
 
 // ---------------------------------------------------------------------------
@@ -69,19 +73,33 @@ let lassoPoints = null;
 let selectedIds     = new Set();
 let selectionBounds = null;  // {x, y, w, h} union bounding box in canvas coords
 
-/** Moving selected annotations */
+/** Drag-move state */
 let dragging   = false;
-let dragStart  = null;  // {x, y} canvas coords
+let dragStart  = null;
 let deltaX     = 0;
 let deltaY     = 0;
 
-/** Resizing selected annotations */
+/**
+ * Resize / shape-edit state.
+ * resizeHandle encodes both mode and which element is being dragged:
+ *   'line_p0' | 'line_p1'
+ *   'rect_tl' | 'rect_tr' | 'rect_br' | 'rect_bl'
+ *   'circle_center' | 'circle_radius'
+ *   'bounds_tl' | 'bounds_tr' | 'bounds_br' | 'bounds_bl'
+ */
 let resizing        = false;
-let resizeHandle    = null;   // 'tl' | 'tr' | 'bl' | 'br'
-let resizeOrigin    = null;   // fixed anchor corner {x, y} in canvas coords
-let originalBounds  = null;   // copy of selectionBounds at resize start
-let resizeBounds    = null;   // live updated bounds during the resize drag
+let resizeHandle    = null;
+let resizeOrigin    = null;   // fixed anchor for bounds-mode scale
+let originalBounds  = null;
+let resizeBounds    = null;   // live updated bounds during bounds-mode resize
 let resizeOriginals = {};     // id → snapshot of original annotation fields
+
+/**
+ * Live preview geometry during a shape-specific edit.
+ * { mode: 'line'|'rect'|'circle', ...shapeData }
+ * Drawn in drawOverlay instead of the static selection box.
+ */
+let resizePreview = null;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -89,7 +107,7 @@ let resizeOriginals = {};     // id → snapshot of original annotation fields
 
 /**
  * Returns the current drag offset for an annotation, or null if it is not
- * selected / not being dragged. Called every frame by other annotation modules.
+ * selected / not being dragged.
  *
  * @param {string} id
  * @returns {{dx:number, dy:number}|null}
@@ -115,7 +133,6 @@ function init() {
       clearSelection();
       return;
     }
-    // Ctrl+D: duplicate selected annotations
     if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D') &&
         active && selectedIds.size > 0) {
       e.preventDefault();
@@ -184,6 +201,31 @@ function deactivate() {
 }
 
 // ---------------------------------------------------------------------------
+// Handle mode helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the current handle mode based on what is selected.
+ * @returns {'line'|'rect'|'circle'|'bounds'}
+ */
+function getHandleMode() {
+  if (selectedIds.size !== 1) return 'bounds';
+  const anno = getSingleAnno();
+  if (!anno) return 'bounds';
+  if (anno.shapeType === 'line')   return 'line';
+  if (anno.shapeType === 'rect')   return 'rect';
+  if (anno.shapeType === 'circle') return 'circle';
+  return 'bounds';
+}
+
+/** Returns the single selected annotation, or null. */
+function getSingleAnno() {
+  if (selectedIds.size !== 1) return null;
+  const [id] = selectedIds;
+  return getAll().find(a => a.id === id) ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // Input handlers — lasso and drag-move
 // ---------------------------------------------------------------------------
 
@@ -194,15 +236,15 @@ function onPointerDown(e) {
 
   const { x: cx, y: cy } = clientToCanvas(e);
 
-  if (selectionBounds && isInsideBounds(cx, cy, selectionBounds)) {
-    // Inside existing selection bounding box → start drag-move
+  if (selectionBounds && isInsideBounds(cx, cy, expandBounds(selectionBounds, INTERACTION_PAD))) {
+    // Inside existing selection → start drag-move
     dragging  = true;
     dragStart = { x: cx, y: cy };
     deltaX    = 0;
     deltaY    = 0;
     container.classList.add('tool-select-drag');
   } else {
-    // Outside or no selection → clear and start a new lasso
+    // Outside → clear and start a new lasso
     clearSelection();
     lassoPoints = [{ x: cx, y: cy }];
   }
@@ -222,7 +264,6 @@ function onPointerMove(e) {
     const last = lassoPoints[lassoPoints.length - 1];
     const dx   = cx - last.x;
     const dy   = cy - last.y;
-    // Only record when the pointer has moved far enough
     if (Math.sqrt(dx * dx + dy * dy) >= MIN_LASSO_DISTANCE) {
       lassoPoints.push({ x: cx, y: cy });
       requestRender();
@@ -250,46 +291,86 @@ function onPointerUp() {
 }
 
 // ---------------------------------------------------------------------------
-// Resize handlers
+// Resize / shape-edit handlers
 // ---------------------------------------------------------------------------
 
 /**
- * Begins a resize operation. The corner diagonally opposite to the dragged
- * handle becomes the fixed anchor — all annotations scale relative to it.
+ * Starts a shape-specific edit when a corner handle is grabbed.
+ * Routes to the correct sub-behaviour based on getHandleMode().
  *
- * @param {'tl'|'tr'|'bl'|'br'} handlePos
+ * @param {'tl'|'tr'|'bl'|'br'} handlePos — which DOM handle was grabbed
  * @param {PointerEvent} e
  */
 function startResize(handlePos, e) {
-  const { x, y, w, h } = selectionBounds;
+  const mode = getHandleMode();
+  const anno = getSingleAnno();
 
-  const anchors = {
-    tl: { x: x + w, y: y + h },
-    tr: { x: x,     y: y + h },
-    bl: { x: x + w, y: y     },
-    br: { x: x,     y: y     },
-  };
+  if (mode === 'line' && anno?.points?.length >= 2) {
+    // 'tl' → endpoint 0, 'br' → endpoint 1
+    resizeHandle = handlePos === 'tl' ? 'line_p0' : 'line_p1';
+    resizeOriginals[anno.id] = { points: anno.points.map(p => ({ ...p })) };
+    const pts = anno.points;
+    resizePreview = {
+      mode: 'line',
+      p0: { x: pts[0].x, y: pts[0].y },
+      p1: { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y },
+    };
+    resizing = true;
 
-  resizing       = true;
-  resizeHandle   = handlePos;
-  resizeOrigin   = anchors[handlePos];
-  originalBounds = { ...selectionBounds };
-  resizeBounds   = { ...selectionBounds };
+  } else if (mode === 'rect' && anno?.points?.length === 4) {
+    // Each corner handle maps to one corner; the opposite corner is the anchor.
+    const cornerMap = { tl: 0, tr: 1, br: 2, bl: 3 };
+    const anchorMap = { tl: 2, tr: 3, br: 0, bl: 1 };
+    const ci = cornerMap[handlePos];
+    const ai = anchorMap[handlePos];
+    resizeHandle  = `rect_${handlePos}`;
+    resizeOrigin  = { x: anno.points[ai].x, y: anno.points[ai].y };
+    resizeOriginals[anno.id] = { points: anno.points.map(p => ({ ...p })) };
+    resizePreview = { mode: 'rect', points: anno.points.map(p => ({ ...p })) };
+    resizing = true;
 
-  // Snapshot each selected annotation's fields that will be scaled
-  resizeOriginals = {};
-  for (const anno of getAll()) {
-    if (!selectedIds.has(anno.id)) continue;
-    const snap = { shapeType: anno.shapeType };
-    if (anno.points?.length) {
-      snap.points = anno.points.map(p => ({ ...p }));
-    } else if (anno.shapeType === 'circle') {
-      snap.cx = anno.cx; snap.cy = anno.cy; snap.r = anno.r;
-    } else if (anno.canvasX !== undefined) {
-      snap.canvasX = anno.canvasX; snap.canvasY = anno.canvasY;
-      snap.width   = anno.width;   snap.height  = anno.height;
+  } else if (mode === 'circle' && anno) {
+    resizeOriginals[anno.id] = { cx: anno.cx, cy: anno.cy, r: anno.r, shapeType: 'circle' };
+
+    if (handlePos === 'tl') {
+      // Center handle → drag-move the whole circle via the existing drag system
+      resizeHandle = 'circle_center';
+      dragging  = true;
+      dragStart = clientToCanvas(e);
+      deltaX    = 0;
+      deltaY    = 0;
+      resizing  = true; // keep true so handle's pointermove/up route to us
+    } else {
+      // Radius handle → drag to resize
+      resizeHandle  = 'circle_radius';
+      resizePreview = { mode: 'circle', cx: anno.cx, cy: anno.cy, r: anno.r };
+      resizing = true;
     }
-    resizeOriginals[anno.id] = snap;
+
+  } else {
+    // Bounds mode: proportional scale from the opposite corner
+    const { x, y, w, h } = selectionBounds;
+    const anchors = {
+      tl: { x: x + w, y: y + h },
+      tr: { x: x,     y: y + h },
+      bl: { x: x + w, y: y     },
+      br: { x: x,     y: y     },
+    };
+    resizeHandle   = `bounds_${handlePos}`;
+    resizeOrigin   = anchors[handlePos];
+    originalBounds = { ...selectionBounds };
+    resizeBounds   = { ...selectionBounds };
+
+    resizeOriginals = {};
+    for (const a of getAll()) {
+      if (!selectedIds.has(a.id)) continue;
+      const snap = { shapeType: a.shapeType };
+      if (a.points?.length)           snap.points  = a.points.map(p => ({ ...p }));
+      else if (a.shapeType === 'circle') { snap.cx = a.cx; snap.cy = a.cy; snap.r = a.r; }
+      else if (a.canvasX !== undefined)  { snap.canvasX = a.canvasX; snap.canvasY = a.canvasY; snap.width = a.width; snap.height = a.height; }
+      resizeOriginals[a.id] = snap;
+    }
+    resizing = true;
   }
 
   requestRender();
@@ -298,93 +379,158 @@ function startResize(handlePos, e) {
 function onResizeMove(e) {
   if (!resizing) return;
   const { x: cx, y: cy } = clientToCanvas(e);
+  const anno = getSingleAnno();
 
-  // New bounding box: from anchor to current pointer position
-  const ax = resizeOrigin.x;
-  const ay = resizeOrigin.y;
-  resizeBounds = {
-    x: Math.min(ax, cx),
-    y: Math.min(ay, cy),
-    w: Math.abs(cx - ax),
-    h: Math.abs(cy - ay),
-  };
+  if (resizeHandle === 'circle_center') {
+    // Routed through drag-move: update delta
+    deltaX = cx - dragStart.x;
+    deltaY = cy - dragStart.y;
+
+  } else if (resizeHandle === 'line_p0' || resizeHandle === 'line_p1') {
+    if (!resizePreview) return;
+    if (resizeHandle === 'line_p0') resizePreview.p0 = { x: cx, y: cy };
+    else                            resizePreview.p1 = { x: cx, y: cy };
+
+  } else if (resizeHandle?.startsWith('rect_') && resizePreview?.mode === 'rect') {
+    // Moving one corner; recompute the 4 corners while keeping the anchor fixed.
+    // A rect's corners: [TL=0, TR=1, BR=2, BL=3]
+    // Anchor is the diagonal opposite. We must keep its axis-partner axes:
+    //   dragging TL (idx 0) → anchor BR (idx 2): keep anchor.x/anchor.y fixed
+    //   TL.x=ptr.x, TL.y=ptr.y, TR.x=anchor.x, TR.y=ptr.y, BL.x=ptr.x, BL.y=anchor.y
+    const anchorX = resizeOrigin.x;
+    const anchorY = resizeOrigin.y;
+    const minX = Math.min(cx, anchorX);
+    const minY = Math.min(cy, anchorY);
+    const maxX = Math.max(cx, anchorX);
+    const maxY = Math.max(cy, anchorY);
+    resizePreview.points = [
+      { x: minX, y: minY, pressure: 0.5 }, // TL
+      { x: maxX, y: minY, pressure: 0.5 }, // TR
+      { x: maxX, y: maxY, pressure: 0.5 }, // BR
+      { x: minX, y: maxY, pressure: 0.5 }, // BL
+    ];
+
+  } else if (resizeHandle === 'circle_radius' && resizePreview?.mode === 'circle') {
+    const dx = cx - resizePreview.cx;
+    const dy = cy - resizePreview.cy;
+    resizePreview.r = Math.max(5, Math.sqrt(dx * dx + dy * dy));
+
+  } else if (resizeHandle?.startsWith('bounds_') && resizeOrigin) {
+    // Proportional bounding-box scale
+    const ax = resizeOrigin.x;
+    const ay = resizeOrigin.y;
+    resizeBounds = {
+      x: Math.min(ax, cx),
+      y: Math.min(ay, cy),
+      w: Math.abs(cx - ax),
+      h: Math.abs(cy - ay),
+    };
+  }
+
   requestRender();
 }
 
 function onResizeUp() {
   if (!resizing) return;
   commitResize();
-  resizing     = false;
-  resizeHandle = null;
-  resizeBounds = null;
+  resizing      = false;
+  resizeHandle  = null;
+  resizeBounds  = null;
+  resizePreview = null;
+  dragging      = false;
+  dragStart     = null;
   requestRender();
 }
 
 /**
- * Applies the resize transform to all selected annotations and pushes an
- * undoable batch update. Each point P is scaled relative to resizeOrigin:
- *   newP = origin + (P - origin) * scale
+ * Applies the pending resize to the manager and updates selectionBounds.
  */
 function commitResize() {
-  if (!resizeBounds || !originalBounds) return;
+  const anno = getSingleAnno();
+  const mode = getHandleMode();
 
-  const scaleX = originalBounds.w > 0 ? resizeBounds.w / originalBounds.w : 1;
-  const scaleY = originalBounds.h > 0 ? resizeBounds.h / originalBounds.h : 1;
-  const ox = resizeOrigin.x;
-  const oy = resizeOrigin.y;
-
-  const updates   = [];
-  const undoPatch = [];
-
-  for (const anno of getAll()) {
-    if (!selectedIds.has(anno.id)) continue;
-    const orig = resizeOriginals[anno.id];
-    if (!orig) continue;
-
-    if (orig.points?.length) {
-      // Path-based annotations: scale every point relative to the anchor
-      undoPatch.push({ id: anno.id, changes: { points: anno.points } });
-      updates.push({
-        id:      anno.id,
-        changes: {
-          points: orig.points.map(p => ({
-            ...p,
-            x: ox + (p.x - ox) * scaleX,
-            y: oy + (p.y - oy) * scaleY,
-          })),
-        },
-      });
-    } else if (orig.shapeType === 'circle') {
-      // Circle: scale centre position and radius (use larger scale to avoid collapse)
-      undoPatch.push({ id: anno.id, changes: { cx: anno.cx, cy: anno.cy, r: anno.r } });
-      updates.push({
-        id:      anno.id,
-        changes: {
-          cx: ox + (orig.cx - ox) * scaleX,
-          cy: oy + (orig.cy - oy) * scaleY,
-          r:  orig.r * Math.max(scaleX, scaleY),
-        },
-      });
-    } else if (orig.canvasX !== undefined) {
-      // Position+size based annotations (textBox, image)
-      undoPatch.push({
-        id:      anno.id,
-        changes: { canvasX: anno.canvasX, canvasY: anno.canvasY, width: anno.width, height: anno.height },
-      });
-      updates.push({
-        id:      anno.id,
-        changes: {
-          canvasX: ox + (orig.canvasX - ox) * scaleX,
-          canvasY: oy + (orig.canvasY - oy) * scaleY,
-          width:   orig.width  * scaleX,
-          height:  orig.height * scaleY,
-        },
-      });
-    }
+  if (resizeHandle === 'circle_center') {
+    // Handled via the standard drag-move path
+    commitDrag();
+    return;
   }
 
-  if (updates.length > 0) batchUpdate(updates, undoPatch);
-  selectionBounds = { ...resizeBounds };
+  if ((resizeHandle === 'line_p0' || resizeHandle === 'line_p1') && anno && resizePreview) {
+    const orig  = resizeOriginals[anno.id];
+    const oldPts = orig.points;
+    // Map preview endpoints back onto the full points array:
+    // p0 maps to points[0], p1 maps to points[last]
+    const newPts = oldPts.map((p, i) => {
+      if (i === 0)             return { ...p, x: resizePreview.p0.x, y: resizePreview.p0.y };
+      if (i === oldPts.length - 1) return { ...p, x: resizePreview.p1.x, y: resizePreview.p1.y };
+      // Interpolate interior points proportionally
+      const t = i / (oldPts.length - 1);
+      return {
+        ...p,
+        x: resizePreview.p0.x + (resizePreview.p1.x - resizePreview.p0.x) * t,
+        y: resizePreview.p0.y + (resizePreview.p1.y - resizePreview.p0.y) * t,
+      };
+    });
+    batchUpdate(
+      [{ id: anno.id, changes: { points: newPts } }],
+      [{ id: anno.id, changes: { points: oldPts } }],
+    );
+    selectionBounds = computeUnionBounds(selectedIds);
+
+  } else if (resizeHandle?.startsWith('rect_') && anno && resizePreview) {
+    const orig = resizeOriginals[anno.id];
+    batchUpdate(
+      [{ id: anno.id, changes: { points: resizePreview.points } }],
+      [{ id: anno.id, changes: { points: orig.points } }],
+    );
+    selectionBounds = computeUnionBounds(selectedIds);
+
+  } else if (resizeHandle === 'circle_radius' && anno && resizePreview) {
+    const orig = resizeOriginals[anno.id];
+    batchUpdate(
+      [{ id: anno.id, changes: { r: resizePreview.r } }],
+      [{ id: anno.id, changes: { r: orig.r } }],
+    );
+    selectionBounds = computeUnionBounds(selectedIds);
+
+  } else if (resizeHandle?.startsWith('bounds_') && resizeBounds && originalBounds) {
+    // Proportional scale of all selected annotations from the anchor corner
+    const scaleX = originalBounds.w > 0 ? resizeBounds.w / originalBounds.w : 1;
+    const scaleY = originalBounds.h > 0 ? resizeBounds.h / originalBounds.h : 1;
+    const ox = resizeOrigin.x;
+    const oy = resizeOrigin.y;
+    const updates   = [];
+    const undoPatch = [];
+
+    for (const a of getAll()) {
+      if (!selectedIds.has(a.id)) continue;
+      const orig = resizeOriginals[a.id];
+      if (!orig) continue;
+
+      if (orig.points?.length) {
+        undoPatch.push({ id: a.id, changes: { points: a.points } });
+        updates.push({
+          id: a.id,
+          changes: { points: orig.points.map(p => ({ ...p, x: ox + (p.x - ox) * scaleX, y: oy + (p.y - oy) * scaleY })) },
+        });
+      } else if (orig.shapeType === 'circle') {
+        undoPatch.push({ id: a.id, changes: { cx: a.cx, cy: a.cy, r: a.r } });
+        updates.push({
+          id: a.id,
+          changes: { cx: ox + (orig.cx - ox) * scaleX, cy: oy + (orig.cy - oy) * scaleY, r: orig.r * Math.max(scaleX, scaleY) },
+        });
+      } else if (orig.canvasX !== undefined) {
+        undoPatch.push({ id: a.id, changes: { canvasX: a.canvasX, canvasY: a.canvasY, width: a.width, height: a.height } });
+        updates.push({
+          id: a.id,
+          changes: { canvasX: ox + (orig.canvasX - ox) * scaleX, canvasY: oy + (orig.canvasY - oy) * scaleY, width: orig.width * scaleX, height: orig.height * scaleY },
+        });
+      }
+    }
+    if (updates.length > 0) batchUpdate(updates, undoPatch);
+    selectionBounds = { ...resizeBounds };
+  }
+
   resizeOriginals = {};
 }
 
@@ -400,7 +546,7 @@ function finaliseSelection() {
   selectedIds.clear();
 
   for (const anno of getAll()) {
-    if (anno.type === 'blankPage') continue; // blank pages are not selectable
+    if (anno.type === 'blankPage') continue;
 
     const { cx, cy } = annotationCentroid(anno);
     if (cx === null) continue;
@@ -418,8 +564,6 @@ function finaliseSelection() {
 
 /**
  * Commits the drag delta to the manager.
- * Captures the before-state (undoPatch) so the move can be undone with Ctrl+Z.
- * Uses batchUpdate so only one 'annotations-changed' event fires.
  */
 function commitDrag() {
   if (deltaX === 0 && deltaY === 0) return;
@@ -431,7 +575,6 @@ function commitDrag() {
     if (!selectedIds.has(anno.id)) continue;
 
     if (anno.shapeType === 'circle') {
-      // Circle: no points array — move via cx/cy
       undoPatch.push({ id: anno.id, changes: { cx: anno.cx, cy: anno.cy } });
       updates.push({ id: anno.id, changes: { cx: anno.cx + deltaX, cy: anno.cy + deltaY } });
     } else if (anno.points) {
@@ -461,11 +604,6 @@ function commitDrag() {
   deltaY = 0;
 }
 
-/**
- * Duplicates all selected annotations with a small canvas offset and selects
- * the new copies. Each copy is added via manager.add() so it lands on the
- * undo stack individually and can be reversed with Ctrl+Z.
- */
 function duplicateSelection() {
   const OFFSET = 16;
   const newIds  = [];
@@ -488,7 +626,6 @@ function duplicateSelection() {
     newIds.push(added.id);
   }
 
-  // Switch selection to the new copies
   selectedIds.clear();
   for (const newId of newIds) selectedIds.add(newId);
   selectionBounds = selectedIds.size > 0 ? computeUnionBounds(selectedIds) : null;
@@ -496,9 +633,6 @@ function duplicateSelection() {
   requestRender();
 }
 
-/**
- * Removes all selected annotations from the manager.
- */
 function deleteSelection() {
   for (const id of selectedIds) remove(id);
   clearSelection();
@@ -517,6 +651,7 @@ function clearSelection() {
   resizeOrigin    = null;
   originalBounds  = null;
   resizeBounds    = null;
+  resizePreview   = null;
   resizeOriginals = {};
   updateActionBar();
   updateHandles();
@@ -524,14 +659,9 @@ function clearSelection() {
 }
 
 // ---------------------------------------------------------------------------
-// DOM element positioning — action bar and resize handles
+// DOM element positioning
 // ---------------------------------------------------------------------------
 
-/**
- * Positions the floating action bar above the centre-top of the selection box.
- * Hidden during resize to avoid clutter.
- * Called every frame from drawOverlay.
- */
 function updateActionBar() {
   if (!actionBarEl) return;
   if (!selectedIds.size || !selectionBounds || resizing) {
@@ -549,38 +679,94 @@ function updateActionBar() {
 }
 
 /**
- * Positions the 4 corner resize handles at the padded corners of the selection
- * bounding box. During a resize, tracks resizeBounds instead of selectionBounds.
- * Hidden when there is no selection, during lasso drawing, or during drag-move.
- * Called every frame from drawOverlay.
+ * Positions and shows/hides the 4 corner handle DOM elements.
+ * Handle placement depends on the current handle mode:
+ *   line   — 2 handles at endpoints ('tl'=p0, 'br'=p1); tr/bl hidden
+ *   rect   — 4 handles at the actual corner points
+ *   circle — 'tl' at centre, 'br' at edge (cx+r, cy); tr/bl hidden
+ *   bounds — 4 handles at padded bounding-box corners (existing behaviour)
  */
 function updateHandles() {
-  const show = active && selectedIds.size > 0 && selectionBounds && !dragging && !lassoPoints;
-
+  const show = active && selectedIds.size > 0 && selectionBounds && !lassoPoints;
   if (!show) {
     for (const el of Object.values(handleEls)) el.classList.add('hidden');
     return;
   }
 
-  const scale = viewportState.scale;
-  const pad   = BOUNDS_PAD_CANVAS / scale;
+  const mode = getHandleMode();
+  const anno = getSingleAnno();
 
-  // During resize show the live box; otherwise show the committed selection box
-  const { x, y, w, h } = resizeBounds ?? selectionBounds;
+  if (mode === 'line' && anno?.points?.length >= 2 && !resizing) {
+    const pts = anno.points;
+    placeHandle('tl', toScreen(pts[0].x,                pts[0].y),                'move');
+    placeHandle('br', toScreen(pts[pts.length - 1].x,   pts[pts.length - 1].y),   'move');
+    handleEls.tr.classList.add('hidden');
+    handleEls.bl.classList.add('hidden');
 
-  const corners = {
-    tl: toScreen(x - pad,     y - pad),
-    tr: toScreen(x + w + pad, y - pad),
-    bl: toScreen(x - pad,     y + h + pad),
-    br: toScreen(x + w + pad, y + h + pad),
-  };
+  } else if (mode === 'line' && resizePreview?.mode === 'line') {
+    // During drag: show live preview positions
+    placeHandle('tl', toScreen(resizePreview.p0.x, resizePreview.p0.y), 'move');
+    placeHandle('br', toScreen(resizePreview.p1.x, resizePreview.p1.y), 'move');
+    handleEls.tr.classList.add('hidden');
+    handleEls.bl.classList.add('hidden');
 
-  for (const [pos, { x: sx, y: sy }] of Object.entries(corners)) {
-    const el = handleEls[pos];
-    el.classList.remove('hidden');
-    el.style.left = `${Math.round(sx)}px`;
-    el.style.top  = `${Math.round(sy)}px`;
+  } else if (mode === 'rect' && anno?.points?.length === 4 && !resizing) {
+    const p = anno.points;
+    placeHandle('tl', toScreen(p[0].x, p[0].y), 'nwse-resize');
+    placeHandle('tr', toScreen(p[1].x, p[1].y), 'nesw-resize');
+    placeHandle('br', toScreen(p[2].x, p[2].y), 'nwse-resize');
+    placeHandle('bl', toScreen(p[3].x, p[3].y), 'nesw-resize');
+
+  } else if (mode === 'rect' && resizePreview?.mode === 'rect') {
+    const p = resizePreview.points;
+    placeHandle('tl', toScreen(p[0].x, p[0].y), 'nwse-resize');
+    placeHandle('tr', toScreen(p[1].x, p[1].y), 'nesw-resize');
+    placeHandle('br', toScreen(p[2].x, p[2].y), 'nwse-resize');
+    placeHandle('bl', toScreen(p[3].x, p[3].y), 'nesw-resize');
+
+  } else if (mode === 'circle' && anno && !resizing) {
+    placeHandle('tl', toScreen(anno.cx,          anno.cy), 'move');
+    placeHandle('br', toScreen(anno.cx + anno.r, anno.cy), 'ew-resize');
+    handleEls.tr.classList.add('hidden');
+    handleEls.bl.classList.add('hidden');
+
+  } else if (mode === 'circle' && resizePreview?.mode === 'circle') {
+    placeHandle('tl', toScreen(resizePreview.cx,                 resizePreview.cy), 'move');
+    placeHandle('br', toScreen(resizePreview.cx + resizePreview.r, resizePreview.cy), 'ew-resize');
+    handleEls.tr.classList.add('hidden');
+    handleEls.bl.classList.add('hidden');
+
+  } else if (mode === 'circle' && resizeHandle === 'circle_center' && dragging) {
+    // Moving circle: show handles at offset positions
+    const cx = anno ? anno.cx + deltaX : 0;
+    const cy = anno ? anno.cy + deltaY : 0;
+    const r  = anno ? anno.r  : 0;
+    placeHandle('tl', toScreen(cx,     cy), 'move');
+    placeHandle('br', toScreen(cx + r, cy), 'ew-resize');
+    handleEls.tr.classList.add('hidden');
+    handleEls.bl.classList.add('hidden');
+
+  } else {
+    // Bounds mode: 4 corners of the padded selection box
+    const scale = viewportState.scale;
+    const pad   = BOUNDS_PAD_CANVAS / scale;
+    const { x, y, w, h } = resizeBounds ?? selectionBounds;
+    placeHandle('tl', toScreen(x - pad,     y - pad),     'nwse-resize');
+    placeHandle('tr', toScreen(x + w + pad, y - pad),     'nesw-resize');
+    placeHandle('br', toScreen(x + w + pad, y + h + pad), 'nwse-resize');
+    placeHandle('bl', toScreen(x - pad,     y + h + pad), 'nesw-resize');
   }
+}
+
+/**
+ * Shows a handle element at screen position (sx, sy) with the given cursor.
+ */
+function placeHandle(pos, { x: sx, y: sy }, cursor) {
+  const el = handleEls[pos];
+  el.classList.remove('hidden');
+  el.style.left   = `${Math.round(sx)}px`;
+  el.style.top    = `${Math.round(sy)}px`;
+  if (el.style.cursor !== cursor) el.style.cursor = cursor;
 }
 
 // ---------------------------------------------------------------------------
@@ -588,13 +774,12 @@ function updateHandles() {
 // ---------------------------------------------------------------------------
 
 /**
- * Draws the live lasso path while dragging, and the selection bounding-box
- * outline when annotations are selected. Called every frame by the renderer.
+ * Draws the live lasso path, the selection bounding-box outline, and the live
+ * shape preview during a shape-specific edit. Called every frame by the renderer.
  *
  * @param {CanvasRenderingContext2D} ctx — already in canvas space
  */
 function drawOverlay(ctx) {
-  // Keep DOM elements in sync with the current viewport each frame
   updateActionBar();
   updateHandles();
 
@@ -602,7 +787,7 @@ function drawOverlay(ctx) {
   const hairline = 1.5 / scale;
   const dash     = 5   / scale;
 
-  // ── Live lasso (user is still drawing) ──────────────────────────────────
+  // ── Live lasso ──────────────────────────────────────────────────────────
   if (lassoPoints && lassoPoints.length >= 2) {
     ctx.save();
     ctx.beginPath();
@@ -610,7 +795,6 @@ function drawOverlay(ctx) {
     for (let i = 1; i < lassoPoints.length; i++) {
       ctx.lineTo(lassoPoints[i].x, lassoPoints[i].y);
     }
-    // Don't close the path while drawing — closing only happens on release
     ctx.setLineDash([dash, dash]);
     ctx.lineWidth   = hairline;
     ctx.strokeStyle = 'rgba(91, 138, 245, 0.9)';
@@ -621,21 +805,57 @@ function drawOverlay(ctx) {
     return;
   }
 
+  // ── Live shape-edit preview ──────────────────────────────────────────────
+  if (resizing && resizePreview) {
+    ctx.save();
+    ctx.setLineDash([dash, dash]);
+    ctx.lineWidth   = hairline;
+    ctx.strokeStyle = 'rgba(91, 138, 245, 0.85)';
+
+    if (resizePreview.mode === 'line') {
+      ctx.beginPath();
+      ctx.moveTo(resizePreview.p0.x, resizePreview.p0.y);
+      ctx.lineTo(resizePreview.p1.x, resizePreview.p1.y);
+      ctx.stroke();
+
+    } else if (resizePreview.mode === 'rect') {
+      const p = resizePreview.points;
+      ctx.beginPath();
+      ctx.moveTo(p[0].x, p[0].y);
+      for (let i = 1; i < p.length; i++) ctx.lineTo(p[i].x, p[i].y);
+      ctx.closePath();
+      ctx.stroke();
+
+    } else if (resizePreview.mode === 'circle') {
+      ctx.beginPath();
+      ctx.arc(resizePreview.cx, resizePreview.cy, resizePreview.r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+    return; // Skip the bounding box while editing shape geometry
+  }
+
   // ── Selection bounding-box outline ──────────────────────────────────────
   if (selectedIds.size > 0 && selectionBounds) {
     const dx  = dragging ? deltaX : 0;
     const dy  = dragging ? deltaY : 0;
     const pad = BOUNDS_PAD_CANVAS / scale;
 
-    // During resize, show the animated resizeBounds; otherwise selectionBounds
-    const { x, y, w, h } = (resizing && resizeBounds) ? resizeBounds : selectionBounds;
+    const mode = getHandleMode();
 
-    ctx.save();
-    ctx.setLineDash([dash, dash]);
-    ctx.lineWidth   = hairline;
-    ctx.strokeStyle = 'rgba(91, 138, 245, 0.85)';
-    ctx.strokeRect(x + dx - pad, y + dy - pad, w + pad * 2, h + pad * 2);
-    ctx.restore();
+    if (mode === 'bounds') {
+      // Only draw the padded box for bounds mode; shape modes use geometry handles only
+      const { x, y, w, h } = selectionBounds;
+      ctx.save();
+      ctx.setLineDash([dash, dash]);
+      ctx.lineWidth   = hairline;
+      ctx.strokeStyle = 'rgba(91, 138, 245, 0.85)';
+      ctx.strokeRect(x + dx - pad, y + dy - pad, w + pad * 2, h + pad * 2);
+      ctx.restore();
+    }
+    // For line/rect/circle modes the dashed overlay is replaced by the shape
+    // handles themselves (no separate bounding box drawn — it's visually redundant)
   }
 }
 
@@ -643,10 +863,6 @@ function drawOverlay(ctx) {
 // Geometry helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Ray-casting point-in-polygon test.
- * Returns true if (px, py) is inside the polygon defined by vertices.
- */
 function pointInPolygon(px, py, polygon) {
   let inside = false;
   const n = polygon.length;
@@ -662,43 +878,31 @@ function pointInPolygon(px, py, polygon) {
 }
 
 /**
- * Returns the centroid of an annotation — the representative point used for
- * lasso containment testing. Handles all annotation types.
+ * Returns the centroid of an annotation. Handles all annotation types.
  *
  * @param {object} anno
  * @returns {{ cx: number|null, cy: number|null }}
  */
 function annotationCentroid(anno) {
   if (anno.type === 'textBox' || anno.type === 'image') {
-    return {
-      cx: anno.canvasX + anno.width  / 2,
-      cy: anno.canvasY + anno.height / 2,
-    };
+    return { cx: anno.canvasX + anno.width / 2, cy: anno.canvasY + anno.height / 2 };
   }
-
-  // Circle shape: cx/cy are stored directly on the annotation
   if (anno.shapeType === 'circle') {
     return { cx: anno.cx, cy: anno.cy };
   }
-
   if ((anno.type === 'draw' || anno.type === 'highlight') && anno.points?.length) {
     let sumX = 0, sumY = 0;
     for (const p of anno.points) { sumX += p.x; sumY += p.y; }
     return { cx: sumX / anno.points.length, cy: sumY / anno.points.length };
   }
-
   if (anno.type === 'highlight' && anno.canvasX !== undefined) {
-    return {
-      cx: anno.canvasX + (anno.width  ?? 0) / 2,
-      cy: anno.canvasY + (anno.height ?? 0) / 2,
-    };
+    return { cx: anno.canvasX + (anno.width ?? 0) / 2, cy: anno.canvasY + (anno.height ?? 0) / 2 };
   }
-
   return { cx: null, cy: null };
 }
 
 /**
- * Returns true if the canvas point (cx, cy) is inside the bounding box.
+ * Returns true if (cx, cy) is inside bounds (no padding applied here).
  */
 function isInsideBounds(cx, cy, bounds) {
   return (
@@ -707,6 +911,13 @@ function isInsideBounds(cx, cy, bounds) {
     cy >= bounds.y &&
     cy <= bounds.y + bounds.h
   );
+}
+
+/**
+ * Returns a copy of bounds expanded by pad on all sides.
+ */
+function expandBounds(bounds, pad) {
+  return { x: bounds.x - pad, y: bounds.y - pad, w: bounds.w + pad * 2, h: bounds.h + pad * 2 };
 }
 
 /**
