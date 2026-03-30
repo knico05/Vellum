@@ -71,11 +71,11 @@ const WHEEL_ZOOM_SENSITIVITY = 1.0;
  */
 const OVERVIEW_SCALE_THRESHOLD = 0.8;
 
-/** Friction applied per animation frame in overview mode (0.94 → ~1.2s coast) */
-const FRICTION_OVERVIEW = 0.94;
+/** Friction applied per animation frame in overview mode (0.96 → ~1.5s coast) */
+const FRICTION_OVERVIEW = 0.96;
 
-/** Friction applied per animation frame in reading mode (0.80 → ~0.3s coast) */
-const FRICTION_READING = 0.80;
+/** Friction applied per animation frame in reading mode (0.92 → ~0.8s coast) */
+const FRICTION_READING = 0.92;
 
 /** Velocity (px/frame) below which the momentum animation stops */
 const MIN_VELOCITY = 0.5;

@@ -205,4 +205,14 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: (url) =>
     ipcRenderer.invoke('open-external', url),
 
+  /**
+   * Renames a PDF file on disk and moves its companion annotations file
+   * so saved annotations are preserved.
+   * @param {string} oldPath  — Absolute path of the existing PDF
+   * @param {string} newName  — New filename (e.g. "Lecture 4.pdf")
+   * @returns {Promise<string>} The new absolute path
+   */
+  renameFile: (oldPath, newName) =>
+    ipcRenderer.invoke('rename-file', oldPath, newName),
+
 });

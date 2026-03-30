@@ -341,6 +341,47 @@ function setupIPC(win) {
   });
 
   /**
+   * rename-file — renames a PDF to a new name in the same directory.
+   * Also renames its companion annotations file (stored by path-hash in userData)
+   * so saved annotations are not lost.
+   *
+   * @param {string} oldPath  — Absolute path of the existing PDF
+   * @param {string} newName  — New filename (with or without .pdf extension)
+   * @returns {Promise<string>} The new absolute path
+   */
+  ipcMain.handle('rename-file', async (_event, oldPath, newName) => {
+    try {
+      const dir     = path.dirname(oldPath);
+      const ext     = path.extname(oldPath);
+      const safeName = newName.endsWith(ext) ? newName : newName + ext;
+      const newPath = path.join(dir, safeName);
+
+      if (fs.existsSync(newPath)) {
+        throw new Error('A file with that name already exists.');
+      }
+
+      fs.renameSync(oldPath, newPath);
+
+      // Rename companion annotations file (stored by sha256 of the PDF path)
+      const annotationsDir = path.join(app.getPath('userData'), 'annotations');
+      const oldNorm  = oldPath.replace(/\\/g, '/');
+      const newNorm  = newPath.replace(/\\/g, '/');
+      const oldHash  = crypto.createHash('sha256').update(oldNorm).digest('hex');
+      const newHash  = crypto.createHash('sha256').update(newNorm).digest('hex');
+      const oldAnno  = path.join(annotationsDir, `${oldHash}.json`);
+      const newAnno  = path.join(annotationsDir, `${newHash}.json`);
+
+      if (fs.existsSync(oldAnno) && !fs.existsSync(newAnno)) {
+        fs.renameSync(oldAnno, newAnno);
+      }
+
+      return newPath;
+    } catch (err) {
+      throw new Error(`Could not rename file: ${err.message}`);
+    }
+  });
+
+  /**
    * create-blank-pdf — generates a minimal valid single-page blank PDF at the
    * given path.  The file can be opened immediately and the user adds their own
    * pages via the "New Page" button.  Refuses to overwrite an existing file.

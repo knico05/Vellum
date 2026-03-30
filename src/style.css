@@ -55,7 +55,7 @@
 
   /* Layout dimensions */
   --titlebar-height: 32px;
-  --toolbar-height:  52px;
+  --toolbar-height:  60px;
   --sidebar-width:   0px;    /* Sidebar removed — replaced by slide-in library panel */
   --panel-width:     300px;
 
@@ -219,6 +219,8 @@ button:focus-visible {
   border-bottom: 1px solid var(--border-subtle);
   gap: 8px;
   height: var(--toolbar-height);
+  overflow: hidden;
+  min-width: 0;
   /* Subtle shadow toward the canvas to ground the toolbar */
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04), 0 2px 8px rgba(0, 0, 0, 0.2);
   z-index: 10;
@@ -670,6 +672,36 @@ button:focus-visible {
   color: var(--accent);
 }
 
+/* Bullet list toggle button in the text-box options bar */
+.tbo-bullet {
+  height: 20px;
+  padding: 0 6px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.tbo-bullet:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+/* Bullet and ordered lists inside text boxes */
+.text-box-body ul,
+.text-box-body ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.text-box-body li {
+  line-height: 1.5;
+}
+
 /* When the content exceeds MAX_BOX_HEIGHT, the body scrolls rather than
    growing the container infinitely. Class toggled by syncHeight() in note.js. */
 .text-box.scrollable .text-box-body {
@@ -768,6 +800,46 @@ button:focus-visible {
 /* Spacer that pushes subsequent items to the right */
 .toolbar-spacer {
   flex: 1;
+  min-width: 0;
+}
+
+/* Compact toolbar — applied by ResizeObserver in toolbar.js when window is narrow.
+   Hides everything except the 6 tool buttons, active colour/stroke pickers,
+   library button, and panel toggle. Reduces padding and gaps to save space. */
+#toolbar.toolbar-compact {
+  gap: 4px;
+  padding: 0 6px;
+}
+
+/* Hide file-operation text buttons */
+#toolbar.toolbar-compact #btn-open,
+#toolbar.toolbar-compact #btn-new-page,
+#toolbar.toolbar-compact #btn-export,
+/* Hide undo / redo */
+#toolbar.toolbar-compact #btn-undo,
+#toolbar.toolbar-compact #btn-redo,
+/* Hide all separators */
+#toolbar.toolbar-compact .toolbar-sep,
+/* Hide right-side secondary controls */
+#toolbar.toolbar-compact .toolbar-label,
+#toolbar.toolbar-compact .toolbar-spacer,
+#toolbar.toolbar-compact #btn-screenshot,
+#toolbar.toolbar-compact #btn-fit-page,
+#toolbar.toolbar-compact .update-badge {
+  display: none;
+}
+
+/* Shrink colour swatches and hide custom-colour extras to save horizontal space */
+#toolbar.toolbar-compact .colour-swatch {
+  width: 14px;
+  height: 14px;
+}
+#toolbar.toolbar-compact .colour-swatch-custom,
+#toolbar.toolbar-compact .colour-save-btn,
+#toolbar.toolbar-compact .colour-eyedropper,
+#toolbar.toolbar-compact .colour-custom-palette,
+#toolbar.toolbar-compact .colour-custom-sep {
+  display: none;
 }
 
 /* Small label used for zoom percentage, page count, etc. */
@@ -840,8 +912,8 @@ button:focus-visible {
 }
 
 .tool-btn {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
@@ -1056,6 +1128,41 @@ button:focus-visible {
 
 .stroke-size-btn.active .stroke-size-dot {
   background: var(--accent);
+}
+
+/* Size customisation popover — shown below a size button on long-press.
+   Position (fixed) is set by JS so it is never clipped by overflow:hidden. */
+.size-popover {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  white-space: nowrap;
+  z-index: 100;
+  pointer-events: auto;
+}
+
+.size-popover-label {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  min-width: 36px;
+}
+
+.size-popover-slider {
+  width: 100px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.size-popover-value {
+  font-size: var(--text-xs);
+  color: var(--accent);
+  min-width: 24px;
+  text-align: right;
 }
 
 /* ---------------------------------------------------------------------------

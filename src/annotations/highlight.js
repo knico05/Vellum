@@ -21,6 +21,7 @@ import { registerOverlay, requestRender }  from '../canvas/renderer.js';
 import { add, getAll }                     from './manager.js';
 import { resolvePageId }                   from '../pages/pageManager.js';
 import { getDragOffset }                   from './select.js';
+import { detectShape }                     from './shape.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -59,6 +60,18 @@ let livePoints = [];
 /** True while a pointer is held down */
 let drawing = false;
 
+/** Whether hold-to-snap shape recognition is enabled */
+let shapeSnapOn = true;
+
+/** setTimeout handle for the hold timer (500 ms stillness → snap attempt) */
+let holdTimer = null;
+
+/**
+ * Shape snap result from detectShape(), or null.
+ * Set by the hold timer; used by drawLivePreview and commitStroke.
+ */
+let snappedData = null;
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
@@ -87,11 +100,19 @@ function activate() {
 }
 
 function deactivate() {
-  active     = false;
-  drawing    = false;
-  livePoints = [];
+  clearTimeout(holdTimer);
+  holdTimer   = null;
+  active      = false;
+  drawing     = false;
+  livePoints  = [];
+  snappedData = null;
   container.classList.remove('tool-active');
   requestRender();
+}
+
+/** @param {boolean} enabled */
+function setShapeSnap(enabled) {
+  shapeSnapOn = enabled;
 }
 
 /**
@@ -145,6 +166,14 @@ function onMove(e) {
 
   if (Math.sqrt(dx * dx + dy * dy) >= MIN_POINT_DISTANCE) {
     livePoints.push(pt);
+
+    // Movement: cancel any pending snap and restart the hold timer
+    clearTimeout(holdTimer);
+    snappedData = null;
+    if (shapeSnapOn) {
+      holdTimer = setTimeout(_trySnapHold, 500);
+    }
+
     requestRender();
   }
 }
@@ -153,18 +182,39 @@ function onUp(e) {
   if (!active || !drawing) return;
   if (e.pointerType === 'touch') return;
 
+  clearTimeout(holdTimer);
+  holdTimer = null;
+
   livePoints.push(makePoint(e));
   commitStroke();
 
-  drawing    = false;
-  livePoints = [];
+  drawing     = false;
+  livePoints  = [];
+  snappedData = null;
   requestRender();
 }
 
 function onCancel() {
-  drawing    = false;
-  livePoints = [];
+  clearTimeout(holdTimer);
+  holdTimer   = null;
+  drawing     = false;
+  livePoints  = [];
+  snappedData = null;
   requestRender();
+}
+
+/**
+ * Called after 500 ms of pointer stillness — attempts to snap the current
+ * path to a recognised geometric shape (line, rect, or circle).
+ */
+function _trySnapHold() {
+  holdTimer = null;
+  if (!drawing || livePoints.length < 5) return;
+  const snap = detectShape(livePoints);
+  if (snap) {
+    snappedData = snap;
+    requestRender(); // immediately show snapped shape in live preview
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -174,17 +224,33 @@ function onCancel() {
 function commitStroke() {
   if (livePoints.length < 2) return;
 
+  const base = { type: 'highlight', strokeWidth: currentWidth, colour: currentColourCss };
+
+  if (snappedData?.shapeType === 'circle') {
+    // Circle snap — store geometry directly (no points array)
+    add({
+      ...base,
+      pageId:    resolvePageId(snappedData.cx, snappedData.cy),
+      points:    [],
+      shapeType: 'circle',
+      cx:        snappedData.cx,
+      cy:        snappedData.cy,
+      r:         snappedData.r,
+    });
+    return;
+  }
+
+  const pts = snappedData?.idealPoints ?? livePoints;
   let cx = 0, cy = 0;
-  for (const p of livePoints) { cx += p.x; cy += p.y; }
-  cx /= livePoints.length;
-  cy /= livePoints.length;
+  for (const p of pts) { cx += p.x; cy += p.y; }
+  cx /= pts.length;
+  cy /= pts.length;
 
   add({
-    type:        'highlight',
-    pageId:      resolvePageId(cx, cy),
-    points:      livePoints.slice(),
-    strokeWidth: currentWidth,
-    colour:      currentColourCss, // Store resolved CSS string directly
+    ...base,
+    pageId:    resolvePageId(cx, cy),
+    points:    pts.slice(),
+    shapeType: snappedData?.shapeType ?? null,
   });
 }
 
@@ -204,16 +270,22 @@ function drawExisting(ctx) {
     // anno.colour fallback handles new CSS strings stored directly
     const colour = COLOURS[anno.colour] ?? anno.colour ?? COLOURS.yellow;
     const offset = getDragOffset(anno.id);
+    const width  = anno.strokeWidth ?? DEFAULT_STROKE_WIDTH;
 
-    if (anno.points) {
-      // New path-based highlight
+    if (anno.shapeType === 'circle') {
+      // Circle snap — stored as cx/cy/r
+      const cx = anno.cx + (offset ? offset.dx : 0);
+      const cy = anno.cy + (offset ? offset.dy : 0);
+      drawHighlightCircle(ctx, cx, cy, anno.r, width, colour);
+    } else if (anno.points) {
+      // Path-based (freehand, line, or rect)
       if (offset) {
         ctx.save();
         ctx.translate(offset.dx, offset.dy);
-        drawHighlightPath(ctx, anno.points, anno.strokeWidth ?? DEFAULT_STROKE_WIDTH, colour);
+        _drawHighlightAnno(ctx, anno, colour, width);
         ctx.restore();
       } else {
-        drawHighlightPath(ctx, anno.points, anno.strokeWidth ?? DEFAULT_STROKE_WIDTH, colour);
+        _drawHighlightAnno(ctx, anno, colour, width);
       }
     } else {
       // Legacy rect-based highlight — draw as filled rect
@@ -225,15 +297,74 @@ function drawExisting(ctx) {
   }
 }
 
+/** Dispatches to the right path renderer based on shapeType. */
+function _drawHighlightAnno(ctx, anno, colour, width) {
+  if (anno.shapeType === 'rect') {
+    drawHighlightShapePath(ctx, anno.points, true,  width, colour);
+  } else if (anno.shapeType === 'line') {
+    drawHighlightShapePath(ctx, anno.points, false, width, colour);
+  } else {
+    drawHighlightPath(ctx, anno.points, width, colour);
+  }
+}
+
 /** Draws the stroke in progress while the pointer is still held. */
 function drawLivePreview(ctx) {
   if (!drawing || livePoints.length < 2) return;
-  drawHighlightPath(ctx, livePoints, currentWidth, currentColourCss);
+
+  if (snappedData?.shapeType === 'circle') {
+    drawHighlightCircle(ctx, snappedData.cx, snappedData.cy, snappedData.r,
+                        currentWidth, currentColourCss);
+  } else if (snappedData?.shapeType === 'rect' && snappedData.idealPoints) {
+    drawHighlightShapePath(ctx, snappedData.idealPoints, true, currentWidth, currentColourCss);
+  } else if (snappedData?.idealPoints) {
+    drawHighlightShapePath(ctx, snappedData.idealPoints, false, currentWidth, currentColourCss);
+  } else {
+    drawHighlightPath(ctx, livePoints, currentWidth, currentColourCss);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Path rendering
 // ---------------------------------------------------------------------------
+
+/**
+ * Renders a circle highlight using ctx.arc().
+ * Matches how draw.js renders snapped circles.
+ */
+function drawHighlightCircle(ctx, cx, cy, r, width, colour) {
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+  ctx.strokeStyle = colour;
+  ctx.lineWidth   = width;
+  ctx.lineCap     = 'round';
+  ctx.stroke();
+}
+
+/**
+ * Renders a snapped line or rect highlight using straight line segments.
+ * Rects use miter joins for sharp corners; lines use round caps.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Array<{x:number, y:number}>} points
+ * @param {boolean} close — true for rect (joins last point to first)
+ * @param {number}  width
+ * @param {string}  colour
+ */
+function drawHighlightShapePath(ctx, points, close, width, colour) {
+  if (points.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  if (close) ctx.closePath();
+  ctx.strokeStyle = colour;
+  ctx.lineWidth   = width;
+  ctx.lineCap     = 'square';
+  ctx.lineJoin    = 'miter';
+  ctx.stroke();
+}
 
 /**
  * Renders a highlighter stroke as a smooth quadratic bezier path.
@@ -299,4 +430,4 @@ function makePoint(e) {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init as initHighlight, activate, deactivate, setColour, setStrokeWidth };
+export { init as initHighlight, activate, deactivate, setColour, setStrokeWidth, setShapeSnap };

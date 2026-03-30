@@ -97,13 +97,6 @@ let resizeState = null;
 /** pointerType of the most recent pointerdown — used to filter click/dblclick by input device */
 let lastPointerType = 'mouse';
 
-/** Touch double-tap detection state */
-let lastTapTime = 0;
-let lastTapX    = 0;
-let lastTapY    = 0;
-const DOUBLE_TAP_MS   = 320;  // max ms between two taps
-const DOUBLE_TAP_DIST = 32;   // max CSS-px drift between taps
-
 function init() {
   container = document.getElementById('canvas-container');
 
@@ -116,25 +109,6 @@ function init() {
     // Blur any currently editing text box when tapping outside it
     const editingBody = container.querySelector('.text-box.editing .text-box-body');
     if (editingBody) editingBody.blur();
-
-    // Manual double-tap for touch: input.js calls preventDefault() on touch
-    // pointerdown which suppresses the native dblclick event entirely.
-    if (e.pointerType === 'touch' && !toolActive) {
-      const now = Date.now();
-      const dx  = e.clientX - lastTapX;
-      const dy  = e.clientY - lastTapY;
-      if (now - lastTapTime < DOUBLE_TAP_MS &&
-          Math.sqrt(dx * dx + dy * dy) < DOUBLE_TAP_DIST) {
-        // Double-tap confirmed — place a text box and reset so a third tap
-        // doesn't immediately trigger another one.
-        placeBox(e);
-        lastTapTime = 0;
-      } else {
-        lastTapTime = now;
-        lastTapX    = e.clientX;
-        lastTapY    = e.clientY;
-      }
-    }
   });
 
   // Two ways to create a text box:
@@ -169,12 +143,12 @@ function deactivate() {
 // ---------------------------------------------------------------------------
 
 /**
- * Double-click/double-tap handler — always available (touch + mouse, not pen).
+ * Double-click handler — mouse only. Touch users use the N tool instead.
  * Does not fire when the N tool is active (single-click already handles that).
  */
 function onDoubleClick(e) {
   if (toolActive) return;             // single-click path already handles this
-  if (lastPointerType === 'pen') return;
+  if (lastPointerType !== 'mouse') return;
   if (e.target.closest('.text-box')) return;
   placeBox(e);
 }
@@ -243,7 +217,7 @@ function syncElements(fromLoad = false) {
       const el   = boxElements.get(anno.id);
       const body = el.querySelector('.text-box-body');
       if (body && document.activeElement !== body) {
-        body.textContent = anno.text;
+        body.innerHTML = deserializeText(anno.text);
       }
       applyBodyStyle(el, anno);
       el.style.width  = `${anno.width}px`;
@@ -323,7 +297,7 @@ function createBoxElement(anno) {
   const body = document.createElement('div');
   body.className       = 'text-box-body';
   body.contentEditable = 'true';
-  body.textContent     = anno.text;
+  body.innerHTML       = deserializeText(anno.text);
   applyBodyStyle(el, anno); // set initial colour + font size
 
   // ── Resize handle ─────────────────────────────────────────────────────────
@@ -354,6 +328,29 @@ function createBoxElement(anno) {
   resizeHandle.addEventListener('pointerup',     (e) => onResizeEnd(e, resizeHandle));
   resizeHandle.addEventListener('pointercancel', (e) => onResizeEnd(e, resizeHandle));
 
+  body.addEventListener('keydown', (e) => {
+    // Auto-format: typing "- " at the start of a line converts to a bullet list.
+    // Matches the behaviour of most text editors (Notion, Google Docs, etc.).
+    if (e.key !== ' ') return;
+    const sel = window.getSelection();
+    if (!sel?.rangeCount || !sel.isCollapsed) return;
+    const range = sel.getRangeAt(0);
+    const node  = range.startContainer;
+    // Only trigger when the whole text node is exactly "-" and cursor is at the end
+    if (node.nodeType !== Node.TEXT_NODE) return;
+    if (node.textContent !== '-' || range.startOffset !== 1) return;
+
+    e.preventDefault();
+    // Select the entire "-" text node and delete it, then start a bullet list
+    const del = document.createRange();
+    del.selectNode(node);
+    sel.removeAllRanges();
+    sel.addRange(del);
+    document.execCommand('delete');
+    document.execCommand('insertUnorderedList');
+    scheduleTextSave(anno.id, body);
+  });
+
   body.addEventListener('input', () => {
     scheduleTextSave(anno.id, body);
     syncHeight(anno.id, el, body);
@@ -372,12 +369,25 @@ function createBoxElement(anno) {
     setTimeout(() => {
       if (!el.contains(document.activeElement)) {
         el.classList.remove('editing');
+        // Auto-delete empty text boxes so accidental placements don't litter
+        // the canvas as invisible annotations.
+        if (serializeText(body).trim() === '') remove(anno.id);
       }
     }, 80);
   });
 
-  el.addEventListener('pointerdown', (e) => e.stopPropagation());
-  el.addEventListener('wheel',       (e) => e.stopPropagation());
+  // Mouse and pen events must not reach the canvas (would trigger pan/draw).
+  // Touch events are allowed to propagate so one-finger pan still works when
+  // the user's finger passes over a text box.
+  el.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') e.stopPropagation();
+  });
+  // Only swallow wheel events when the box itself is scrollable (content
+  // exceeds max height). Otherwise let wheel fall through to the canvas
+  // so zooming/panning works over non-scrollable boxes.
+  el.addEventListener('wheel', (e) => {
+    if (el.classList.contains('scrollable')) e.stopPropagation();
+  });
 
   return el;
 }
@@ -453,6 +463,29 @@ function buildOptionsBar(anno) {
 
     bar.appendChild(btn);
   }
+
+  // Separator before bullet button
+  const sep2 = document.createElement('div');
+  sep2.className = 'tbo-sep';
+  bar.appendChild(sep2);
+
+  // Bullet list toggle
+  const bulletBtn = document.createElement('button');
+  bulletBtn.className   = 'tbo-bullet';
+  bulletBtn.textContent = '•≡';
+  bulletBtn.title       = 'Bullet list';
+
+  bulletBtn.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    document.execCommand('insertUnorderedList');
+    const el   = boxElements.get(anno.id);
+    const body = el?.querySelector('.text-box-body');
+    body?.focus();
+    if (body) scheduleTextSave(anno.id, body);
+  });
+
+  bar.appendChild(bulletBtn);
 
   // Set initial active states
   syncSwatchState(bar, anno.colour   ?? DEFAULT_COLOUR);
@@ -610,10 +643,58 @@ function syncHeight(annotationId, containerEl, bodyEl) {
   containerEl.classList.toggle('scrollable', uncapped > MAX_BOX_HEIGHT);
 }
 
+/**
+ * Converts a contenteditable element's innerHTML to plain text preserving
+ * newlines. Handles <br>, <div>, and <li> tags produced by Chromium's editor.
+ * Bullet lists (<ul>/<li>) are serialised as "• item" lines.
+ *
+ * @param {HTMLElement} el
+ * @returns {string}
+ */
+function serializeText(el) {
+  // Clone so we can manipulate without affecting the live DOM.
+  const clone = el.cloneNode(true);
+
+  // Convert list items to "• item" lines before stripping tags.
+  for (const li of clone.querySelectorAll('li')) {
+    li.replaceWith('• ' + li.textContent + '\n');
+  }
+  // Remove now-empty ul/ol wrappers.
+  for (const list of clone.querySelectorAll('ul, ol')) {
+    list.replaceWith(list.textContent);
+  }
+
+  return clone.innerHTML
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<div>/gi, '\n')
+    .replace(/<\/div>/gi, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/<[^>]+>/g, '');
+}
+
+/**
+ * Converts a plain-text string (with \n for newlines) back to safe HTML for
+ * setting as innerHTML of a contenteditable element.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function deserializeText(text) {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>');
+}
+
 function scheduleTextSave(annotationId, bodyEl) {
   clearTimeout(saveTimers.get(annotationId));
   const timer = setTimeout(() => {
-    update(annotationId, { text: bodyEl.textContent });
+    update(annotationId, { text: serializeText(bodyEl) });
     saveTimers.delete(annotationId);
   }, SAVE_DEBOUNCE_MS);
   saveTimers.set(annotationId, timer);

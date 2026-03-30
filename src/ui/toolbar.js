@@ -21,9 +21,11 @@
 'use strict';
 
 import {
-  activate   as activateHighlight,
-  deactivate as deactivateHighlight,
-  setColour  as setHighlightColour,
+  activate       as activateHighlight,
+  deactivate     as deactivateHighlight,
+  setColour      as setHighlightColour,
+  setStrokeWidth as setHighlightStrokeWidth,
+  setShapeSnap   as setHighlightShapeSnap,
 } from '../annotations/highlight.js';
 
 import {
@@ -32,12 +34,8 @@ import {
   setColour          as setDrawColour,
   setStrokeWidth     as setDrawStrokeWidth,
   setPressureSensitive,
-  setShapeSnap,
+  setShapeSnap       as setDrawShapeSnap,
 } from '../annotations/draw.js';
-
-import {
-  setStrokeWidth as setHighlightStrokeWidth,
-} from '../annotations/highlight.js';
 
 import {
   activate        as activateEraser,
@@ -56,12 +54,17 @@ import {
   deactivate as deactivateNote,
 } from '../annotations/note.js';
 
+import { state as viewportState } from '../canvas/viewport.js';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /** localStorage key for the saved custom colour palette */
 const LS_CUSTOM_PALETTE = 'qn-custom-palette';
+
+/** localStorage key for user-customised stroke size widths */
+const LS_CUSTOM_SIZES = 'qn-custom-sizes';
 
 /**
  * localStorage key for per-tool colour + size memory.
@@ -79,17 +82,41 @@ const COLOUR_TOOLS = new Set(['highlight', 'draw']);
 const STROKE_TOOLS = new Set(['draw', 'highlight', 'eraser']);
 
 /**
- * Stroke size presets.
+ * Default stroke size presets (used when no custom sizes are stored).
  * width:       canvas-unit stroke width for draw/highlight
  * eraseRadius: canvas-unit erase radius for the eraser tool
  * dot:         visual dot diameter in px shown on the button
  */
-const STROKE_SIZES = [
+const DEFAULT_STROKE_SIZES = [
   { id: 'fine',   label: 'Fine',   width: 1,  eraseRadius: 6,  dot: 3  },
   { id: 'normal', label: 'Normal', width: 2,  eraseRadius: 12, dot: 5  },
   { id: 'thick',  label: 'Thick',  width: 4,  eraseRadius: 24, dot: 8  },
   { id: 'brush',  label: 'Brush',  width: 8,  eraseRadius: 48, dot: 12 },
 ];
+
+/**
+ * Runtime stroke sizes — same structure as above, but user-editable.
+ * Loaded from localStorage on startup; mutated in place when the user
+ * adjusts a size via the long-press slider.
+ */
+const STROKE_SIZES = (() => {
+  try {
+    const stored = localStorage.getItem(LS_CUSTOM_SIZES);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.length === 4) {
+        // Merge stored widths back onto the default structure
+        return DEFAULT_STROKE_SIZES.map((def, i) => ({
+          ...def,
+          width:       parsed[i].width       ?? def.width,
+          eraseRadius: parsed[i].eraseRadius ?? def.eraseRadius,
+          dot:         parsed[i].dot         ?? def.dot,
+        }));
+      }
+    }
+  } catch { /* ignore corrupt data */ }
+  return DEFAULT_STROKE_SIZES.map(d => ({ ...d }));
+})();
 
 /**
  * Colour definitions.
@@ -253,6 +280,12 @@ let lblPageEl = null;
 /** The #lbl-zoom label element */
 let lblZoomEl = null;
 
+/** Currently visible size-edit slider popover, or null */
+let activeSizePopover = null;
+
+/** Cached viewport scale — updated on viewport-changed to drive cursor sizing */
+let cachedViewportScale = 1.0;
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
@@ -362,7 +395,7 @@ function init() {
   for (const size of STROKE_SIZES) {
     const btn = document.createElement('button');
     btn.className  = 'stroke-size-btn';
-    btn.title      = size.label;
+    btn.title      = `${size.label} — long-press to customise`;
     btn.dataset.size = size.id;
 
     // Visual dot — a filled circle whose diameter indicates the stroke weight
@@ -373,6 +406,31 @@ function init() {
     btn.appendChild(dot);
 
     btn.addEventListener('click', () => handleStrokeSizeClick(size.id));
+
+    // Right-click (mouse) or long-press (touch/pen, 600 ms with 8px cancel threshold)
+    // opens a slider to customise that slot's width value.
+    const LONG_PRESS_CANCEL_PX = 8;
+    let longPressTimer  = null;
+    let longPressStartX = 0;
+    let longPressStartY = 0;
+
+    btn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      clearTimeout(longPressTimer);
+      showSizePopover(size, btn);
+    });
+    btn.addEventListener('pointerdown', (e) => {
+      if (e.button === 2) return; // right-click handled by contextmenu
+      longPressStartX = e.clientX;
+      longPressStartY = e.clientY;
+      longPressTimer  = setTimeout(() => showSizePopover(size, btn), 600);
+    });
+    btn.addEventListener('pointermove', (e) => {
+      const d = Math.hypot(e.clientX - longPressStartX, e.clientY - longPressStartY);
+      if (d > LONG_PRESS_CANCEL_PX) clearTimeout(longPressTimer);
+    });
+    btn.addEventListener('pointerup',     () => clearTimeout(longPressTimer));
+    btn.addEventListener('pointercancel', () => clearTimeout(longPressTimer));
 
     strokePickerEl.appendChild(btn);
     strokeSizeButtons.set(size.id, btn);
@@ -437,7 +495,8 @@ function init() {
   shapeSnapBtn.addEventListener('click', () => {
     shapeSnapOn = !shapeSnapOn;
     shapeSnapBtn.classList.toggle('active', shapeSnapOn);
-    setShapeSnap(shapeSnapOn);
+    setDrawShapeSnap(shapeSnapOn);
+    setHighlightShapeSnap(shapeSnapOn);
     saveToolSettings();
   });
   shapeSnapToggleEl.appendChild(shapeSnapBtn);
@@ -451,6 +510,31 @@ function init() {
   document.addEventListener('request-cursor-tool', () => {
     if (activeTool !== null) setActiveTool(null);
   });
+
+  // ── Responsive toolbar (split-view / narrow window support) ───────────────
+  // Adds .toolbar-compact to #toolbar when the window is too narrow to show
+  // all the secondary status labels. CSS hides labels and the screenshot btn.
+  const toolbarEl = document.getElementById('toolbar');
+  if (toolbarEl && 'ResizeObserver' in window) {
+    const ro = new ResizeObserver(([entry]) => {
+      toolbarEl.classList.toggle('toolbar-compact', entry.contentRect.width < 820);
+    });
+    ro.observe(toolbarEl);
+  }
+
+  // ── Viewport scale tracking — drives the dynamic pen cursor size ──────────
+  const canvasContainer = document.getElementById('canvas-container');
+  if (canvasContainer) {
+    canvasContainer.addEventListener('viewport-changed', () => {
+      const newScale = viewportState.scale;
+      // Only rebuild the cursor if scale changed by more than 10% — avoids
+      // redundant SVG generation on every micro-zoom step.
+      if (Math.abs(newScale - cachedViewportScale) / cachedViewportScale > 0.1) {
+        cachedViewportScale = newScale;
+        updateToolCursor();
+      }
+    });
+  }
 
   // Check for updates in the background — delayed so it doesn't compete with
   // startup rendering. Shows a badge in the toolbar if a newer release exists.
@@ -726,6 +810,7 @@ function applyStrokeSizeToActiveTool() {
   if (activeTool === 'draw')      setDrawStrokeWidth(sizeDef.width);
   if (activeTool === 'highlight') setHighlightStrokeWidth(sizeDef.width);
   if (activeTool === 'eraser')    setEraseRadius(sizeDef.eraseRadius);
+  updateToolCursor();
 }
 
 // ---------------------------------------------------------------------------
@@ -799,7 +884,7 @@ function updateColourPickerVisibility() {
   const strokeVisible      = activeTool !== null && STROKE_TOOLS.has(activeTool);
   const eraserModeVisible  = activeTool === 'eraser';
   const pressureVisible    = activeTool === 'draw';
-  const shapeSnapVisible   = activeTool === 'draw';
+  const shapeSnapVisible   = activeTool === 'draw' || activeTool === 'highlight';
 
   colourPickerEl.style.display      = colourVisible     ? 'flex'  : 'none';
   colourSepEl.style.display         = colourVisible     ? 'block' : 'none';
@@ -828,9 +913,12 @@ function updateColourPickerVisibility() {
     }
     if (shapeSnapVisible) {
       document.getElementById('btn-shape-snap-toggle')?.classList.toggle('active', shapeSnapOn);
-      setShapeSnap(shapeSnapOn);
+      setDrawShapeSnap(shapeSnapOn);
+      setHighlightShapeSnap(shapeSnapOn);
     }
   }
+  // Update the tool cursor whenever the tool changes
+  updateToolCursor();
 }
 
 /**
@@ -895,6 +983,167 @@ function updateStatus({ pageCount, currentPage, scale }) {
       lblPageEl.textContent = '';
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic pen cursor
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a CSS cursor data-URL string from a circle SVG sized to match the
+ * expected stroke diameter on screen.
+ *
+ * @param {number} diameterPx — on-screen diameter in CSS pixels
+ * @returns {string} CSS cursor value
+ */
+function buildCursor(diameterPx) {
+  const r    = Math.max(2, Math.min(44, diameterPx / 2));
+  const size = Math.ceil(r * 2 + 4); // +4px padding for the stroke border
+  const c    = size / 2;
+  const svg  = `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}'>` +
+    `<circle cx='${c}' cy='${c}' r='${r}' fill='none' stroke='white' stroke-width='1.5'/>` +
+    `<circle cx='${c}' cy='${c}' r='${r}' fill='none' stroke='black' stroke-width='0.6' stroke-dasharray='3 2'/>` +
+    `</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${c} ${c}, crosshair`;
+}
+
+/**
+ * Applies a size-matched SVG cursor to the canvas container for draw,
+ * highlight, and eraser tools. Clears to default for other tools.
+ */
+function updateToolCursor() {
+  const container = document.getElementById('canvas-container');
+  if (!container) return;
+
+  const sizeDef = STROKE_SIZES.find(s => s.id === activeStrokeSize);
+  const scale   = cachedViewportScale;
+
+  if (activeTool === 'draw' || activeTool === 'highlight') {
+    const diameterPx = (sizeDef?.width ?? 2) * scale;
+    container.style.cursor = buildCursor(diameterPx);
+  } else if (activeTool === 'eraser') {
+    const diameterPx = (sizeDef?.eraseRadius ?? 12) * 2 * scale;
+    container.style.cursor = buildCursor(diameterPx);
+  } else {
+    // Let CSS handle cursor for other tools (cursor, select, note)
+    container.style.cursor = '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Editable size presets — long-press slider popover
+// ---------------------------------------------------------------------------
+
+/**
+ * Saves the current STROKE_SIZES widths to localStorage so they persist
+ * across app restarts.
+ */
+function saveCustomSizes() {
+  const data = STROKE_SIZES.map(s => ({
+    width: s.width, eraseRadius: s.eraseRadius, dot: s.dot,
+  }));
+  localStorage.setItem(LS_CUSTOM_SIZES, JSON.stringify(data));
+}
+
+/**
+ * Shows a slider popover above the given size button that lets the user
+ * customise the width for that slot.
+ *
+ * @param {object}      sizeDef — entry from STROKE_SIZES
+ * @param {HTMLElement} btn
+ */
+
+/**
+ * Exponential mapping between slider integer positions (1–20) and actual stroke
+ * widths (1–20). Fine widths get many positions for precision; large widths get
+ * fewer because small differences don't matter visually at that scale.
+ *
+ * pos=1→1.0, pos=2→1.2, pos=5→1.9, pos=10→4.1, pos=15→9.0, pos=20→20.0
+ */
+function _sliderToWidth(pos) {
+  return Math.round(Math.pow(20, (pos - 1) / 19) * 10) / 10;
+}
+function _widthToSlider(width) {
+  const clamped = Math.max(1, Math.min(20, width));
+  return Math.round(1 + 19 * Math.log(clamped) / Math.log(20));
+}
+
+function showSizePopover(sizeDef, btn) {
+  // Close any existing popover first
+  closeSizePopover();
+
+  const popover = document.createElement('div');
+  popover.className = 'size-popover';
+
+  const label = document.createElement('span');
+  label.className   = 'size-popover-label';
+  label.textContent = sizeDef.label;
+  popover.appendChild(label);
+
+  const slider = document.createElement('input');
+  slider.type  = 'range';
+  slider.min   = '1';
+  slider.max   = '20';
+  slider.step  = '1';
+  slider.value = String(_widthToSlider(sizeDef.width));
+  slider.className = 'size-popover-slider';
+  popover.appendChild(slider);
+
+  const valueDisplay = document.createElement('span');
+  valueDisplay.className   = 'size-popover-value';
+  valueDisplay.textContent = sizeDef.width;
+  popover.appendChild(valueDisplay);
+
+  slider.addEventListener('input', () => {
+    const newWidth = _sliderToWidth(parseInt(slider.value, 10));
+    valueDisplay.textContent = newWidth;
+
+    // Update the STROKE_SIZES entry in place
+    sizeDef.width       = newWidth;
+    sizeDef.eraseRadius = Math.round(newWidth * 6);
+    sizeDef.dot         = Math.round(2 + newWidth * 1.2);
+
+    // Refresh the visual dot on the button
+    const dot = btn.querySelector('.stroke-size-dot');
+    if (dot) {
+      dot.style.width  = `${sizeDef.dot}px`;
+      dot.style.height = `${sizeDef.dot}px`;
+    }
+
+    // Apply immediately if this slot is active
+    if (activeStrokeSize === sizeDef.id) applyStrokeSizeToActiveTool();
+
+    saveCustomSizes();
+  });
+
+  // Use fixed positioning so the popover is never clipped by overflow:hidden
+  // on the toolbar or any ancestor.
+  popover.style.position = 'fixed';
+  document.body.appendChild(popover);
+  const btnRect = btn.getBoundingClientRect();
+  popover.style.left   = `${Math.max(4, Math.min(btnRect.left, window.innerWidth - 220))}px`;
+  popover.style.top    = `${btnRect.bottom + 4}px`;
+
+  activeSizePopover = popover;
+
+  // Close when the user clicks/taps outside the popover.
+  // Uses a persistent listener (not once:true) so interacting with the slider
+  // doesn't close it — only a click that lands outside does.
+  setTimeout(() => {
+    document.addEventListener('pointerdown', _onOutsidePointerDown);
+  }, 0);
+}
+
+function _onOutsidePointerDown(e) {
+  if (activeSizePopover && !activeSizePopover.contains(e.target)) {
+    closeSizePopover();
+  }
+}
+
+function closeSizePopover() {
+  activeSizePopover?.remove();
+  activeSizePopover = null;
+  document.removeEventListener('pointerdown', _onOutsidePointerDown);
 }
 
 // ---------------------------------------------------------------------------

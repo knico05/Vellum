@@ -436,6 +436,42 @@ async function removeFromRecent(filePath) {
 }
 
 /**
+ * Renames a file on disk then updates the library entry and folder cache.
+ * @param {string} filePath — Absolute path of the PDF to rename
+ * @param {string} [dirPath] — Containing folder path, for refreshing folder view
+ */
+async function handleRenameFile(filePath, dirPath) {
+  const currentName = filePath.replace(/\\/g, '/').split('/').pop().replace(/\.pdf$/i, '');
+  const newName = window.prompt('Rename file:', currentName);
+  if (!newName || newName.trim() === '' || newName.trim() === currentName) return;
+
+  try {
+    const newPath = await window.api.renameFile(filePath, newName.trim());
+
+    // Update recent files entry if present
+    const entry = library.files.find(f => f.path === filePath);
+    if (entry) {
+      const parts = newPath.replace(/\\/g, '/').split('/');
+      entry.path = newPath;
+      entry.name = parts[parts.length - 1];
+      entry.dir  = parts.slice(0, -1).join('/') || '/';
+    }
+
+    // Refresh the folder scan if this file lives in a pinned folder
+    if (dirPath) {
+      folderFilesCache.delete(dirPath);
+      const container = _findChildrenContainer(dirPath);
+      if (container) await _expandFolder(dirPath, null, container);
+    }
+
+    renderList();
+    await _save();
+  } catch (err) {
+    alert(`Could not rename: ${err.message}`);
+  }
+}
+
+/**
  * Moves a file then updates its library entry.
  */
 async function handleMoveFile(file) {
@@ -538,6 +574,11 @@ function showContextMenu(e, type, data) {
       if (d) removePinnedFolder(d.path);
     });
   } else if (type === 'folder-file') {
+    _addMenuItem('Rename…', async () => {
+      const d = contextMenuTarget?.data;
+      hideContextMenu();
+      if (d) await handleRenameFile(d.filePath, d.dirPath);
+    });
     _addMenuItem('Delete file…', async () => {
       const d = contextMenuTarget?.data;
       hideContextMenu();
@@ -553,6 +594,11 @@ function showContextMenu(e, type, data) {
       await _save();
     });
   } else {
+    _addMenuItem('Rename…', async () => {
+      const d = contextMenuTarget?.data;
+      hideContextMenu();
+      if (d) await handleRenameFile(d.path, null);
+    });
     _addMenuItem('Move to folder…', async () => {
       const d = contextMenuTarget?.data;
       hideContextMenu();
