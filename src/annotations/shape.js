@@ -50,26 +50,41 @@ const RECT_COVERAGE_FRACTION = 0.2;
 /**
  * Circle: max ratio of stddev of distances to mean radius.
  * A rectangle scores ~0.14–0.20 on this metric; hand-drawn circles score ~0–0.10.
- * 0.18 is permissive enough for imperfect circles while still rejecting rectangles
- * when combined with the corner-count discriminator.
+ * 0.24 is permissive enough for imperfect hand-drawn circles while still rejecting
+ * clear rectangles when combined with the corner-count discriminator.
  */
-const CIRCLE_THRESHOLD = 0.18;
+const CIRCLE_THRESHOLD = 0.24;
 
 /**
  * Corner discriminator: angle threshold in degrees.
  * Direction changes sharper than this count as a "corner".
- * Circles have 0–1 corners; rectangles have 3–4.
+ * Circles have 0–2 corners; rectangles have 3–4.
  */
 const CORNER_ANGLE_THRESHOLD_DEG = 40;
 
-/** Maximum corners allowed for a shape to be recognised as a circle. */
-const CIRCLE_MAX_CORNERS = 1;
+/**
+ * Maximum corners allowed for a shape to be recognised as a circle.
+ * Raised to 2 to accommodate hand-tremor micro-corners without letting
+ * rectangles (which always score 3–4) through.
+ */
+const CIRCLE_MAX_CORNERS = 2;
 
 /** Circle: minimum mean radius in canvas units */
 const CIRCLE_MIN_RADIUS = 15;
 
-/** Circle: points must span at least this many degrees of arc */
-const CIRCLE_MIN_ARC_DEG = 270;
+/**
+ * Circle: points must span at least this many degrees of arc.
+ * Lowered from 270 to 240 so users don't need to draw a nearly-complete circle
+ * before it snaps — a 2/3 arc is sufficient for clear intent.
+ */
+const CIRCLE_MIN_ARC_DEG = 240;
+
+/**
+ * Ellipse: minimum bounding-box aspect ratio (long/short) for a shape to be
+ * tested as an ellipse rather than a circle. Below this threshold the circle
+ * detector handles it; at or above it we fit an axis-aligned ellipse.
+ */
+const ELLIPSE_ASPECT_THRESHOLD = 1.4;
 
 
 // ---------------------------------------------------------------------------
@@ -91,10 +106,13 @@ function detectShape(points) {
   const extent = Math.max(maxX - minX, maxY - minY);
   if (extent < MIN_EXTENT) return null;
 
-  // Order matters: circle before rect, because a circle passes the rect
+  // Order matters: circle/ellipse before rect, because both pass the rect
   // nearest-edge test (points lie close to all 4 edges of the bounding box).
+  // Ellipse is checked after circle: if the bounding box is nearly square,
+  // circle wins; if it is clearly elongated, ellipse wins.
   return _detectLine(points)
-      ?? _detectCircle(points)
+      ?? _detectCircle(points, minX, minY, maxX, maxY)
+      ?? _detectEllipse(points, minX, minY, maxX, maxY)
       ?? _detectRect(points, minX, minY, maxX, maxY)
       ?? null;
 }
@@ -253,17 +271,29 @@ function _countCorners(points) {
  * Tests whether the points approximate a circle.
  *
  * Method:
- *   1. Corner check: reject if the stroke has > CIRCLE_MAX_CORNERS sharp turns
+ *   1. Aspect-ratio guard: if the bounding box is clearly elongated
+ *      (long/short ≥ ELLIPSE_ASPECT_THRESHOLD), let _detectEllipse handle it.
+ *   2. Corner check: reject if the stroke has > CIRCLE_MAX_CORNERS sharp turns
  *      (distinguishes smooth circles from rectangles / jagged paths).
- *   2. Centroid = mean of all points.
- *   3. Mean radius r = mean distance from centroid.
- *   4. Roundness: stddev(distances) / r < CIRCLE_THRESHOLD.
- *   5. Coverage: the angle range covered by the points must be ≥ CIRCLE_MIN_ARC_DEG.
+ *   3. Centroid = mean of all points.
+ *   4. Mean radius r = mean distance from centroid.
+ *   5. Roundness: stddev(distances) / r < CIRCLE_THRESHOLD.
+ *   6. Coverage: the angle range covered by the points must be ≥ CIRCLE_MIN_ARC_DEG.
  *
  * @param {Array<{x,y}>} points
- * @returns {{ shapeType, idealPoints } | null}
+ * @param {number} minX
+ * @param {number} minY
+ * @param {number} maxX
+ * @param {number} maxY
+ * @returns {{ shapeType, cx, cy, r } | null}
  */
-function _detectCircle(points) {
+function _detectCircle(points, minX, minY, maxX, maxY) {
+  // Let _detectEllipse handle clearly elongated bounding boxes
+  const W = maxX - minX;
+  const H = maxY - minY;
+  const aspect = W > H ? W / H : H / W;
+  if (aspect >= ELLIPSE_ASPECT_THRESHOLD) return null;
+
   // Reject strokes with too many sharp corners — they are not circles
   if (_countCorners(points) > CIRCLE_MAX_CORNERS) return null;
 
@@ -301,6 +331,75 @@ function _detectCircle(points) {
 
   // Return centre + radius directly — renderer uses ctx.arc() for a perfect circle
   return { shapeType: 'circle', cx, cy, r };
+}
+
+// ---------------------------------------------------------------------------
+// Ellipse detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Tests whether the points approximate an axis-aligned ellipse.
+ *
+ * Called only when the bounding-box aspect ratio ≥ ELLIPSE_ASPECT_THRESHOLD,
+ * meaning the shape is clearly elongated and a perfect circle cannot fit.
+ *
+ * Method:
+ *   1. Corner check: reject if too many sharp turns (not a smooth curve).
+ *   2. Fit an axis-aligned ellipse to the bounding box:
+ *      cx = midpoint X, cy = midpoint Y, rx = half-width, ry = half-height.
+ *   3. For each point, compute the normalised distance from the ellipse perimeter:
+ *      d = sqrt((dx/rx)² + (dy/ry)²) — equals 1.0 on the ellipse boundary.
+ *   4. Mean and stddev of these distances must be close to 1.0.
+ *   5. Arc coverage: same angular check as the circle detector.
+ *
+ * @param {Array<{x,y}>} points
+ * @param {number} minX
+ * @param {number} minY
+ * @param {number} maxX
+ * @param {number} maxY
+ * @returns {{ shapeType, cx, cy, rx, ry } | null}
+ */
+function _detectEllipse(points, minX, minY, maxX, maxY) {
+  const W = maxX - minX;
+  const H = maxY - minY;
+  if (W < 20 || H < 20) return null;
+
+  // Reject jagged strokes — smooth ellipses have few sharp direction changes
+  if (_countCorners(points) > CIRCLE_MAX_CORNERS) return null;
+
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const rx = W / 2;
+  const ry = H / 2;
+
+  // Normalised distances — on the ellipse boundary these equal 1.0
+  const normDists = points.map(p => {
+    const nx = (p.x - cx) / rx;
+    const ny = (p.y - cy) / ry;
+    return Math.sqrt(nx * nx + ny * ny);
+  });
+
+  const mean = normDists.reduce((s, d) => s + d, 0) / normDists.length;
+  // Mean should be close to 1.0 (points lie on the ellipse perimeter)
+  if (Math.abs(mean - 1.0) > 0.25) return null;
+
+  const variance = normDists.reduce((s, d) => s + (d - mean) ** 2, 0) / normDists.length;
+  const stddev   = Math.sqrt(variance);
+  // Low stddev means points are consistently on the perimeter
+  if (stddev / mean > CIRCLE_THRESHOLD) return null;
+
+  // Arc coverage — reuse angular check from circle detector
+  const angles = points.map(p => Math.atan2(p.y - cy, p.x - cx));
+  angles.sort((a, b) => a - b);
+  let maxGap = 0;
+  for (let i = 1; i < angles.length; i++) {
+    maxGap = Math.max(maxGap, angles[i] - angles[i - 1]);
+  }
+  maxGap = Math.max(maxGap, (angles[0] + 2 * Math.PI) - angles[angles.length - 1]);
+  const arcCoveredDeg = (2 * Math.PI - maxGap) * (180 / Math.PI);
+  if (arcCoveredDeg < CIRCLE_MIN_ARC_DEG) return null;
+
+  return { shapeType: 'ellipse', cx, cy, rx, ry };
 }
 
 // ---------------------------------------------------------------------------

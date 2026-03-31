@@ -88,10 +88,10 @@ const STROKE_TOOLS = new Set(['draw', 'highlight', 'eraser']);
  * dot:         visual dot diameter in px shown on the button
  */
 const DEFAULT_STROKE_SIZES = [
-  { id: 'fine',   label: 'Fine',   width: 1,  eraseRadius: 6,  dot: 3  },
-  { id: 'normal', label: 'Normal', width: 2,  eraseRadius: 12, dot: 5  },
-  { id: 'thick',  label: 'Thick',  width: 4,  eraseRadius: 24, dot: 8  },
-  { id: 'brush',  label: 'Brush',  width: 8,  eraseRadius: 48, dot: 12 },
+  { id: 'fine',   label: 'Fine',   width: 0.5, eraseRadius: 4,  dot: 2  },
+  { id: 'normal', label: 'Normal', width: 2,   eraseRadius: 12, dot: 5  },
+  { id: 'thick',  label: 'Thick',  width: 4,   eraseRadius: 24, dot: 8  },
+  { id: 'brush',  label: 'Brush',  width: 8,   eraseRadius: 48, dot: 12 },
 ];
 
 /**
@@ -510,17 +510,6 @@ function init() {
   document.addEventListener('request-cursor-tool', () => {
     if (activeTool !== null) setActiveTool(null);
   });
-
-  // ── Responsive toolbar (split-view / narrow window support) ───────────────
-  // Adds .toolbar-compact to #toolbar when the window is too narrow to show
-  // all the secondary status labels. CSS hides labels and the screenshot btn.
-  const toolbarEl = document.getElementById('toolbar');
-  if (toolbarEl && 'ResizeObserver' in window) {
-    const ro = new ResizeObserver(([entry]) => {
-      toolbarEl.classList.toggle('toolbar-compact', entry.contentRect.width < 820);
-    });
-    ro.observe(toolbarEl);
-  }
 
   // ── Viewport scale tracking — drives the dynamic pen cursor size ──────────
   const canvasContainer = document.getElementById('canvas-container');
@@ -1055,17 +1044,24 @@ function saveCustomSizes() {
 
 /**
  * Exponential mapping between slider integer positions (1–20) and actual stroke
- * widths (1–20). Fine widths get many positions for precision; large widths get
+ * widths (0.3–20). Fine widths get many positions for precision; large widths get
  * fewer because small differences don't matter visually at that scale.
  *
- * pos=1→1.0, pos=2→1.2, pos=5→1.9, pos=10→4.1, pos=15→9.0, pos=20→20.0
+ * pos=1→0.3, pos=5→0.7, pos=10→1.8, pos=15→4.6, pos=20→20.0
+ *
+ * The minimum of 0.3 lets users annotate dense PowerPoint slides where even
+ * width-1 lines are too thick for precise margin notes.
  */
+const _SLIDER_MIN_WIDTH = 0.3;
+const _SLIDER_MAX_WIDTH = 20;
+
 function _sliderToWidth(pos) {
-  return Math.round(Math.pow(20, (pos - 1) / 19) * 10) / 10;
+  const ratio = Math.pow(_SLIDER_MAX_WIDTH / _SLIDER_MIN_WIDTH, (pos - 1) / 19);
+  return Math.round(ratio * _SLIDER_MIN_WIDTH * 10) / 10;
 }
 function _widthToSlider(width) {
-  const clamped = Math.max(1, Math.min(20, width));
-  return Math.round(1 + 19 * Math.log(clamped) / Math.log(20));
+  const clamped = Math.max(_SLIDER_MIN_WIDTH, Math.min(_SLIDER_MAX_WIDTH, width));
+  return Math.round(1 + 19 * Math.log(clamped / _SLIDER_MIN_WIDTH) / Math.log(_SLIDER_MAX_WIDTH / _SLIDER_MIN_WIDTH));
 }
 
 function showSizePopover(sizeDef, btn) {

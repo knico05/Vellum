@@ -55,7 +55,7 @@
 
   /* Layout dimensions */
   --titlebar-height: 32px;
-  --toolbar-height:  60px;
+  --toolbar-height:  80px;
   --sidebar-width:   0px;    /* Sidebar removed — replaced by slide-in library panel */
   --panel-width:     300px;
 
@@ -213,17 +213,28 @@ button:focus-visible {
 #toolbar {
   grid-row: 2;
   display: flex;
-  align-items: center;
-  padding: 0 12px;
+  flex-direction: column;
+  justify-content: center;
+  padding: 4px 12px;
   background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border-subtle);
-  gap: 8px;
+  gap: 0;
   height: var(--toolbar-height);
-  overflow: hidden;
   min-width: 0;
   /* Subtle shadow toward the canvas to ground the toolbar */
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04), 0 2px 8px rgba(0, 0, 0, 0.2);
   z-index: 10;
+}
+
+/* Each row inside the dual-row toolbar */
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  width: 100%;
+  min-width: 0;
+  overflow: visible;
 }
 
 /* ---------------------------------------------------------------------------
@@ -806,41 +817,8 @@ button:focus-visible {
 /* Compact toolbar — applied by ResizeObserver in toolbar.js when window is narrow.
    Hides everything except the 6 tool buttons, active colour/stroke pickers,
    library button, and panel toggle. Reduces padding and gaps to save space. */
-#toolbar.toolbar-compact {
-  gap: 4px;
-  padding: 0 6px;
-}
-
-/* Hide file-operation text buttons */
-#toolbar.toolbar-compact #btn-open,
-#toolbar.toolbar-compact #btn-new-page,
-#toolbar.toolbar-compact #btn-export,
-/* Hide undo / redo */
-#toolbar.toolbar-compact #btn-undo,
-#toolbar.toolbar-compact #btn-redo,
-/* Hide all separators */
-#toolbar.toolbar-compact .toolbar-sep,
-/* Hide right-side secondary controls */
-#toolbar.toolbar-compact .toolbar-label,
-#toolbar.toolbar-compact .toolbar-spacer,
-#toolbar.toolbar-compact #btn-screenshot,
-#toolbar.toolbar-compact #btn-fit-page,
-#toolbar.toolbar-compact .update-badge {
-  display: none;
-}
-
-/* Shrink colour swatches and hide custom-colour extras to save horizontal space */
-#toolbar.toolbar-compact .colour-swatch {
-  width: 14px;
-  height: 14px;
-}
-#toolbar.toolbar-compact .colour-swatch-custom,
-#toolbar.toolbar-compact .colour-save-btn,
-#toolbar.toolbar-compact .colour-eyedropper,
-#toolbar.toolbar-compact .colour-custom-palette,
-#toolbar.toolbar-compact .colour-custom-sep {
-  display: none;
-}
+/* .toolbar-compact rules removed — replaced by dual-row layout which
+   prevents overflow structurally without needing responsive hiding. */
 
 /* Small label used for zoom percentage, page count, etc. */
 .toolbar-label {
@@ -1372,6 +1350,55 @@ button:focus-visible {
 .panel-jump-input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* ── Notes search ── */
+
+.panel-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 6px;
+  flex-shrink: 0;
+}
+
+.panel-search-input {
+  flex: 1;
+  height: 24px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  padding: 0 8px;
+  transition: border-color 100ms ease;
+  /* Remove native search field decoration */
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.panel-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.panel-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Native clear button (×) on webkit search inputs */
+.panel-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.panel-search-count {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 40px;
+  text-align: right;
 }
 
 /* ── Page overview list ── */

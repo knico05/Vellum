@@ -677,6 +677,17 @@ function spliceBlankPagesFromMigration(blankDescriptors) {
   document.dispatchEvent(new CustomEvent('pages-changed'));
 }
 
+/**
+ * Returns true if a page with the given ID exists in the current page list.
+ * Used by app.js to validate a stored last-page ID before navigating to it.
+ *
+ * @param {string} pageId
+ * @returns {boolean}
+ */
+function pageExists(pageId) {
+  return pages.some(p => p.id === pageId);
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -702,5 +713,6 @@ export {
   getPdfDoc,
   triggerLazyRender,
   spliceBlankPagesFromMigration,
+  pageExists,
   tearDown,
 };

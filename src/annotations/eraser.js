@@ -28,7 +28,7 @@
 
 import { toCanvas }              from '../canvas/viewport.js';
 import { requestRender }         from '../canvas/renderer.js';
-import { getAll, remove, add }   from './manager.js';
+import { getAll, remove, add, beginUndoGroup, endUndoGroup } from './manager.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -102,6 +102,8 @@ function onPointerDown(e) {
   if (e.pointerType === 'touch') return;
   e.stopImmediatePropagation();
   erasing = true;
+  // Open a group so every remove/add during this stroke is one undo step
+  beginUndoGroup();
   eraseAt(e.clientX, e.clientY);
 }
 
@@ -114,6 +116,8 @@ function onPointerMove(e) {
 
 function onPointerUp() {
   erasing = false;
+  // Close the group — all annotations touched in this stroke undo as one action
+  endUndoGroup();
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +174,22 @@ function eraseAt(screenX, screenY) {
     if (anno.type === 'draw' && anno.shapeType === 'circle') {
       const dist = Math.sqrt((cx - anno.cx) ** 2 + (cy - anno.cy) ** 2);
       if (Math.abs(dist - anno.r) <= ERASE_RADIUS) {
+        remove(anno.id);
+        requestRender();
+        return;
+      }
+    }
+
+    // Ellipse shapes (shapeType: 'ellipse', stored as cx/cy/rx/ry — no points array):
+    // Remove whole annotation when the eraser touches the ellipse outline.
+    // Normalised distance: on the ellipse perimeter this equals 1.0.
+    if (anno.type === 'draw' && anno.shapeType === 'ellipse') {
+      const nx   = (cx - anno.cx) / anno.rx;
+      const ny   = (cy - anno.cy) / anno.ry;
+      const norm = Math.sqrt(nx * nx + ny * ny);
+      // Approximate outline thickness check using the smaller semi-axis for scaling
+      const minAxis = Math.min(anno.rx, anno.ry);
+      if (Math.abs(norm - 1.0) <= ERASE_RADIUS / minAxis) {
         remove(anno.id);
         requestRender();
         return;

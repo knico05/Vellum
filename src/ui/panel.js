@@ -46,11 +46,16 @@ let currentPageId = null;
 let saveTimer = null;
 
 /** DOM references */
-let listEl      = null;
-let textareaEl  = null;
-let pageLabelEl = null;
-let emptyMsgEl  = null;
-let jumpInput   = null;
+let listEl        = null;
+let textareaEl    = null;
+let pageLabelEl   = null;
+let emptyMsgEl    = null;
+let jumpInput     = null;
+let searchInputEl = null;
+let searchCountEl = null;
+
+/** Current search query (lowercased), empty string = no filter */
+let searchQuery = '';
 
 /**
  * Comma-joined list of page IDs from the last full DOM build.
@@ -128,6 +133,33 @@ function init() {
   jumpRow.appendChild(jumpLabel);
   jumpRow.appendChild(jumpInput);
   panel.appendChild(jumpRow);
+
+  // ── Notes search ──────────────────────────────────────────────────────────
+  // Filters the page list to show only pages whose notes contain the query.
+  // Also serves as the primary way to search in tablet mode where Ctrl+F
+  // (PDF text search shortcut) may not be accessible.
+  const searchRow = document.createElement('div');
+  searchRow.className = 'panel-search-row';
+
+  searchInputEl = document.createElement('input');
+  searchInputEl.type        = 'search';
+  searchInputEl.className   = 'panel-search-input';
+  searchInputEl.placeholder = 'Search notes…';
+  searchInputEl.autocomplete = 'off';
+  searchInputEl.spellcheck   = false;
+  // Prevent Escape from bubbling up and closing the panel or triggering shortcuts
+  searchInputEl.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); searchInputEl.value = ''; searchQuery = ''; _applySearch(); } });
+  searchInputEl.addEventListener('input', () => {
+    searchQuery = searchInputEl.value.trim().toLowerCase();
+    _applySearch();
+  });
+
+  searchCountEl = document.createElement('span');
+  searchCountEl.className = 'panel-search-count';
+
+  searchRow.appendChild(searchInputEl);
+  searchRow.appendChild(searchCountEl);
+  panel.appendChild(searchRow);
 
   // ── Page list ─────────────────────────────────────────────────────────────
   listEl = document.createElement('div');
@@ -300,6 +332,8 @@ function rebuildList() {
   });
 
   updateActiveCard();
+  // Re-apply any active search filter to newly built cards
+  _applySearch();
 
   // Render page previews asynchronously so they don't delay the list paint
   _renderThumbnails(allPages);
@@ -746,6 +780,41 @@ function _restorePanelState() {
     document.getElementById('main')?.classList.add('panel-hidden');
   } else {
     document.getElementById('btn-toggle-panel')?.classList.add('active');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Notes search
+// ---------------------------------------------------------------------------
+
+/**
+ * Filters the page overview cards based on the current searchQuery.
+ *
+ * Cards whose page has notes containing the query remain visible;
+ * others are hidden. An empty query shows all cards.
+ * A match-count label ("3 of 12") is shown while a query is active.
+ */
+function _applySearch() {
+  if (!listEl) return;
+  const cards = listEl.querySelectorAll('.page-card');
+  if (!searchQuery) {
+    // No query — show all cards, hide count
+    cards.forEach(card => { card.style.display = ''; });
+    if (searchCountEl) searchCountEl.textContent = '';
+    return;
+  }
+
+  let matchCount = 0;
+  cards.forEach(card => {
+    const pageId = card.dataset.id;
+    const notes  = (pageNotes.get(pageId) ?? '').toLowerCase();
+    const matches = notes.includes(searchQuery);
+    card.style.display = matches ? '' : 'none';
+    if (matches) matchCount++;
+  });
+
+  if (searchCountEl) {
+    searchCountEl.textContent = `${matchCount} of ${cards.length}`;
   }
 }
 

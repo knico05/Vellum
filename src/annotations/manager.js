@@ -37,6 +37,7 @@ let annotations = [];
  *   { action: 'add',    id, annotation }          — undo removes; redo re-adds
  *   { action: 'remove', annotation }              — undo re-inserts; redo removes
  *   { action: 'move',   undo: patches, redo: patches } — undo/redo apply position patches
+ *   { action: 'group',  entries: [...] }          — compound action (e.g. one eraser stroke)
  *
  * Maximum 50 entries. When full, the oldest entry is dropped.
  * Any new user action (add/remove/move) clears the redo stack.
@@ -49,6 +50,17 @@ let undoStack = [];
  * Cleared whenever the user performs a new annotation action.
  */
 let redoStack = [];
+
+/**
+ * When non-null, all add/remove calls are collected into this array instead of
+ * being pushed directly onto undoStack. Callers wrap a logical operation in
+ * beginUndoGroup() / endUndoGroup() so it appears as a single Ctrl+Z step.
+ *
+ * Example: one eraser stroke may remove many annotations — beginUndoGroup() is
+ * called on pointerdown and endUndoGroup() on pointerup, so the whole stroke
+ * undoes atomically.
+ */
+let _groupBuffer = null;
 
 // ---------------------------------------------------------------------------
 // ID generation
@@ -100,10 +112,15 @@ function add(partial) {
   annotations.push(annotation);
 
   // Record for undo — store full annotation so redo can re-insert it exactly.
-  // New user action clears redo history.
-  undoStack.push({ action: 'add', id: annotation.id, annotation });
-  if (undoStack.length > MAX_UNDO) undoStack.shift();
-  redoStack = [];
+  // If a group is open, collect into the buffer; otherwise push directly.
+  const undoEntry = { action: 'add', id: annotation.id, annotation };
+  if (_groupBuffer !== null) {
+    _groupBuffer.push(undoEntry);
+  } else {
+    undoStack.push(undoEntry);
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack = [];
+  }
 
   emit();
   return annotation;
@@ -120,10 +137,15 @@ function remove(id) {
   if (!target) return; // Not found — no-op
 
   // Record for undo BEFORE removing, so we can restore the full object.
-  // New user action clears redo history.
-  undoStack.push({ action: 'remove', annotation: { ...target } });
-  if (undoStack.length > MAX_UNDO) undoStack.shift();
-  redoStack = [];
+  // If a group is open, collect into the buffer; otherwise push directly.
+  const undoEntry = { action: 'remove', annotation: { ...target } };
+  if (_groupBuffer !== null) {
+    _groupBuffer.push(undoEntry);
+  } else {
+    undoStack.push(undoEntry);
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack = [];
+  }
 
   annotations = annotations.filter(a => a.id !== id);
   emit();
@@ -245,6 +267,22 @@ function undo() {
     applyPatches(entry.undo);
     redoStack.push({ action: 'move', undo: entry.undo, redo: entry.redo });
     emit();
+  } else if (entry.action === 'group') {
+    // Undo group → reverse each sub-entry in reverse order (LIFO), build redo group.
+    const redoEntries = [];
+    for (let i = entry.entries.length - 1; i >= 0; i--) {
+      const sub = entry.entries[i];
+      if (sub.action === 'add') {
+        const removed = annotations.find(a => a.id === sub.id) ?? sub.annotation;
+        annotations = annotations.filter(a => a.id !== sub.id);
+        redoEntries.push({ action: 'add', id: removed.id, annotation: removed });
+      } else if (sub.action === 'remove') {
+        annotations.push(sub.annotation);
+        redoEntries.push({ action: 'remove', annotation: sub.annotation });
+      }
+    }
+    redoStack.push({ action: 'group', entries: redoEntries });
+    emit();
   }
 }
 
@@ -273,6 +311,21 @@ function redo() {
     // Redo move → re-apply the after-positions using the stored redo patches.
     applyPatches(entry.redo);
     undoStack.push({ action: 'move', undo: entry.undo, redo: entry.redo });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    emit();
+  } else if (entry.action === 'group') {
+    // Redo group → re-apply each sub-entry in original order, build undo group.
+    const undoEntries = [];
+    for (const sub of entry.entries) {
+      if (sub.action === 'add') {
+        annotations.push(sub.annotation);
+        undoEntries.push({ action: 'add', id: sub.annotation.id, annotation: sub.annotation });
+      } else if (sub.action === 'remove') {
+        undoEntries.push({ action: 'remove', annotation: sub.annotation });
+        annotations = annotations.filter(a => a.id !== sub.annotation.id);
+      }
+    }
+    undoStack.push({ action: 'group', entries: undoEntries });
     if (undoStack.length > MAX_UNDO) undoStack.shift();
     emit();
   }
@@ -343,4 +396,36 @@ function batchUpdate(updates, undoPatch = null) {
   emit();
 }
 
-export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo };
+/**
+ * Opens an undo group. All add() and remove() calls until endUndoGroup() is
+ * called will be collected and committed as a single undoable action.
+ *
+ * Intended for multi-step operations like a single eraser stroke, where many
+ * annotations may be removed but the user expects one Ctrl+Z to restore them all.
+ *
+ * Nested calls are safe: if a group is already open, this is a no-op.
+ */
+function beginUndoGroup() {
+  if (_groupBuffer === null) _groupBuffer = [];
+}
+
+/**
+ * Closes the current undo group and pushes all collected entries as a single
+ * 'group' action onto the undo stack.
+ *
+ * If the buffer is empty (no mutations occurred during the group), nothing is
+ * pushed — avoids cluttering the stack with empty actions.
+ *
+ * Clears the redo stack since a new user action has been completed.
+ */
+function endUndoGroup() {
+  if (_groupBuffer === null) return;
+  const entries = _groupBuffer;
+  _groupBuffer  = null;
+  if (entries.length === 0) return;
+  undoStack.push({ action: 'group', entries });
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack = [];
+}
+
+export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo, beginUndoGroup, endUndoGroup };

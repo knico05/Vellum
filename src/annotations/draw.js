@@ -161,9 +161,40 @@ function onMove(e) {
   if (!active || !drawing) return;
   if (e.pointerType === 'touch') return;
 
-  // Once a shape has snapped, lock the preview — micro-tremor must not un-snap it.
-  // The user will commit on pen-up or naturally move away if they changed their mind.
-  if (snappedData) return;
+  // Once a shape has snapped, enter snap-adjust mode: the user can still move
+  // the pen to reposition the shape's endpoint/corner/radius before lifting.
+  // This lets them fine-tune alignment without un-snapping.
+  if (snappedData) {
+    const pt = makePoint(e);
+    if (snappedData.shapeType === 'line') {
+      // Move the endpoint (index 1) to follow the pen — start (index 0) stays fixed
+      snappedData.idealPoints[1] = { x: pt.x, y: pt.y, pressure: 0.5 };
+    } else if (snappedData.shapeType === 'rect') {
+      // Recompute bounding box: TL corner fixed at stroke start, BR follows pen
+      const p0   = livePoints[0];
+      const minX = Math.min(p0.x, pt.x);
+      const maxX = Math.max(p0.x, pt.x);
+      const minY = Math.min(p0.y, pt.y);
+      const maxY = Math.max(p0.y, pt.y);
+      snappedData.idealPoints = [
+        { x: minX, y: minY, pressure: 0.5 }, // TL
+        { x: maxX, y: minY, pressure: 0.5 }, // TR
+        { x: maxX, y: maxY, pressure: 0.5 }, // BR
+        { x: minX, y: maxY, pressure: 0.5 }, // BL
+      ];
+    } else if (snappedData.shapeType === 'circle') {
+      // Adjust radius: distance from the snapped centre to the current pen position
+      const dx = pt.x - snappedData.cx;
+      const dy = pt.y - snappedData.cy;
+      snappedData.r = Math.sqrt(dx * dx + dy * dy);
+    } else if (snappedData.shapeType === 'ellipse') {
+      // Adjust semi-axes: delta from the snapped centre to the pen position
+      snappedData.rx = Math.abs(pt.x - snappedData.cx);
+      snappedData.ry = Math.abs(pt.y - snappedData.cy);
+    }
+    requestRender();
+    return;
+  }
 
   const pt   = makePoint(e);
   const last = livePoints[livePoints.length - 1];
@@ -253,6 +284,11 @@ function commitStroke() {
       add({ ...base, pageId: resolvePageId(snappedData.cx, snappedData.cy),
                      cx: snappedData.cx, cy: snappedData.cy, r: snappedData.r,
                      points: [] });
+    } else if (snappedData.shapeType === 'ellipse') {
+      add({ ...base, pageId: resolvePageId(snappedData.cx, snappedData.cy),
+                     cx: snappedData.cx, cy: snappedData.cy,
+                     rx: snappedData.rx, ry: snappedData.ry,
+                     points: [] });
     } else {
       // line or rect — use idealPoints
       const pts = snappedData.idealPoints;
@@ -308,6 +344,8 @@ function drawLivePreview(ctx) {
     const w = _shapeWidth(currentWidth);
     if (snappedData.shapeType === 'circle') {
       drawCircle(ctx, snappedData.cx, snappedData.cy, snappedData.r, w, currentColour);
+    } else if (snappedData.shapeType === 'ellipse') {
+      drawEllipse(ctx, snappedData.cx, snappedData.cy, snappedData.rx, snappedData.ry, w, currentColour);
     } else {
       drawShapePath(ctx, snappedData.idealPoints,
                     snappedData.shapeType === 'rect', w, currentColour);
@@ -397,6 +435,9 @@ function _renderAnnotation(ctx, anno) {
     case 'circle':
       drawCircle(ctx, anno.cx, anno.cy, anno.r, w, anno.colour);
       break;
+    case 'ellipse':
+      drawEllipse(ctx, anno.cx, anno.cy, anno.rx, anno.ry, w, anno.colour);
+      break;
     default:
       drawPath(ctx, anno.points, anno.strokeWidth, anno.colour);
   }
@@ -452,6 +493,25 @@ function drawShapePath(ctx, points, close, width, colour) {
 function drawCircle(ctx, cx, cy, r, width, colour) {
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+  ctx.strokeStyle = colour;
+  ctx.lineWidth   = width;
+  ctx.stroke();
+}
+
+/**
+ * Renders an axis-aligned ellipse using ctx.ellipse() — geometrically perfect.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} cx     — centre x in canvas units
+ * @param {number} cy     — centre y in canvas units
+ * @param {number} rx     — horizontal semi-axis in canvas units
+ * @param {number} ry     — vertical semi-axis in canvas units
+ * @param {number} width  — stroke width in canvas units
+ * @param {string} colour — CSS colour string
+ */
+function drawEllipse(ctx, cx, cy, rx, ry, width, colour) {
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
   ctx.strokeStyle = colour;
   ctx.lineWidth   = width;
   ctx.stroke();

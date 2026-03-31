@@ -21,7 +21,7 @@ import {
   initPageManager, openPDF as openPDFPages, loadPageList, getPageCount,
   getCurrentFingerprint, getCurrentPdfPath, goToPageIndex, fitPage, addBlankPage,
   getCurrentPageListIndex, spliceBlankPagesFromMigration,
-  getPdfDoc, getPageList, goToPage,
+  getPdfDoc, getPageList, goToPage, getCurrentPageId, pageExists,
 } from './pages/pageManager.js';
 import { clear, loadFromJSON, undo, redo }         from './annotations/manager.js';
 import { initAutosave }                           from './storage/autosave.js';
@@ -193,7 +193,10 @@ async function loadFile(filePath) {
     // 3. Load saved annotations and page list (if any)
     await tryLoadAnnotations(filePath);
 
-    // 4. Record in library
+    // 4. Jump to the last-viewed page for this PDF (if one was saved)
+    _restoreLastPage();
+
+    // 5. Record in library
     await addToLibrary(filePath);
 
     updateStatusBar();
@@ -284,10 +287,52 @@ function updateStatusBar() {
   });
 }
 
-// Update zoom label on every viewport change
+// ---------------------------------------------------------------------------
+// Last-viewed page persistence
+//
+// When the user navigates to a different page (or scrolls the viewport), the
+// current page ID is saved to localStorage keyed by the PDF fingerprint.
+// On the next open of the same PDF, the app jumps straight to that page.
+// ---------------------------------------------------------------------------
+
+/** localStorage key prefix for per-file last-page storage */
+const LS_LAST_PAGE_PREFIX = 'qn-last-page-';
+
+/** setTimeout handle for the debounced page-save */
+let _lastPageSaveTimer = null;
+
+/**
+ * Saves the currently-visible page ID to localStorage, debounced at 1 s.
+ * Using a debounce prevents excessive writes while the user is scrolling.
+ */
+function _scheduleLastPageSave() {
+  clearTimeout(_lastPageSaveTimer);
+  _lastPageSaveTimer = setTimeout(() => {
+    const fp = getCurrentFingerprint();
+    if (!fp) return;
+    const pageId = getCurrentPageId();
+    if (pageId) localStorage.setItem(LS_LAST_PAGE_PREFIX + fp, pageId);
+  }, 1000);
+}
+
+/**
+ * Restores the last-viewed page for the currently loaded PDF (if any is stored).
+ * Must be called after pages are laid out so goToPage() can find the element.
+ */
+function _restoreLastPage() {
+  const fp = getCurrentFingerprint();
+  if (!fp) return;
+  const savedPageId = localStorage.getItem(LS_LAST_PAGE_PREFIX + fp);
+  if (savedPageId && pageExists(savedPageId)) {
+    goToPage(savedPageId);
+  }
+}
+
+// Update zoom label and save last-page position on every viewport change
 document.getElementById('canvas-container').addEventListener('viewport-changed', () => {
   updateStatusBar();
   requestRender();
+  _scheduleLastPageSave();
 });
 
 // ---------------------------------------------------------------------------
@@ -305,19 +350,38 @@ document.getElementById('canvas-container').addEventListener('viewport-changed',
 // (existing behaviour, unchanged).
 // ---------------------------------------------------------------------------
 
-/** Tool that was active before a barrel/eraser-end pen gesture started, or null */
+/**
+ * Tool saved before a barrel-button erase gesture — restored on pen lift.
+ * Null when not in a barrel-erase gesture.
+ */
 let _penEraserPreviousTool = null;
+
+/**
+ * Tool saved before an eraser-end lasso gesture — restored on pen lift.
+ * Null when not in an eraser-end gesture.
+ *
+ * The eraser end (buttons & 32) activates the lasso/select tool so the user
+ * can quickly select and move annotations without switching tools manually.
+ * This mirrors how GoodNotes treats the eraser-end on iPadOS.
+ */
+let _penLassoPreviousTool = null;
 
 const _canvasContainer = document.getElementById('canvas-container');
 
 _canvasContainer.addEventListener('pointerdown', (e) => {
   if (e.pointerType !== 'pen') return;
 
-  const isBarrel = !!(e.buttons & 2);   // barrel / side button
-  const isEraser = !!(e.buttons & 32);  // physical eraser end
+  const isBarrel    = !!(e.buttons & 2);   // front barrel / side button → eraser
+  const isEraserEnd = !!(e.buttons & 32);  // physical eraser end (back) → lasso
 
-  if (isBarrel || isEraser) {
-    // Only save the previous tool once (guard against repeated pointerdown events)
+  if (isEraserEnd) {
+    // Eraser end activates the lasso/select tool for quick selection gestures
+    if (_penLassoPreviousTool === null) {
+      _penLassoPreviousTool = getActiveTool();
+    }
+    if (getActiveTool() !== 'select') setActiveTool('select');
+  } else if (isBarrel) {
+    // Barrel button activates the eraser for quick erase gestures
     if (_penEraserPreviousTool === null) {
       _penEraserPreviousTool = getActiveTool();
     }
@@ -330,10 +394,15 @@ _canvasContainer.addEventListener('pointerdown', (e) => {
 
 function _onPenLift(e) {
   if (e.pointerType !== 'pen') return;
-  if (_penEraserPreviousTool === null) return;
-  // Restore the tool that was active before barrel/eraser-end was pressed
-  setActiveTool(_penEraserPreviousTool);
-  _penEraserPreviousTool = null;
+  // Restore whichever temporary tool override is active, preferring eraser-end
+  // since it is checked second in the pointerdown handler.
+  if (_penEraserPreviousTool !== null) {
+    setActiveTool(_penEraserPreviousTool);
+    _penEraserPreviousTool = null;
+  } else if (_penLassoPreviousTool !== null) {
+    setActiveTool(_penLassoPreviousTool);
+    _penLassoPreviousTool = null;
+  }
 }
 
 _canvasContainer.addEventListener('pointerup',     _onPenLift, { capture: true });

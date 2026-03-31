@@ -369,6 +369,14 @@ function createBoxElement(anno) {
     setTimeout(() => {
       if (!el.contains(document.activeElement)) {
         el.classList.remove('editing');
+
+        // Clear any remaining text selection inside this box — without this,
+        // the highlighted text stays visible after the user clicks elsewhere.
+        const sel = window.getSelection();
+        if (sel && el.contains(sel.anchorNode)) {
+          sel.removeAllRanges();
+        }
+
         // Auto-delete empty text boxes so accidental placements don't litter
         // the canvas as invisible annotations.
         if (serializeText(body).trim() === '') remove(anno.id);
@@ -679,16 +687,50 @@ function serializeText(el) {
  * Converts a plain-text string (with \n for newlines) back to safe HTML for
  * setting as innerHTML of a contenteditable element.
  *
+ * Lines beginning with "• " (the bullet prefix written by serializeText) are
+ * reconstructed into proper <ul><li> elements so that:
+ *   1. They render as browser-native bullet list items, and
+ *   2. The browser's contenteditable list-continuation logic treats them as
+ *      real list items — pressing Enter creates a new <li>, not a stray <div>.
+ *
  * @param {string} text
  * @returns {string}
  */
 function deserializeText(text) {
   if (!text) return '';
-  return text
+
+  // Escape HTML-special characters first
+  const escaped = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br>');
+    .replace(/>/g, '&gt;');
+
+  const lines = escaped.split('\n');
+  let html   = '';
+  let inList = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('\u2022 ')) {
+      // Bullet line — open a <ul> if not already inside one, then emit <li>
+      if (!inList) {
+        html   += '<ul>';
+        inList  = true;
+      }
+      html += `<li>${line.slice(2)}</li>`;
+    } else {
+      // Plain line — close any open list first
+      if (inList) {
+        html   += '</ul>';
+        inList  = false;
+      }
+      // Last line needs no trailing <br> (contenteditable adds one implicitly)
+      html += line + (i < lines.length - 1 ? '<br>' : '');
+    }
+  }
+  if (inList) html += '</ul>';
+
+  return html;
 }
 
 function scheduleTextSave(annotationId, bodyEl) {
