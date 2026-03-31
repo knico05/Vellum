@@ -170,18 +170,33 @@ function onMove(e) {
       // Move the endpoint (index 1) to follow the pen — start (index 0) stays fixed
       snappedData.idealPoints[1] = { x: pt.x, y: pt.y, pressure: 0.5 };
     } else if (snappedData.shapeType === 'rect') {
-      // Recompute bounding box: TL corner fixed at stroke start, BR follows pen
-      const p0   = livePoints[0];
-      const minX = Math.min(p0.x, pt.x);
-      const maxX = Math.max(p0.x, pt.x);
-      const minY = Math.min(p0.y, pt.y);
-      const maxY = Math.max(p0.y, pt.y);
+      // On first move after snap, find the corner of the snapped rect that is
+      // farthest from the pen — that corner stays fixed while the opposite one
+      // (nearest to the pen) follows the drag.
+      if (!snappedData._anchorPt) {
+        let farthestDist = -1;
+        let farthestCorner = snappedData.idealPoints[0];
+        for (const corner of snappedData.idealPoints) {
+          const d = (corner.x - pt.x) ** 2 + (corner.y - pt.y) ** 2;
+          if (d > farthestDist) { farthestDist = d; farthestCorner = corner; }
+        }
+        snappedData._anchorPt = { x: farthestCorner.x, y: farthestCorner.y };
+      }
+      const anchor = snappedData._anchorPt;
+      const minX = Math.min(anchor.x, pt.x);
+      const maxX = Math.max(anchor.x, pt.x);
+      const minY = Math.min(anchor.y, pt.y);
+      const maxY = Math.max(anchor.y, pt.y);
       snappedData.idealPoints = [
         { x: minX, y: minY, pressure: 0.5 }, // TL
         { x: maxX, y: minY, pressure: 0.5 }, // TR
         { x: maxX, y: maxY, pressure: 0.5 }, // BR
         { x: minX, y: maxY, pressure: 0.5 }, // BL
       ];
+    } else if (snappedData.shapeType === 'corner') {
+      // Move the far endpoint (index 2) to follow the pen — vertex (index 1) and
+      // start (index 0) stay fixed, so the overall L-shape repositions at the tip.
+      snappedData.idealPoints[2] = { x: pt.x, y: pt.y, pressure: 0.5 };
     } else if (snappedData.shapeType === 'circle') {
       // Adjust radius: distance from the snapped centre to the current pen position
       const dx = pt.x - snappedData.cx;
@@ -350,6 +365,7 @@ function drawLivePreview(ctx) {
       drawShapePath(ctx, snappedData.idealPoints,
                     snappedData.shapeType === 'rect', w, currentColour);
     }
+    // Note: 'corner' and 'line' both use drawShapePath with close=false, handled above
     return;
   }
 
@@ -431,6 +447,9 @@ function _renderAnnotation(ctx, anno) {
       break;
     case 'rect':
       drawShapePath(ctx, anno.points, true, w, anno.colour);
+      break;
+    case 'corner':
+      drawShapePath(ctx, anno.points, false, w, anno.colour);
       break;
     case 'circle':
       drawCircle(ctx, anno.cx, anno.cy, anno.r, w, anno.colour);

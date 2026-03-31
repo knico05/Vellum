@@ -371,42 +371,54 @@ const _canvasContainer = document.getElementById('canvas-container');
 _canvasContainer.addEventListener('pointerdown', (e) => {
   if (e.pointerType !== 'pen') return;
 
-  const isBarrel    = !!(e.buttons & 2);   // front barrel / side button → eraser
-  const isEraserEnd = !!(e.buttons & 32);  // physical eraser end (back) → lasso
+  const isBarrel    = !!(e.buttons & 2);   // front barrel / side button → lasso
+  const isEraserEnd = !!(e.buttons & 32);  // physical eraser end (back) → eraser
 
   if (isEraserEnd) {
-    // Eraser end activates the lasso/select tool for quick selection gestures
-    if (_penLassoPreviousTool === null) {
-      _penLassoPreviousTool = getActiveTool();
-    }
-    if (getActiveTool() !== 'select') setActiveTool('select');
-  } else if (isBarrel) {
-    // Barrel button activates the eraser for quick erase gestures
+    // Eraser end (back of pen) activates the eraser tool
     if (_penEraserPreviousTool === null) {
       _penEraserPreviousTool = getActiveTool();
     }
     if (getActiveTool() !== 'eraser') setActiveTool('eraser');
+  } else if (isBarrel) {
+    // Barrel button (front side button) activates the lasso/select tool
+    if (_penLassoPreviousTool === null) {
+      _penLassoPreviousTool = getActiveTool();
+    }
+    if (getActiveTool() !== 'select') setActiveTool('select');
   } else {
-    // Normal pen tip — auto-switch to draw when no tool is selected
+    // Normal pen tip — auto-switch to draw when no tool is active.
+    // Lasso/select restoration happens only when the user taps empty canvas
+    // (handled by the 'select-deselected' event below), not on every pen-down,
+    // so dragging a selection with the pen tip continues to work.
     if (getActiveTool() === null) setActiveTool('draw');
   }
 }, { capture: true });
 
 function _onPenLift(e) {
   if (e.pointerType !== 'pen') return;
-  // Restore whichever temporary tool override is active, preferring eraser-end
-  // since it is checked second in the pointerdown handler.
+  // Eraser-end tool override is always restored immediately on pen lift.
+  // Lasso/select restoration is intentionally deferred to the next normal-tip
+  // pointerdown so the selection stays visible after the lasso is drawn.
   if (_penEraserPreviousTool !== null) {
     setActiveTool(_penEraserPreviousTool);
     _penEraserPreviousTool = null;
-  } else if (_penLassoPreviousTool !== null) {
-    setActiveTool(_penLassoPreviousTool);
-    _penLassoPreviousTool = null;
   }
+  // _penLassoPreviousTool: restored in pointerdown handler, not here.
 }
 
 _canvasContainer.addEventListener('pointerup',     _onPenLift, { capture: true });
 _canvasContainer.addEventListener('pointercancel', _onPenLift, { capture: true });
+
+// Restore the previous tool when the user deliberately dismisses a lasso selection
+// by tapping empty canvas. This is the only moment we auto-restore for lasso —
+// not on every pen-down, so dragging the selection works normally.
+document.addEventListener('select-deselected', () => {
+  if (_penLassoPreviousTool !== null) {
+    setActiveTool(_penLassoPreviousTool);
+    _penLassoPreviousTool = null;
+  }
+});
 
 // Ctrl+V — paste clipboard image onto canvas
 document.addEventListener('keydown', async (e) => {

@@ -34,6 +34,7 @@
 import { toCanvas, toScreen, state as viewportState } from '../canvas/viewport.js';
 import { registerOverlay, requestRender }             from '../canvas/renderer.js';
 import { getAll, batchUpdate, add, remove }           from './manager.js';
+import { toggleCropMode, isCropMode }                 from './image.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -150,6 +151,13 @@ function init() {
         <path d="M5 13H4a1.5 1.5 0 01-1.5-1.5V4A1.5 1.5 0 014 2.5h7.5A1.5 1.5 0 0113 4v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
       </svg>
     </button>
+    <button class="selection-action-btn" id="btn-sel-crop" title="Crop" style="display:none">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M5 2v5H2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M15 18v-5h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="5" y="5" width="10" height="10" rx="1" stroke="currentColor" stroke-width="1.5"/>
+      </svg>
+    </button>
     <button class="selection-action-btn selection-action-btn-delete" id="btn-sel-delete" title="Delete">
       <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M4 6h12M8 6V4h4v2M7 9v6M10 9v6M13 9v6M5 6l1 11h8l1-11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -165,6 +173,13 @@ function init() {
   actionBarEl.querySelector('#btn-sel-delete').addEventListener('click', (e) => {
     e.stopPropagation();
     deleteSelection();
+  });
+  actionBarEl.querySelector('#btn-sel-crop').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const id = [...selectedIds][0];
+    if (!id) return;
+    const active = toggleCropMode(id);
+    actionBarEl.querySelector('#btn-sel-crop').classList.toggle('active', active);
   });
 
   // Build 4 corner resize handles
@@ -296,6 +311,9 @@ function onPointerUp() {
       updateActionBar();
     } else {
       clearSelection();
+      // User tapped empty canvas — signal that selection was deliberately dismissed
+      // so app.js can restore the previous tool (e.g. draw after a barrel-button lasso).
+      document.dispatchEvent(new CustomEvent('select-deselected'));
     }
   }
   lassoPoints = null;
@@ -379,7 +397,10 @@ function startResize(handlePos, e) {
       const snap = { shapeType: a.shapeType };
       if (a.points?.length)           snap.points  = a.points.map(p => ({ ...p }));
       else if (a.shapeType === 'circle') { snap.cx = a.cx; snap.cy = a.cy; snap.r = a.r; }
-      else if (a.canvasX !== undefined)  { snap.canvasX = a.canvasX; snap.canvasY = a.canvasY; snap.width = a.width; snap.height = a.height; }
+      else if (a.canvasX !== undefined)  {
+        snap.canvasX = a.canvasX; snap.canvasY = a.canvasY; snap.width = a.width; snap.height = a.height;
+        if (a.type === 'image') { snap.type = 'image'; snap.imgW = a.imgW ?? a.width; snap.imgH = a.imgH ?? a.height; snap.cropX = a.cropX ?? 0; snap.cropY = a.cropY ?? 0; }
+      }
       resizeOriginals[a.id] = snap;
     }
     resizing = true;
@@ -437,6 +458,36 @@ function onResizeMove(e) {
       w: Math.abs(cx - ax),
       h: Math.abs(cy - ay),
     };
+
+    // Live preview: directly mutate annotation objects so the renderer/DOM
+    // shows the result in real-time without waiting for commitResize.
+    const scaleX = originalBounds.w > 0 ? resizeBounds.w / originalBounds.w : 1;
+    const scaleY = originalBounds.h > 0 ? resizeBounds.h / originalBounds.h : 1;
+    const ox = resizeOrigin.x;
+    const oy = resizeOrigin.y;
+    for (const a of getAll()) {
+      if (!selectedIds.has(a.id)) continue;
+      const orig = resizeOriginals[a.id];
+      if (!orig) continue;
+      if (orig.points?.length) {
+        a.points = orig.points.map(p => ({ ...p, x: ox + (p.x - ox) * scaleX, y: oy + (p.y - oy) * scaleY }));
+      } else if (orig.shapeType === 'circle') {
+        a.cx = ox + (orig.cx - ox) * scaleX;
+        a.cy = oy + (orig.cy - oy) * scaleY;
+        a.r  = orig.r * Math.max(scaleX, scaleY);
+      } else if (orig.canvasX !== undefined) {
+        a.canvasX = ox + (orig.canvasX - ox) * scaleX;
+        a.canvasY = oy + (orig.canvasY - oy) * scaleY;
+        a.width   = orig.width  * scaleX;
+        a.height  = orig.height * scaleY;
+        if (orig.type === 'image' && !isCropMode(a.id)) {
+          a.imgW  = (orig.imgW ?? orig.width)  * scaleX;
+          a.imgH  = (orig.imgH ?? orig.height) * scaleY;
+          a.cropX = 0;
+          a.cropY = 0;
+        }
+      }
+    }
   }
 
   requestRender();
@@ -520,23 +571,35 @@ function commitResize() {
       if (!orig) continue;
 
       if (orig.points?.length) {
-        undoPatch.push({ id: a.id, changes: { points: a.points } });
+        // undo uses snapshot (a.points is already mutated by live preview)
+        undoPatch.push({ id: a.id, changes: { points: orig.points.map(p => ({ ...p })) } });
         updates.push({
           id: a.id,
           changes: { points: orig.points.map(p => ({ ...p, x: ox + (p.x - ox) * scaleX, y: oy + (p.y - oy) * scaleY })) },
         });
       } else if (orig.shapeType === 'circle') {
-        undoPatch.push({ id: a.id, changes: { cx: a.cx, cy: a.cy, r: a.r } });
+        undoPatch.push({ id: a.id, changes: { cx: orig.cx, cy: orig.cy, r: orig.r } });
         updates.push({
           id: a.id,
           changes: { cx: ox + (orig.cx - ox) * scaleX, cy: oy + (orig.cy - oy) * scaleY, r: orig.r * Math.max(scaleX, scaleY) },
         });
       } else if (orig.canvasX !== undefined) {
-        undoPatch.push({ id: a.id, changes: { canvasX: a.canvasX, canvasY: a.canvasY, width: a.width, height: a.height } });
-        updates.push({
-          id: a.id,
-          changes: { canvasX: ox + (orig.canvasX - ox) * scaleX, canvasY: oy + (orig.canvasY - oy) * scaleY, width: orig.width * scaleX, height: orig.height * scaleY },
-        });
+        const newCanvasX = ox + (orig.canvasX - ox) * scaleX;
+        const newCanvasY = oy + (orig.canvasY - oy) * scaleY;
+        const newW = orig.width * scaleX;
+        const newH = orig.height * scaleY;
+        if (orig.type === 'image' && isCropMode(a.id)) {
+          // Crop mode: only change the clip box (width/height), keep imgW/imgH fixed
+          undoPatch.push({ id: a.id, changes: { canvasX: orig.canvasX, canvasY: orig.canvasY, width: orig.width, height: orig.height } });
+          updates.push({ id: a.id, changes: { canvasX: newCanvasX, canvasY: newCanvasY, width: newW, height: newH } });
+        } else if (orig.type === 'image') {
+          // Resize mode: scale the full image (imgW/imgH) and reset any crop offset
+          undoPatch.push({ id: a.id, changes: { canvasX: orig.canvasX, canvasY: orig.canvasY, width: orig.width, height: orig.height, imgW: orig.imgW ?? orig.width, imgH: orig.imgH ?? orig.height, cropX: orig.cropX ?? 0, cropY: orig.cropY ?? 0 } });
+          updates.push({ id: a.id, changes: { canvasX: newCanvasX, canvasY: newCanvasY, width: newW, height: newH, imgW: (orig.imgW ?? orig.width) * scaleX, imgH: (orig.imgH ?? orig.height) * scaleY, cropX: 0, cropY: 0 } });
+        } else {
+          undoPatch.push({ id: a.id, changes: { canvasX: orig.canvasX, canvasY: orig.canvasY, width: orig.width, height: orig.height } });
+          updates.push({ id: a.id, changes: { canvasX: newCanvasX, canvasY: newCanvasY, width: newW, height: newH } });
+        }
       }
     }
     if (updates.length > 0) batchUpdate(updates, undoPatch);
@@ -651,6 +714,26 @@ function deleteSelection() {
 }
 
 function clearSelection() {
+  // If a bounds resize was in progress, live mutations may have moved annotations.
+  // Restore them from the snapshot before clearing.
+  if (resizing && resizeHandle?.startsWith('bounds_') && Object.keys(resizeOriginals).length) {
+    for (const a of getAll()) {
+      const orig = resizeOriginals[a.id];
+      if (!orig) continue;
+      if (orig.points?.length) {
+        a.points = orig.points.map(p => ({ ...p }));
+      } else if (orig.shapeType === 'circle') {
+        a.cx = orig.cx; a.cy = orig.cy; a.r = orig.r;
+      } else if (orig.canvasX !== undefined) {
+        a.canvasX = orig.canvasX; a.canvasY = orig.canvasY;
+        a.width   = orig.width;   a.height  = orig.height;
+        if (orig.type === 'image') {
+          a.imgW = orig.imgW; a.imgH = orig.imgH;
+          a.cropX = orig.cropX; a.cropY = orig.cropY;
+        }
+      }
+    }
+  }
   selectedIds.clear();
   lassoPoints     = null;
   selectionBounds = null;
@@ -681,6 +764,21 @@ function updateActionBar() {
     return;
   }
   actionBarEl.classList.remove('hidden');
+
+  // Show crop button only when a single image is selected
+  const cropBtn = actionBarEl.querySelector('#btn-sel-crop');
+  if (selectedIds.size === 1) {
+    const a = getAll().find(x => x.id === [...selectedIds][0]);
+    if (a?.type === 'image') {
+      cropBtn.style.display = '';
+      cropBtn.classList.toggle('active', isCropMode(a.id));
+    } else {
+      cropBtn.style.display = 'none';
+    }
+  } else {
+    cropBtn.style.display = 'none';
+  }
+
   const midCanvasX = selectionBounds.x + selectionBounds.w / 2;
   const topCanvasY = selectionBounds.y + (dragging ? deltaY : 0);
   const { x: sx, y: sy } = toScreen(midCanvasX, topCanvasY);
@@ -761,10 +859,15 @@ function updateHandles() {
     handleEls.bl.classList.add('hidden');
 
   } else {
-    // Bounds mode: 4 corners of the padded selection box
+    // Bounds mode: 4 corners of the padded selection box.
+    // Apply drag offset so handles move in sync with the selection while dragging.
     const scale = viewportState.scale;
     const pad   = BOUNDS_PAD_CANVAS / scale;
-    const { x, y, w, h } = resizeBounds ?? selectionBounds;
+    const base  = resizeBounds ?? selectionBounds;
+    const x = base.x + (dragging ? deltaX : 0);
+    const y = base.y + (dragging ? deltaY : 0);
+    const { w, h } = base;
+
     placeHandle('tl', toScreen(x - pad,     y - pad),     'nwse-resize');
     placeHandle('tr', toScreen(x + w + pad, y - pad),     'nesw-resize');
     placeHandle('br', toScreen(x + w + pad, y + h + pad), 'nwse-resize');

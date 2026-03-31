@@ -122,6 +122,19 @@ function showSearch() {
 }
 
 /**
+ * Opens the search bar and pre-fills it with the given query, then runs the search.
+ * Useful for tablet mode where Ctrl+F is inaccessible — the panel search bar
+ * calls this so the user can type in the panel and launch PDF text search from there.
+ *
+ * @param {string} query
+ */
+function showSearchWithQuery(query) {
+  if (!_bar) return;
+  _input.value = query;
+  showSearch();
+}
+
+/**
  * Hides the search bar and clears all match highlights.
  */
 function hideSearch() {
@@ -250,4 +263,4 @@ function _drawHighlights(ctx) {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { initSearch, showSearch, hideSearch, toggleSearch };
+export { initSearch, showSearch, hideSearch, toggleSearch, showSearchWithQuery };

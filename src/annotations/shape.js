@@ -33,13 +33,13 @@
 const MIN_POINTS = 5;
 
 /** Minimum bounding-box extent (max of W, H) required — filters out tiny taps */
-const MIN_EXTENT = 30;
+const MIN_EXTENT = 20;
 
 /** Line: max ratio of mean perpendicular distance to line length */
-const LINE_THRESHOLD = 0.08;
+const LINE_THRESHOLD = 0.15;
 
 /** Rect: max ratio of mean nearest-edge distance to min(W, H) */
-const RECT_THRESHOLD = 0.15;
+const RECT_THRESHOLD = 0.22;
 
 /**
  * Rect: a side is "covered" if at least one point lands within this fraction
@@ -48,12 +48,25 @@ const RECT_THRESHOLD = 0.15;
 const RECT_COVERAGE_FRACTION = 0.2;
 
 /**
+ * Rect: minimum number of corners required. A true rectangle has 3–4 sharp turns;
+ * smooth curves and L-shapes have fewer. Requiring at least 3 prevents circles and
+ * open arcs from being mis-detected as rectangles.
+ */
+const RECT_MIN_CORNERS = 2;
+
+/**
+ * Corner (L-shape): the two segments must meet at an angle within this many
+ * degrees of 90°. Used to distinguish a right-angle from an oblique V-shape.
+ */
+const CORNER_RIGHT_ANGLE_TOLERANCE_DEG = 40;
+
+/**
  * Circle: max ratio of stddev of distances to mean radius.
  * A rectangle scores ~0.14–0.20 on this metric; hand-drawn circles score ~0–0.10.
  * 0.24 is permissive enough for imperfect hand-drawn circles while still rejecting
  * clear rectangles when combined with the corner-count discriminator.
  */
-const CIRCLE_THRESHOLD = 0.24;
+const CIRCLE_THRESHOLD = 0.28;
 
 /**
  * Corner discriminator: angle threshold in degrees.
@@ -77,7 +90,7 @@ const CIRCLE_MIN_RADIUS = 15;
  * Lowered from 270 to 240 so users don't need to draw a nearly-complete circle
  * before it snaps — a 2/3 arc is sufficient for clear intent.
  */
-const CIRCLE_MIN_ARC_DEG = 240;
+const CIRCLE_MIN_ARC_DEG = 210;
 
 /**
  * Ellipse: minimum bounding-box aspect ratio (long/short) for a shape to be
@@ -110,9 +123,12 @@ function detectShape(points) {
   // nearest-edge test (points lie close to all 4 edges of the bounding box).
   // Ellipse is checked after circle: if the bounding box is nearly square,
   // circle wins; if it is clearly elongated, ellipse wins.
+  // Corner (L-shape) is checked before rect: it has exactly one sharp turn
+  // and would otherwise partially match the rect edge test.
   return _detectLine(points)
       ?? _detectCircle(points, minX, minY, maxX, maxY)
       ?? _detectEllipse(points, minX, minY, maxX, maxY)
+      ?? _detectCorner(points)
       ?? _detectRect(points, minX, minY, maxX, maxY)
       ?? null;
 }
@@ -215,6 +231,10 @@ function _detectRect(points, minX, minY, maxX, maxY) {
   const meanDist = sumDist / points.length;
   if (meanDist / minSide > RECT_THRESHOLD) return null;
   if (!covTop || !covBottom || !covLeft || !covRight) return null;
+
+  // Require at least RECT_MIN_CORNERS sharp direction changes.
+  // Circles and arcs have 0–2 corners; true rectangles have 3–4.
+  if (_countCorners(points) < RECT_MIN_CORNERS) return null;
 
   // 4 corners only — closePath() handles the closing segment in the renderer
   return {
@@ -400,6 +420,143 @@ function _detectEllipse(points, minX, minY, maxX, maxY) {
   if (arcCoveredDeg < CIRCLE_MIN_ARC_DEG) return null;
 
   return { shapeType: 'ellipse', cx, cy, rx, ry };
+}
+
+// ---------------------------------------------------------------------------
+// Corner (L-shape) detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Tests whether the points form an L-shape: two straight segments meeting at
+ * approximately a right angle. This is the most common shape used for drawing
+ * graph axes (x-axis + y-axis).
+ *
+ * Method:
+ *   1. Find the single sharpest corner in the stroke (the vertex of the L).
+ *   2. Split points into two segments at that vertex.
+ *   3. Each segment must be roughly straight (like _detectLine).
+ *   4. The angle between the two segments must be within
+ *      CORNER_RIGHT_ANGLE_TOLERANCE_DEG of 90°.
+ *
+ * @param {Array<{x,y}>} points
+ * @returns {{ shapeType, idealPoints } | null}
+ */
+/**
+ * Tests whether the points form an L-shape: two straight segments meeting at
+ * approximately a right angle. Snaps to a PERFECT axis-aligned L (one segment
+ * exactly horizontal, one exactly vertical) — matching the common use case of
+ * drawing graph axes.
+ *
+ * Method:
+ *   1. Find the single sharpest corner in the stroke (the vertex of the L).
+ *   2. Split points into two segments at that vertex.
+ *   3. Each segment must be approximately straight.
+ *   4. The segments must meet at roughly 90°.
+ *   5. Determine which segment is "more horizontal" and which is "more vertical".
+ *   6. Snap: horizontal segment gets its Y locked to the vertex Y;
+ *            vertical segment gets its X locked to the vertex X.
+ *      Result: a geometrically perfect right-angle with axis-aligned arms.
+ *
+ * @param {Array<{x,y}>} points
+ * @returns {{ shapeType, idealPoints } | null}
+ */
+function _detectCorner(points) {
+  if (points.length < 6) return null;
+
+  const MIN_SEG   = 8;
+  const cosThresh = Math.cos(CORNER_ANGLE_THRESHOLD_DEG * Math.PI / 180);
+
+  // Build direction vectors at MIN_SEG spacing, tracking original point index
+  const dirs = [];
+  let prev    = points[0];
+  for (let i = 1; i < points.length; i++) {
+    const dx  = points[i].x - prev.x;
+    const dy  = points[i].y - prev.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len >= MIN_SEG) {
+      dirs.push({ dx: dx / len, dy: dy / len, idx: i });
+      prev = points[i];
+    }
+  }
+
+  if (dirs.length < 3) return null;
+
+  // Find the sharpest direction change
+  let sharpestDot = 1;
+  let sharpestDirIdx = -1;
+  for (let i = 1; i < dirs.length; i++) {
+    const dot = dirs[i - 1].dx * dirs[i].dx + dirs[i - 1].dy * dirs[i].dy;
+    if (dot < sharpestDot) {
+      sharpestDot    = dot;
+      sharpestDirIdx = i;
+    }
+  }
+
+  // Must be a genuinely sharp turn
+  if (sharpestDot >= cosThresh) return null;
+
+  const vertexIdx = dirs[sharpestDirIdx].idx;
+  const seg1      = points.slice(0, vertexIdx + 1);
+  const seg2      = points.slice(vertexIdx);
+
+  if (seg1.length < 3 || seg2.length < 3) return null;
+
+  // Both segments must be approximately straight
+  function segStraight(pts) {
+    const a   = pts[0];
+    const b   = pts[pts.length - 1];
+    const dx  = b.x - a.x;
+    const dy  = b.y - a.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < MIN_EXTENT * 0.4) return false;
+    const nx = -dy / len;
+    const ny =  dx / len;
+    let sum = 0;
+    for (const p of pts) {
+      sum += Math.abs((p.x - a.x) * nx + (p.y - a.y) * ny);
+    }
+    return (sum / pts.length) / len <= LINE_THRESHOLD * 1.5;
+  }
+
+  if (!segStraight(seg1) || !segStraight(seg2)) return null;
+
+  const v  = points[vertexIdx];
+  const p1 = points[0];
+  const p2 = points[points.length - 1];
+
+  // Check angle at vertex is approximately 90°
+  const d1x = p1.x - v.x, d1y = p1.y - v.y;
+  const d2x = p2.x - v.x, d2y = p2.y - v.y;
+  const l1  = Math.sqrt(d1x * d1x + d1y * d1y);
+  const l2  = Math.sqrt(d2x * d2x + d2y * d2y);
+  if (l1 < 1 || l2 < 1) return null;
+
+  const dot      = (d1x * d2x + d1y * d2y) / (l1 * l2);
+  const angleDeg = Math.acos(Math.max(-1, Math.min(1, dot))) * (180 / Math.PI);
+  if (Math.abs(angleDeg - 90) > CORNER_RIGHT_ANGLE_TOLERANCE_DEG) return null;
+
+  // Snap to axis-aligned L: classify each segment as more H or more V,
+  // then lock the constrained axis to the vertex coordinates.
+  // seg1 goes from p1 → v; seg2 goes from v → p2.
+  const seg1isH = Math.abs(v.x - p1.x) >= Math.abs(v.y - p1.y);
+
+  let snapStart, snapCorner, snapEnd;
+  if (seg1isH) {
+    // seg1 horizontal → lock Y to v.y; seg2 vertical → lock X to v.x
+    snapStart  = { x: p1.x, y: v.y,  pressure: 0.5 };
+    snapCorner = { x: v.x,  y: v.y,  pressure: 0.5 };
+    snapEnd    = { x: v.x,  y: p2.y, pressure: 0.5 };
+  } else {
+    // seg1 vertical → lock X to v.x; seg2 horizontal → lock Y to v.y
+    snapStart  = { x: v.x,  y: p1.y, pressure: 0.5 };
+    snapCorner = { x: v.x,  y: v.y,  pressure: 0.5 };
+    snapEnd    = { x: p2.x, y: v.y,  pressure: 0.5 };
+  }
+
+  return {
+    shapeType:   'corner',
+    idealPoints: [snapStart, snapCorner, snapEnd],
+  };
 }
 
 // ---------------------------------------------------------------------------

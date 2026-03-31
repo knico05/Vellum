@@ -303,6 +303,16 @@ function updatePositions() {
     const displayY = anno.canvasY + (offset ? offset.dy : 0);
     const { x, y } = toScreen(displayX, displayY);
     el.style.transform = `translate(${x}px, ${y}px) scale(${viewportState.scale})`;
+
+    // Keep width/height and inner image sizing in sync every frame so that
+    // live resize preview (mutations from select.js) is reflected immediately.
+    const wPx = `${anno.width}px`;
+    const hPx = `${anno.height}px`;
+    if (el.style.width !== wPx || el.style.height !== hPx) {
+      el.style.width  = wPx;
+      el.style.height = hPx;
+      _applyImgStyle(el, anno);
+    }
   }
 }
 
@@ -392,7 +402,14 @@ function createImageElement(anno) {
 
   // ── Move drag on the image body ───────────────────────────────────────────
   el.addEventListener('pointerdown', (e) => {
-    e.stopPropagation(); // prevent canvas pan in all cases
+    // In select mode the select tool owns all drag interactions — it drives
+    // movement via getDragOffset() which updatePositions() already reads.
+    // Stopping propagation here would prevent select.js from receiving the
+    // pointerdown, so its deltaX/deltaY would stay 0 while the image moved
+    // via image.js directly, causing the selection box to lag behind.
+    if (container.dataset.tool === 'select') return;
+
+    e.stopPropagation(); // prevent canvas pan in draw/cursor/eraser modes
     if (e.target.closest('.image-anno-handle')) return;
     if (e.target.closest('.image-anno-delete')) return;
     onMoveStart(e, anno.id, el);
@@ -587,4 +604,30 @@ function onHandleUp(e, handle) {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init as initImages, addImage, pasteImageAtCenter };
+/**
+ * Toggles crop mode for the given image annotation ID.
+ * Returns true if crop mode is now active, false if deactivated.
+ */
+function toggleCropMode(id) {
+  const el = imgElements.get(id);
+  if (cropModeIds.has(id)) {
+    cropModeIds.delete(id);
+    if (el) {
+      el.querySelector('.image-anno-crop-btn')?.classList.remove('active');
+      el.querySelectorAll('.image-anno-handle').forEach(h => h.classList.remove('crop-mode'));
+    }
+    return false;
+  } else {
+    cropModeIds.add(id);
+    if (el) {
+      el.querySelector('.image-anno-crop-btn')?.classList.add('active');
+      el.querySelectorAll('.image-anno-handle').forEach(h => h.classList.add('crop-mode'));
+    }
+    return true;
+  }
+}
+
+/** Returns true if the given image annotation is currently in crop mode. */
+function isCropMode(id) { return cropModeIds.has(id); }
+
+export { init as initImages, addImage, pasteImageAtCenter, toggleCropMode, isCropMode };

@@ -237,6 +237,11 @@ button:focus-visible {
   overflow: visible;
 }
 
+/* Row 2 (drawing tools) — centred so tools don't cluster at the left */
+#toolbar-row-2 {
+  justify-content: center;
+}
+
 /* ---------------------------------------------------------------------------
    Main content area
 --------------------------------------------------------------------------- */
@@ -488,10 +493,15 @@ button:focus-visible {
   pointer-events: auto;
 }
 
+/* In select mode the select tool provides its own 4 bounding-box resize handles
+   and a floating action bar for delete/duplicate. Hide everything from the image's
+   own UI (per-corner handles, delete button, crop button) so there is no overlap
+   and no duplicate controls. The floating action bar is the single interaction point. */
 #canvas-container[data-tool="select"] .image-anno-handle,
 #canvas-container[data-tool="select"] .image-anno-delete,
 #canvas-container[data-tool="select"] .image-anno-crop-btn {
-  z-index: 2;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 
 /* Hide handles and delete/crop buttons when not in select mode */
@@ -1228,6 +1238,11 @@ button:focus-visible {
   color: #f87171;
 }
 
+.selection-action-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
 /* ---------------------------------------------------------------------------
    Selection resize handles (4 corners of the selection bounding box)
 --------------------------------------------------------------------------- */
@@ -1399,6 +1414,26 @@ button:focus-visible {
   flex-shrink: 0;
   min-width: 40px;
   text-align: right;
+}
+
+.panel-pdf-search-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.panel-pdf-search-btn:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
 }
 
 /* ── Page overview list ── */

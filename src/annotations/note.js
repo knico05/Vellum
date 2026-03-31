@@ -245,6 +245,14 @@ function updatePositions() {
     const displayY = anno.canvasY + (offset ? offset.dy : 0);
     const { x, y } = toScreen(displayX, displayY);
     el.style.transform = `translate(${x}px, ${y}px) scale(${viewportState.scale})`;
+
+    // Sync width/height every frame so live resize preview is reflected immediately.
+    const wPx = `${anno.width}px`;
+    const hPx = `${anno.height}px`;
+    if (el.style.width !== wPx || el.style.height !== hPx) {
+      el.style.width  = wPx;
+      el.style.height = hPx;
+    }
   }
 }
 
@@ -387,8 +395,29 @@ function createBoxElement(anno) {
   // Mouse and pen events must not reach the canvas (would trigger pan/draw).
   // Touch events are allowed to propagate so one-finger pan still works when
   // the user's finger passes over a text box.
+  // For touch: double-tap (two taps within 300ms) enters edit mode.
+  let _lastTapTime = 0;
   el.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'touch') e.stopPropagation();
+    if (e.pointerType !== 'touch') {
+      e.stopPropagation();
+      return;
+    }
+    // Double-tap: two taps within 300ms enters edit mode
+    const now = Date.now();
+    if (now - _lastTapTime < 300) {
+      e.stopPropagation(); // prevent canvas pan on second tap
+      el.classList.add('editing');
+      body.focus();
+      // Place cursor at end of content
+      const range = document.createRange();
+      range.selectNodeContents(body);
+      range.collapse(false);
+      const sel = window.getSelection();
+      if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+      _lastTapTime = 0; // reset to prevent triple-tap triggering again
+    } else {
+      _lastTapTime = now;
+    }
   });
   // Only swallow wheel events when the box itself is scrollable (content
   // exceeds max height). Otherwise let wheel fall through to the canvas
