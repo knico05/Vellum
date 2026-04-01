@@ -692,7 +692,7 @@ function commitDrag() {
   for (const anno of getAll()) {
     if (!selectedIds.has(anno.id)) continue;
 
-    if (anno.shapeType === 'circle') {
+    if (anno.shapeType === 'circle' || anno.shapeType === 'ellipse') {
       undoPatch.push({ id: anno.id, changes: { cx: anno.cx, cy: anno.cy } });
       updates.push({ id: anno.id, changes: { cx: anno.cx + deltaX, cy: anno.cy + deltaY } });
     } else if (anno.points) {
@@ -732,7 +732,7 @@ function duplicateSelection() {
     const { id, createdAt, updatedAt, ...rest } = anno;
 
     let copy;
-    if (rest.shapeType === 'circle') {
+    if (rest.shapeType === 'circle' || rest.shapeType === 'ellipse') {
       copy = { ...rest, cx: rest.cx + OFFSET, cy: rest.cy + OFFSET };
     } else if (rest.points) {
       copy = { ...rest, points: rest.points.map(p => ({ ...p, x: p.x + OFFSET, y: p.y + OFFSET })) };
@@ -852,15 +852,20 @@ function updateHandles() {
   const mode = getHandleMode();
   const anno = getSingleAnno();
 
+  // Drag delta to apply to handle positions so they track with the shape
+  // while a standard drag-move is in progress (not a handle resize).
+  const ddx = (dragging && !resizing) ? deltaX : 0;
+  const ddy = (dragging && !resizing) ? deltaY : 0;
+
   if (mode === 'line' && anno?.points?.length >= 2 && !resizing) {
     const pts = anno.points;
-    placeHandle('tl', toScreen(pts[0].x,                pts[0].y),                'move');
-    placeHandle('br', toScreen(pts[pts.length - 1].x,   pts[pts.length - 1].y),   'move');
+    placeHandle('tl', toScreen(pts[0].x + ddx,              pts[0].y + ddy),              'move');
+    placeHandle('br', toScreen(pts[pts.length-1].x + ddx,   pts[pts.length-1].y + ddy),   'move');
     handleEls.tr.classList.add('hidden');
     handleEls.bl.classList.add('hidden');
 
   } else if (mode === 'line' && resizePreview?.mode === 'line') {
-    // During drag: show live preview positions
+    // During handle-drag: show live preview positions (no drag offset — handle IS the drag)
     placeHandle('tl', toScreen(resizePreview.p0.x, resizePreview.p0.y), 'move');
     placeHandle('br', toScreen(resizePreview.p1.x, resizePreview.p1.y), 'move');
     handleEls.tr.classList.add('hidden');
@@ -868,10 +873,10 @@ function updateHandles() {
 
   } else if (mode === 'rect' && anno?.points?.length === 4 && !resizing) {
     const p = anno.points;
-    placeHandle('tl', toScreen(p[0].x, p[0].y), 'nwse-resize');
-    placeHandle('tr', toScreen(p[1].x, p[1].y), 'nesw-resize');
-    placeHandle('br', toScreen(p[2].x, p[2].y), 'nwse-resize');
-    placeHandle('bl', toScreen(p[3].x, p[3].y), 'nesw-resize');
+    placeHandle('tl', toScreen(p[0].x + ddx, p[0].y + ddy), 'nwse-resize');
+    placeHandle('tr', toScreen(p[1].x + ddx, p[1].y + ddy), 'nesw-resize');
+    placeHandle('br', toScreen(p[2].x + ddx, p[2].y + ddy), 'nwse-resize');
+    placeHandle('bl', toScreen(p[3].x + ddx, p[3].y + ddy), 'nesw-resize');
 
   } else if (mode === 'rect' && resizePreview?.mode === 'rect') {
     const p = resizePreview.points;
@@ -883,11 +888,10 @@ function updateHandles() {
   } else if (mode === 'corner' && anno?.points?.length === 3 && !resizing) {
     const pts = anno.points;
     const vertex = pts[1];
-    // Determine cursor for each arm based on its axis orientation
     const arm0isH = Math.abs(pts[0].y - vertex.y) < Math.abs(pts[0].x - vertex.x);
     const arm2isH = Math.abs(pts[2].y - vertex.y) < Math.abs(pts[2].x - vertex.x);
-    placeHandle('tl', toScreen(pts[0].x, pts[0].y), arm0isH ? 'ew-resize' : 'ns-resize');
-    placeHandle('br', toScreen(pts[2].x, pts[2].y), arm2isH ? 'ew-resize' : 'ns-resize');
+    placeHandle('tl', toScreen(pts[0].x + ddx, pts[0].y + ddy), arm0isH ? 'ew-resize' : 'ns-resize');
+    placeHandle('br', toScreen(pts[2].x + ddx, pts[2].y + ddy), arm2isH ? 'ew-resize' : 'ns-resize');
     handleEls.tr.classList.add('hidden');
     handleEls.bl.classList.add('hidden');
 
@@ -902,8 +906,8 @@ function updateHandles() {
     handleEls.bl.classList.add('hidden');
 
   } else if (mode === 'circle' && anno && !resizing) {
-    placeHandle('tl', toScreen(anno.cx,          anno.cy), 'move');
-    placeHandle('br', toScreen(anno.cx + anno.r, anno.cy), 'ew-resize');
+    placeHandle('tl', toScreen(anno.cx + ddx,          anno.cy + ddy), 'move');
+    placeHandle('br', toScreen(anno.cx + anno.r + ddx, anno.cy + ddy), 'ew-resize');
     handleEls.tr.classList.add('hidden');
     handleEls.bl.classList.add('hidden');
 
@@ -1080,6 +1084,11 @@ function hitTestAnnotation(cx, cy) {
       const dx = cx - anno.cx;
       const dy = cy - anno.cy;
       if (Math.sqrt(dx * dx + dy * dy) <= anno.r + PAD) return anno;
+    } else if (anno.shapeType === 'ellipse') {
+      const dx = cx - anno.cx;
+      const dy = cy - anno.cy;
+      const rxp = anno.rx + PAD, ryp = anno.ry + PAD;
+      if ((dx * dx) / (rxp * rxp) + (dy * dy) / (ryp * ryp) <= 1) return anno;
     } else if (anno.points?.length) {
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const p of anno.points) {
@@ -1130,7 +1139,7 @@ function annotationCentroid(anno) {
   if (anno.type === 'textBox' || anno.type === 'image') {
     return { cx: anno.canvasX + anno.width / 2, cy: anno.canvasY + anno.height / 2 };
   }
-  if (anno.shapeType === 'circle') {
+  if (anno.shapeType === 'circle' || anno.shapeType === 'ellipse') {
     return { cx: anno.cx, cy: anno.cy };
   }
   if ((anno.type === 'draw' || anno.type === 'highlight') && anno.points?.length) {
@@ -1181,6 +1190,11 @@ function computeUnionBounds(ids) {
       minY = Math.min(minY, anno.cy - anno.r);
       maxX = Math.max(maxX, anno.cx + anno.r);
       maxY = Math.max(maxY, anno.cy + anno.r);
+    } else if (anno.shapeType === 'ellipse') {
+      minX = Math.min(minX, anno.cx - anno.rx);
+      minY = Math.min(minY, anno.cy - anno.ry);
+      maxX = Math.max(maxX, anno.cx + anno.rx);
+      maxY = Math.max(maxY, anno.cy + anno.ry);
     } else if (anno.type === 'textBox' || anno.type === 'image') {
       minX = Math.min(minX, anno.canvasX);
       minY = Math.min(minY, anno.canvasY);
