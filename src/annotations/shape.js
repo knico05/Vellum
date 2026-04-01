@@ -602,16 +602,25 @@ function axisSnapEndpoint(p0, rawPt) {
   const dy = rawPt.y - p0.y;
   if (dx === 0 && dy === 0) return rawPt;
 
-  const AXIS_SNAP_DEG = 8;
-  const angleDeg  = Math.atan2(dy, dx) * 180 / Math.PI;
-  const mod90      = ((angleDeg % 90) + 90) % 90; // 0–90, distance to nearest axis
-  const distToAxis = Math.min(mod90, 90 - mod90);
+  // Threshold: snap only when the line is very close to H or V.
+  // Tight enough that it only kicks in when the user is intentionally aligning.
+  const AXIS_SNAP_DEG = 1;
 
-  if (distToAxis < AXIS_SNAP_DEG) {
-    // Horizontal: lock y to p0.y
-    if (mod90 < 45) return { x: rawPt.x, y: p0.y };
-    // Vertical: lock x to p0.x
-    return { x: p0.x, y: rawPt.y };
+  // atan2 gives -180…180. Take the absolute value to get 0…180.
+  // distToH = distance to the nearest horizontal axis (0° or ±180°).
+  // distToV = distance to the nearest vertical axis (±90°).
+  // Using absolute angle avoids the mod-90 ambiguity where 90° folds back to
+  // 0° and the snap incorrectly switches from vertical to horizontal.
+  const absAngle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI); // 0–180
+  const distToH  = Math.min(absAngle, 180 - absAngle); // dist to 0° or 180°
+  const distToV  = Math.abs(90 - absAngle);             // dist to 90°
+
+  const nearest = distToH < distToV ? 'H' : 'V';
+  const dist    = Math.min(distToH, distToV);
+
+  if (dist < AXIS_SNAP_DEG) {
+    if (nearest === 'H') return { x: rawPt.x, y: p0.y }; // lock y
+    return { x: p0.x, y: rawPt.y };                       // lock x
   }
   return rawPt;
 }
