@@ -88,6 +88,14 @@ async function save() {
     const json = serialise(pdfPath, fingerprint, pageList, annotations, getPageNotes());
     await window.api.writeFile(savePath, json);
     showSaved();
+
+    // Auto-backup: copy annotation JSON + PDF to the configured backup folder.
+    // Runs silently — a backup failure never blocks or reports to the user.
+    const backupDir = await window.api.getBackupDir();
+    if (backupDir) {
+      window.api.copyFile(savePath, backupDir).catch(() => {});
+      window.api.copyFile(pdfPath,  backupDir).catch(() => {});
+    }
   } catch (err) {
     console.error('Auto-save failed:', err);
   }

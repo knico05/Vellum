@@ -189,6 +189,31 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.send('window-control', action),
 
   /**
+   * Returns the currently configured auto-backup folder path, or null.
+   * @returns {Promise<string|null>}
+   */
+  getBackupDir: () =>
+    ipcRenderer.invoke('get-backup-dir'),
+
+  /**
+   * Sets (or clears) the auto-backup folder. Pass null to disable.
+   * @param {string|null} dirPath
+   * @returns {Promise<true>}
+   */
+  setBackupDir: (dirPath) =>
+    ipcRenderer.invoke('set-backup-dir', dirPath),
+
+  /**
+   * Copies a file into a destination directory.
+   * Used by auto-backup to copy the annotation JSON and PDF to the backup folder.
+   * @param {string} srcPath  — absolute source file path
+   * @param {string} destDir  — absolute destination directory
+   * @returns {Promise<true>}
+   */
+  copyFile: (srcPath, destDir) =>
+    ipcRenderer.invoke('copy-file', srcPath, destDir),
+
+  /**
    * Checks GitHub for a newer release.
    * Resolves to { currentVersion, latestVersion, releaseUrl, hasUpdate }.
    * Always resolves (never rejects) — returns hasUpdate: false when offline.

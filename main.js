@@ -575,6 +575,60 @@ function setupIPC(win) {
       shell.openExternal(url);
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Auto-backup handlers
+  // ---------------------------------------------------------------------------
+
+  const _settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
+
+  function _loadSettings() {
+    try {
+      if (fs.existsSync(_settingsPath())) {
+        return JSON.parse(fs.readFileSync(_settingsPath(), 'utf8'));
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  function _saveSettings(obj) {
+    fs.writeFileSync(_settingsPath(), JSON.stringify(obj, null, 2), 'utf8');
+  }
+
+  /**
+   * get-backup-dir — returns the configured auto-backup folder path, or null.
+   */
+  ipcMain.handle('get-backup-dir', () => {
+    return _loadSettings().backupDir ?? null;
+  });
+
+  /**
+   * set-backup-dir — sets or clears the auto-backup folder path.
+   * Pass null to disable backup.
+   * @param {string|null} dirPath
+   */
+  ipcMain.handle('set-backup-dir', (_event, dirPath) => {
+    const settings = _loadSettings();
+    if (dirPath) settings.backupDir = dirPath;
+    else delete settings.backupDir;
+    _saveSettings(settings);
+    return true;
+  });
+
+  /**
+   * copy-file — copies a single file into a destination directory.
+   * Used by auto-backup to copy annotation JSON and PDF to the backup folder.
+   * Silently skips if srcPath does not exist (e.g. no PDF open yet).
+   * @param {string} srcPath  — absolute path of the file to copy
+   * @param {string} destDir  — absolute path of the destination directory
+   */
+  ipcMain.handle('copy-file', async (_event, srcPath, destDir) => {
+    if (!fs.existsSync(srcPath)) return true; // nothing to copy — not an error
+    fs.mkdirSync(destDir, { recursive: true });
+    const dest = path.join(destDir, path.basename(srcPath));
+    fs.copyFileSync(srcPath, dest);
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------

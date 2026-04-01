@@ -879,7 +879,8 @@ function updateColourPickerVisibility() {
   colourSepEl.style.display         = colourVisible     ? 'block' : 'none';
   strokePickerEl.style.display      = strokeVisible     ? 'flex'  : 'none';
   eraserModePickerEl.style.display  = eraserModeVisible ? 'flex'  : 'none';
-  pressureToggleEl.style.display    = pressureVisible   ? 'flex'  : 'none';
+  pressureToggleEl.style.display = 'flex';
+  pressureToggleEl.classList.toggle('toolbar-btn-invisible', !pressureVisible);
   shapeSnapToggleEl.style.display   = shapeSnapVisible  ? 'flex'  : 'none';
 
   if (colourVisible || strokeVisible || eraserModeVisible || pressureVisible) {

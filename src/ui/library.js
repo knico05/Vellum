@@ -59,6 +59,15 @@ let contextMenuEl     = null;
 let contextMenuTarget = null;
 
 // ---------------------------------------------------------------------------
+// Folder drag-and-drop reorder state
+// ---------------------------------------------------------------------------
+
+let _dragFolderIndex  = null;   // index in library.folders being dragged
+let _dragHoldTimer    = null;   // long-press timer for touch
+let _dragOverIndex    = null;   // index currently hovered over
+let _dragEl           = null;   // the row element being dragged
+
+// ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
@@ -95,6 +104,46 @@ async function initLibrary(openFn) {
 
   buildContextMenu();
   renderList();
+  _initBackupUI();
+}
+
+// ---------------------------------------------------------------------------
+// Backup settings UI
+// ---------------------------------------------------------------------------
+
+async function _initBackupUI() {
+  const pathEl   = document.getElementById('library-backup-path');
+  const chooseBtn = document.getElementById('btn-backup-choose');
+  const clearBtn  = document.getElementById('btn-backup-clear');
+
+  async function _refreshBackupUI() {
+    const dir = await window.api.getBackupDir();
+    if (dir) {
+      // Show just the last folder name to keep it compact
+      pathEl.textContent   = dir.replace(/\\/g, '/').split('/').pop() || dir;
+      pathEl.title         = dir;
+      clearBtn.style.display = '';
+    } else {
+      pathEl.textContent   = 'Not set';
+      pathEl.title         = '';
+      clearBtn.style.display = 'none';
+    }
+  }
+
+  await _refreshBackupUI();
+
+  chooseBtn?.addEventListener('click', async () => {
+    const dir = await window.api.openFolderDialog();
+    if (dir) {
+      await window.api.setBackupDir(dir);
+      await _refreshBackupUI();
+    }
+  });
+
+  clearBtn?.addEventListener('click', async () => {
+    await window.api.setBackupDir(null);
+    await _refreshBackupUI();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -654,17 +703,120 @@ function renderList() {
   if (hasFiles)   _renderRecentSection();
 }
 
+/**
+ * Attaches pointer-event drag-and-drop reorder logic to a drag handle element.
+ * Mouse: immediate drag on pointerdown.
+ * Touch: 500ms long-press to activate drag, movement before that cancels.
+ */
+function _attachDragHandle(handleEl, rowEl, index) {
+  handleEl.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+
+    if (e.pointerType === 'touch') {
+      // Touch: wait for long-press before starting drag
+      _dragHoldTimer = setTimeout(() => {
+        _startFolderDrag(e, rowEl, index);
+      }, 500);
+
+      // Cancel long-press if finger moves significantly before timer fires
+      const cancelThreshold = 8;
+      const startX = e.clientX, startY = e.clientY;
+      const onEarlyMove = (mv) => {
+        if (Math.abs(mv.clientX - startX) > cancelThreshold ||
+            Math.abs(mv.clientY - startY) > cancelThreshold) {
+          clearTimeout(_dragHoldTimer);
+          _dragHoldTimer = null;
+          document.removeEventListener('pointermove', onEarlyMove);
+        }
+      };
+      document.addEventListener('pointermove', onEarlyMove, { passive: true });
+      setTimeout(() => document.removeEventListener('pointermove', onEarlyMove), 600);
+    } else {
+      // Mouse/pen: start drag immediately
+      _startFolderDrag(e, rowEl, index);
+    }
+  });
+}
+
+function _startFolderDrag(e, rowEl, index) {
+  _dragFolderIndex = index;
+  _dragEl = rowEl;
+  rowEl.classList.add('library-folder-dragging');
+
+  const onMove = (mv) => {
+    if (_dragFolderIndex === null) return;
+    // Find which folder row the pointer is over
+    const els = listEl.querySelectorAll('.library-folder-row:not(.library-folder-dragging)');
+    let targetIndex = null;
+    for (const el of els) {
+      const rect = el.getBoundingClientRect();
+      if (mv.clientY >= rect.top && mv.clientY <= rect.bottom) {
+        targetIndex = parseInt(el.dataset.folderIndex, 10);
+        break;
+      }
+    }
+    // Update drop indicator
+    listEl.querySelectorAll('.library-folder-row').forEach(el => {
+      el.classList.remove('drag-over-top', 'drag-over-bottom');
+    });
+    if (targetIndex !== null && targetIndex !== _dragFolderIndex) {
+      const targetEl = listEl.querySelector(`.library-folder-row[data-folder-index="${targetIndex}"]`);
+      if (targetEl) {
+        const rect = targetEl.getBoundingClientRect();
+        const insertBefore = mv.clientY < rect.top + rect.height / 2;
+        targetEl.classList.add(insertBefore ? 'drag-over-top' : 'drag-over-bottom');
+        _dragOverIndex = insertBefore ? targetIndex : targetIndex + 1;
+      }
+    } else {
+      _dragOverIndex = null;
+    }
+  };
+
+  const onUp = () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup',   onUp);
+    listEl.querySelectorAll('.library-folder-row').forEach(el => {
+      el.classList.remove('drag-over-top', 'drag-over-bottom', 'library-folder-dragging');
+    });
+    if (_dragOverIndex !== null && _dragFolderIndex !== null &&
+        _dragOverIndex !== _dragFolderIndex && _dragOverIndex !== _dragFolderIndex + 1) {
+      // Move folder in array
+      const [moved] = library.folders.splice(_dragFolderIndex, 1);
+      const insertAt = _dragOverIndex > _dragFolderIndex ? _dragOverIndex - 1 : _dragOverIndex;
+      library.folders.splice(insertAt, 0, moved);
+      _save();
+      renderList();
+    }
+    _dragFolderIndex = null;
+    _dragOverIndex   = null;
+    _dragEl          = null;
+  };
+
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup',   onUp);
+}
+
 function _renderFolderSection() {
   const header = _makeSectionHeader('Folders');
   listEl.appendChild(header);
 
-  for (const folder of library.folders) {
+  for (let fi = 0; fi < library.folders.length; fi++) {
+    const folder     = library.folders[fi];
     const isExpanded = expandedFolders.has(folder.path);
+    const folderIndex = fi; // capture for closure
 
     // Folder row
     const row = document.createElement('button');
-    row.className = 'library-folder-row' + (isExpanded ? ' expanded' : '');
-    row.title     = folder.path;
+    row.className       = 'library-folder-row' + (isExpanded ? ' expanded' : '');
+    row.title           = folder.path;
+    row.dataset.folderIndex = folderIndex;
+
+    // Drag handle — initiates reorder; touch needs long-press
+    const dragHandle = document.createElement('span');
+    dragHandle.className   = 'library-folder-drag-handle';
+    dragHandle.textContent = '⠿';
+    dragHandle.title       = 'Drag to reorder';
+    _attachDragHandle(dragHandle, row, folderIndex);
 
     const icon = document.createElement('span');
     icon.className   = 'library-folder-icon';
@@ -678,6 +830,7 @@ function _renderFolderSection() {
     arrow.className   = 'library-folder-arrow';
     arrow.textContent = isExpanded ? '▾' : '▸';
 
+    row.appendChild(dragHandle);
     row.appendChild(icon);
     row.appendChild(nameEl);
 

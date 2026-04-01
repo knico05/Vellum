@@ -170,11 +170,23 @@ function _detectLine(points) {
 
   if (meanPerp / len > LINE_THRESHOLD) return null;
 
+  // Snap to perfectly horizontal or vertical if within AXIS_SNAP_DEG of an axis.
+  // The 500ms hold already gives users the "pause" feel; this locks the angle clean.
+  const AXIS_SNAP_DEG = 8;
+  const angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+  const mod90     = ((angleDeg % 90) + 90) % 90;   // 0..90, distance to nearest axis
+  const distToAxis = Math.min(mod90, 90 - mod90);
+  let snapP1 = { x: p1.x, y: p1.y };
+  if (distToAxis < AXIS_SNAP_DEG) {
+    if (mod90 < 45) snapP1 = { x: p1.x, y: p0.y }; // horizontal
+    else            snapP1 = { x: p0.x, y: p1.y }; // vertical
+  }
+
   return {
     shapeType:   'line',
     idealPoints: [
-      { x: p0.x, y: p0.y, pressure: 0.5 },
-      { x: p1.x, y: p1.y, pressure: 0.5 },
+      { x: p0.x,     y: p0.y,     pressure: 0.5 },
+      { x: snapP1.x, y: snapP1.y, pressure: 0.5 },
     ],
   };
 }

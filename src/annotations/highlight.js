@@ -159,6 +159,33 @@ function onMove(e) {
   if (!active || !drawing) return;
   if (e.pointerType === 'touch') return;
 
+  // Snap-adjust mode: after hold-to-snap fires, pen movement repositions the shape
+  // instead of recording more points. Mirrors draw.js behaviour.
+  if (snappedData) {
+    const pt = makePoint(e);
+    if (snappedData.shapeType === 'line') {
+      snappedData.idealPoints[1] = { x: pt.x, y: pt.y };
+    } else if (snappedData.shapeType === 'rect') {
+      const p0   = livePoints[0];
+      const minX = Math.min(p0.x, pt.x), maxX = Math.max(p0.x, pt.x);
+      const minY = Math.min(p0.y, pt.y), maxY = Math.max(p0.y, pt.y);
+      snappedData.idealPoints = [
+        { x: minX, y: minY }, { x: maxX, y: minY },
+        { x: maxX, y: maxY }, { x: minX, y: maxY },
+      ];
+    } else if (snappedData.shapeType === 'circle') {
+      const dx = pt.x - snappedData.cx, dy = pt.y - snappedData.cy;
+      snappedData.r = Math.sqrt(dx * dx + dy * dy);
+    } else if (snappedData.shapeType === 'ellipse') {
+      snappedData.rx = Math.abs(pt.x - snappedData.cx);
+      snappedData.ry = Math.abs(pt.y - snappedData.cy);
+    } else if (snappedData.shapeType === 'corner') {
+      snappedData.idealPoints[snappedData.idealPoints.length - 1] = { x: pt.x, y: pt.y };
+    }
+    requestRender();
+    return;
+  }
+
   const pt   = makePoint(e);
   const last = livePoints[livePoints.length - 1];
   const dx   = pt.x - last.x;
