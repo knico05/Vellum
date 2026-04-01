@@ -40,6 +40,12 @@ import { PDFDocument }               from '../../node_modules/pdf-lib/dist/pdf-l
  */
 const EXPORT_SCALE = 2;
 
+/**
+ * Extra whitespace (in canvas units) added around the annotation/page union
+ * when exporting in canvas mode. Keeps annotations from touching the edge.
+ */
+const CANVAS_EXPORT_PADDING = 40;
+
 /** Padding inside text boxes (canvas units) */
 const TEXT_BOX_PADDING = 6;
 
@@ -72,9 +78,13 @@ const HIGHLIGHT_COLOURS = {
  *
  * @param {function(current: number, total: number): void} [onProgress]
  *   Called before each page is rendered, with (pageIndex, totalPages).
+ * @param {{ mode: 'pages'|'canvas' }} [options]
+ *   mode 'pages'  — export each page at its original dimensions (default).
+ *   mode 'canvas' — expand each page to include any annotations drawn in
+ *                   the margins, like printing a OneNote notebook.
  * @returns {Promise<Uint8Array>} Raw bytes of the finished PDF file.
  */
-async function exportToPdf(onProgress) {
+async function exportToPdf(onProgress, options = { mode: 'pages' }) {
   const pages  = getPageList();
   const pdfDoc = getPdfDoc();
 
@@ -87,11 +97,73 @@ async function exportToPdf(onProgress) {
     const page = pages[i];
     onProgress?.(i, pages.length);
 
-    const pngBytes = await renderPageToPng(page, pdfDoc, allAnnotations);
-    pageImageData.push({ pngBytes, ptWidth: page.width, ptHeight: page.height });
+    // In canvas mode, compute the union of the page rect and all annotation
+    // bounding boxes, then add padding so nothing touches the edge.
+    let exportBounds = null;
+    if (options.mode === 'canvas') {
+      const annoBounds = _getAnnotationBounds(allAnnotations, page);
+      const rawMinX = Math.min(page.canvasX, annoBounds ? annoBounds.minX : page.canvasX);
+      const rawMinY = Math.min(page.canvasY, annoBounds ? annoBounds.minY : page.canvasY);
+      const rawMaxX = Math.max(page.canvasX + page.width,  annoBounds ? annoBounds.maxX : page.canvasX + page.width);
+      const rawMaxY = Math.max(page.canvasY + page.height, annoBounds ? annoBounds.maxY : page.canvasY + page.height);
+      exportBounds = {
+        minX: rawMinX - CANVAS_EXPORT_PADDING,
+        minY: rawMinY - CANVAS_EXPORT_PADDING,
+        maxX: rawMaxX + CANVAS_EXPORT_PADDING,
+        maxY: rawMaxY + CANVAS_EXPORT_PADDING,
+      };
+    }
+
+    const pngBytes = await renderPageToPng(page, pdfDoc, allAnnotations, exportBounds);
+    const ptWidth  = exportBounds ? (exportBounds.maxX - exportBounds.minX) : page.width;
+    const ptHeight = exportBounds ? (exportBounds.maxY - exportBounds.minY) : page.height;
+    pageImageData.push({ pngBytes, ptWidth, ptHeight });
   }
 
   return assemblePdf(pageImageData);
+}
+
+// ---------------------------------------------------------------------------
+// Annotation bounds helper (canvas mode)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the bounding box (in canvas space) of all annotations for a page.
+ * Used in canvas mode to determine how much to expand the export canvas.
+ *
+ * @param {object[]} annotations — All annotations in the document
+ * @param {object}   page        — Page descriptor
+ * @returns {{ minX:number, minY:number, maxX:number, maxY:number } | null}
+ *   null if the page has no annotations.
+ */
+function _getAnnotationBounds(annotations, page) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let hasAny = false;
+
+  for (const a of annotations) {
+    if (a.pageId !== page.id) continue;
+
+    if (a.points && a.points.length > 0) {
+      // draw / highlight path — iterate all points, expand by half stroke width
+      const pad = (a.strokeWidth ?? 0) / 2;
+      for (const pt of a.points) {
+        minX = Math.min(minX, pt.x - pad);
+        minY = Math.min(minY, pt.y - pad);
+        maxX = Math.max(maxX, pt.x + pad);
+        maxY = Math.max(maxY, pt.y + pad);
+      }
+      hasAny = true;
+    } else if (a.canvasX !== undefined) {
+      // image / note / legacy highlight rect
+      minX = Math.min(minX, a.canvasX);
+      minY = Math.min(minY, a.canvasY);
+      maxX = Math.max(maxX, a.canvasX + (a.width  ?? 0));
+      maxY = Math.max(maxY, a.canvasY + (a.height ?? 0));
+      hasAny = true;
+    }
+  }
+
+  return hasAny ? { minX, minY, maxX, maxY } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,30 +176,61 @@ async function exportToPdf(onProgress) {
  * @param {object} page              — Page descriptor from getPageList()
  * @param {PDFDocumentProxy|null} pdfDoc — PDF.js document proxy (null for blank-only docs)
  * @param {object[]} allAnnotations  — All annotations for the full document
+ * @param {{ minX:number, minY:number, maxX:number, maxY:number } | null} exportBounds
+ *   When non-null (canvas mode), the output canvas covers this region in canvas space
+ *   rather than the page dimensions. The PDF page is composited at the correct offset.
  * @returns {Promise<Uint8Array>} PNG bytes at EXPORT_SCALE resolution
  */
-async function renderPageToPng(page, pdfDoc, allAnnotations) {
+async function renderPageToPng(page, pdfDoc, allAnnotations, exportBounds = null) {
+  // Determine the canvas-space region that maps to the output image.
+  // Pages mode: exactly the page rectangle.
+  // Canvas mode: the pre-computed exportBounds (page ∪ annotations + padding).
+  const originX  = exportBounds ? exportBounds.minX : page.canvasX;
+  const originY  = exportBounds ? exportBounds.minY : page.canvasY;
+  const regionW  = exportBounds ? (exportBounds.maxX - exportBounds.minX) : page.width;
+  const regionH  = exportBounds ? (exportBounds.maxY - exportBounds.minY) : page.height;
+
   const canvas = document.createElement('canvas');
-  canvas.width  = Math.round(page.width  * EXPORT_SCALE);
-  canvas.height = Math.round(page.height * EXPORT_SCALE);
+  canvas.width  = Math.round(regionW * EXPORT_SCALE);
+  canvas.height = Math.round(regionH * EXPORT_SCALE);
   const ctx = canvas.getContext('2d');
 
   // White background (blank pages and any transparent areas on PDF pages)
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Render PDF page content via PDF.js
+  // Render PDF page content via PDF.js.
+  // In pages mode, PDF.js renders to (0,0) which is exactly right.
+  // In canvas mode, the page may be offset within the export region, so we
+  // render to a temporary canvas then drawImage it at the correct position.
   if (page.kind === 'pdf' && pdfDoc) {
-    const pdfPage = await pdfDoc.getPage(page.pdfPageIndex + 1); // 1-based
-    const vp      = pdfPage.getViewport({ scale: EXPORT_SCALE });
-    await pdfPage.render({ canvasContext: ctx, viewport: vp }).promise;
+    if (exportBounds) {
+      // Render PDF page to a temp canvas at page size, then stamp it at offset.
+      const tmp = document.createElement('canvas');
+      tmp.width  = Math.round(page.width  * EXPORT_SCALE);
+      tmp.height = Math.round(page.height * EXPORT_SCALE);
+      const tmpCtx = tmp.getContext('2d');
+      tmpCtx.fillStyle = '#ffffff';
+      tmpCtx.fillRect(0, 0, tmp.width, tmp.height);
+      const pdfPage = await pdfDoc.getPage(page.pdfPageIndex + 1);
+      const vp = pdfPage.getViewport({ scale: EXPORT_SCALE });
+      await pdfPage.render({ canvasContext: tmpCtx, viewport: vp }).promise;
+      const offsetPx = Math.round((page.canvasX - originX) * EXPORT_SCALE);
+      const offsetPy = Math.round((page.canvasY - originY) * EXPORT_SCALE);
+      ctx.drawImage(tmp, offsetPx, offsetPy);
+    } else {
+      const pdfPage = await pdfDoc.getPage(page.pdfPageIndex + 1); // 1-based
+      const vp      = pdfPage.getViewport({ scale: EXPORT_SCALE });
+      await pdfPage.render({ canvasContext: ctx, viewport: vp }).promise;
+    }
   }
 
-  // Switch to canvas space: annotation coords are stored in canvas space,
-  // so translating by -page.canvasX/Y maps them to page-local coordinates.
+  // Switch to canvas space: annotation coords are stored in canvas space.
+  // Translating by -originX/Y maps them to export-region-local coordinates.
+  // In pages mode originX/Y === page.canvasX/Y (same as before).
   ctx.save();
   ctx.scale(EXPORT_SCALE, EXPORT_SCALE);
-  ctx.translate(-page.canvasX, -page.canvasY);
+  ctx.translate(-originX, -originY);
 
   const pageAnnos = allAnnotations.filter(a => a.pageId === page.id);
 

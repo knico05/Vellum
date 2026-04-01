@@ -120,6 +120,43 @@ async function handleOpen() {
 }
 
 /**
+ * Shows the export options modal and resolves with the chosen mode,
+ * or null if the user cancelled.
+ * @returns {Promise<'pages'|'canvas'|null>}
+ */
+function _promptExportMode() {
+  return new Promise((resolve) => {
+    const modal   = document.getElementById('export-modal');
+    const btnOk   = document.getElementById('btn-export-modal-ok');
+    const btnCancel = document.getElementById('btn-export-modal-cancel');
+    const btnClose  = document.getElementById('btn-export-modal-close');
+
+    modal.classList.remove('hidden');
+
+    function finish(mode) {
+      modal.classList.add('hidden');
+      btnOk.removeEventListener('click', onOk);
+      btnCancel.removeEventListener('click', onCancel);
+      btnClose.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onOverlay);
+      resolve(mode);
+    }
+
+    function onOk() {
+      const checked = modal.querySelector('input[name="export-mode"]:checked');
+      finish(checked ? checked.value : 'pages');
+    }
+    function onCancel() { finish(null); }
+    function onOverlay(e) { if (e.target === modal) finish(null); }
+
+    btnOk.addEventListener('click', onOk);
+    btnCancel.addEventListener('click', onCancel);
+    btnClose.addEventListener('click', onCancel);
+    modal.addEventListener('click', onOverlay);
+  });
+}
+
+/**
  * Exports the current document as a flattened PDF.
  * Renders each page + its annotations to an offscreen canvas at 2× resolution,
  * then assembles them into a single PDF the user can share with anyone.
@@ -128,6 +165,10 @@ async function handleExport() {
   const pdfPath  = getCurrentPdfPath();
   const btnExport  = document.getElementById('btn-export');
   const lblStatus  = document.getElementById('lbl-save-status');
+
+  // Let the user pick export mode before opening the save dialog.
+  const mode = await _promptExportMode();
+  if (!mode) return; // User cancelled
 
   // Derive a default filename: "lecture3.pdf" → "lecture3-annotated.pdf"
   let defaultName = 'annotated.pdf';
@@ -144,9 +185,10 @@ async function handleExport() {
   lblStatus.textContent = 'Exporting…';
 
   try {
-    const pdfBytes = await exportToPdf((current, total) => {
-      lblStatus.textContent = `Exporting ${current + 1} / ${total}…`;
-    });
+    const pdfBytes = await exportToPdf(
+      (current, total) => { lblStatus.textContent = `Exporting ${current + 1} / ${total}…`; },
+      { mode },
+    );
 
     await window.api.writeBinary(savePath, pdfBytes);
 

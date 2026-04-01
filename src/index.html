@@ -143,6 +143,36 @@
     </div>
   </div>
 
+  <!-- Export options modal -->
+  <div id="export-modal" class="modal-overlay hidden">
+    <div class="modal-card" style="width:320px;">
+      <div class="modal-header">
+        <span class="modal-title">Export PDF</span>
+        <button class="modal-close" id="btn-export-modal-close">&#x2715;</button>
+      </div>
+      <div class="modal-body" style="padding:16px;display:flex;flex-direction:column;gap:10px;">
+        <label class="export-mode-option" id="export-opt-pages">
+          <input type="radio" name="export-mode" value="pages" checked />
+          <div>
+            <span class="export-mode-title">Pages only</span>
+            <span class="export-mode-desc">Export each page at its original size. Annotations in the margins are cropped.</span>
+          </div>
+        </label>
+        <label class="export-mode-option" id="export-opt-canvas">
+          <input type="radio" name="export-mode" value="canvas" />
+          <div>
+            <span class="export-mode-title">With margin notes</span>
+            <span class="export-mode-desc">Expand each page to include annotations drawn outside the page border.</span>
+          </div>
+        </label>
+      </div>
+      <div style="padding:0 16px 16px;display:flex;justify-content:flex-end;gap:8px;">
+        <button class="toolbar-btn" id="btn-export-modal-cancel">Cancel</button>
+        <button class="toolbar-btn" id="btn-export-modal-ok" style="background:var(--accent);color:#fff;">Export…</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Shortcuts help modal — populated by shortcuts.js -->
   <div id="shortcuts-modal" class="modal-overlay hidden">
     <div class="modal-card">

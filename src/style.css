@@ -1911,6 +1911,50 @@ button:focus-visible {
 }
 
 /* ---------------------------------------------------------------------------
+   Export options modal
+--------------------------------------------------------------------------- */
+
+.export-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.export-mode-option:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.export-mode-option input[type="radio"] {
+  margin-top: 2px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.export-mode-option > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.export-mode-title {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.export-mode-desc {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+/* ---------------------------------------------------------------------------
    Screenshot overlay
 --------------------------------------------------------------------------- */
 
