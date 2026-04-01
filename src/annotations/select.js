@@ -230,6 +230,7 @@ function getHandleMode() {
   if (anno.shapeType === 'line')   return 'line';
   if (anno.shapeType === 'rect')   return 'rect';
   if (anno.shapeType === 'circle') return 'circle';
+  if (anno.shapeType === 'corner') return 'corner';
   return 'bounds';
 }
 
@@ -377,6 +378,14 @@ function startResize(handlePos, e) {
       resizing = true;
     }
 
+  } else if (mode === 'corner' && anno?.points?.length === 3) {
+    // 'tl' → arm endpoint at points[0], 'br' → arm endpoint at points[2].
+    // The vertex (points[1]) is always fixed — only arm lengths change.
+    resizeHandle = handlePos === 'tl' ? 'corner_p0' : 'corner_p2';
+    resizeOriginals[anno.id] = { points: anno.points.map(p => ({ ...p })) };
+    resizePreview = { mode: 'corner', points: anno.points.map(p => ({ ...p })) };
+    resizing = true;
+
   } else {
     // Bounds mode: proportional scale from the opposite corner
     const { x, y, w, h } = selectionBounds;
@@ -447,6 +456,31 @@ function onResizeMove(e) {
     const dx = cx - resizePreview.cx;
     const dy = cy - resizePreview.cy;
     resizePreview.r = Math.max(5, Math.sqrt(dx * dx + dy * dy));
+
+  } else if ((resizeHandle === 'corner_p0' || resizeHandle === 'corner_p2') && anno) {
+    const orig   = resizeOriginals[anno.id];
+    if (!orig) return;
+    const vertex = orig.points[1]; // vertex is always fixed
+    const ptIdx  = resizeHandle === 'corner_p0' ? 0 : 2;
+    const origPt = orig.points[ptIdx];
+
+    // Determine which axis this arm lies on by comparing which coordinate
+    // matches the vertex (the shared corner of the two arms).
+    const isHoriz = Math.abs(origPt.y - vertex.y) < Math.abs(origPt.x - vertex.x);
+
+    // Constrain movement to the arm's axis: horizontal arm → only X moves,
+    // vertical arm → only Y moves. The vertex coordinate on the locked axis
+    // is used so the arm always touches the corner exactly.
+    const snapped = isHoriz
+      ? { x: cx,      y: vertex.y }
+      : { x: vertex.x, y: cy };
+
+    const newPoints = orig.points.map(p => ({ ...p }));
+    newPoints[ptIdx] = { ...origPt, x: snapped.x, y: snapped.y };
+
+    // Live-mutate for real-time preview (same pattern as bounds mode)
+    anno.points = newPoints;
+    resizePreview = { mode: 'corner', points: newPoints };
 
   } else if (resizeHandle?.startsWith('bounds_') && resizeOrigin) {
     // Proportional bounding-box scale
@@ -553,6 +587,15 @@ function commitResize() {
     batchUpdate(
       [{ id: anno.id, changes: { r: resizePreview.r } }],
       [{ id: anno.id, changes: { r: orig.r } }],
+    );
+    selectionBounds = computeUnionBounds(selectedIds);
+
+  } else if ((resizeHandle === 'corner_p0' || resizeHandle === 'corner_p2') && anno) {
+    const orig = resizeOriginals[anno.id];
+    // anno.points already holds the live-mutated final state
+    batchUpdate(
+      [{ id: anno.id, changes: { points: anno.points.map(p => ({ ...p })) } }],
+      [{ id: anno.id, changes: { points: orig.points } }],
     );
     selectionBounds = computeUnionBounds(selectedIds);
 
@@ -716,7 +759,7 @@ function deleteSelection() {
 function clearSelection() {
   // If a bounds resize was in progress, live mutations may have moved annotations.
   // Restore them from the snapshot before clearing.
-  if (resizing && resizeHandle?.startsWith('bounds_') && Object.keys(resizeOriginals).length) {
+  if (resizing && (resizeHandle?.startsWith('bounds_') || resizeHandle?.startsWith('corner_')) && Object.keys(resizeOriginals).length) {
     for (const a of getAll()) {
       const orig = resizeOriginals[a.id];
       if (!orig) continue;
@@ -796,6 +839,7 @@ function updateActionBar() {
  *   line   — 2 handles at endpoints ('tl'=p0, 'br'=p1); tr/bl hidden
  *   rect   — 4 handles at the actual corner points
  *   circle — 'tl' at centre, 'br' at edge (cx+r, cy); tr/bl hidden
+ *   corner — 2 handles at the two arm endpoints ('tl'=p0, 'br'=p2); tr/bl hidden
  *   bounds — 4 handles at padded bounding-box corners (existing behaviour)
  */
 function updateHandles() {
@@ -835,6 +879,27 @@ function updateHandles() {
     placeHandle('tr', toScreen(p[1].x, p[1].y), 'nesw-resize');
     placeHandle('br', toScreen(p[2].x, p[2].y), 'nwse-resize');
     placeHandle('bl', toScreen(p[3].x, p[3].y), 'nesw-resize');
+
+  } else if (mode === 'corner' && anno?.points?.length === 3 && !resizing) {
+    const pts = anno.points;
+    const vertex = pts[1];
+    // Determine cursor for each arm based on its axis orientation
+    const arm0isH = Math.abs(pts[0].y - vertex.y) < Math.abs(pts[0].x - vertex.x);
+    const arm2isH = Math.abs(pts[2].y - vertex.y) < Math.abs(pts[2].x - vertex.x);
+    placeHandle('tl', toScreen(pts[0].x, pts[0].y), arm0isH ? 'ew-resize' : 'ns-resize');
+    placeHandle('br', toScreen(pts[2].x, pts[2].y), arm2isH ? 'ew-resize' : 'ns-resize');
+    handleEls.tr.classList.add('hidden');
+    handleEls.bl.classList.add('hidden');
+
+  } else if (mode === 'corner' && resizePreview?.mode === 'corner') {
+    const pts = resizePreview.points;
+    const vertex = pts[1];
+    const arm0isH = Math.abs(pts[0].y - vertex.y) < Math.abs(pts[0].x - vertex.x);
+    const arm2isH = Math.abs(pts[2].y - vertex.y) < Math.abs(pts[2].x - vertex.x);
+    placeHandle('tl', toScreen(pts[0].x, pts[0].y), arm0isH ? 'ew-resize' : 'ns-resize');
+    placeHandle('br', toScreen(pts[2].x, pts[2].y), arm2isH ? 'ew-resize' : 'ns-resize');
+    handleEls.tr.classList.add('hidden');
+    handleEls.bl.classList.add('hidden');
 
   } else if (mode === 'circle' && anno && !resizing) {
     placeHandle('tl', toScreen(anno.cx,          anno.cy), 'move');
