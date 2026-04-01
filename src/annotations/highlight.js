@@ -180,8 +180,6 @@ function onMove(e) {
     } else if (snappedData.shapeType === 'ellipse') {
       snappedData.rx = Math.abs(pt.x - snappedData.cx);
       snappedData.ry = Math.abs(pt.y - snappedData.cy);
-    } else if (snappedData.shapeType === 'corner') {
-      snappedData.idealPoints[snappedData.idealPoints.length - 1] = { x: pt.x, y: pt.y };
     }
     requestRender();
     return;

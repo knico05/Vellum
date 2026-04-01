@@ -196,10 +196,6 @@ function onMove(e) {
         { x: maxX, y: maxY, pressure: 0.5 }, // BR
         { x: minX, y: maxY, pressure: 0.5 }, // BL
       ];
-    } else if (snappedData.shapeType === 'corner') {
-      // Move the far endpoint (index 2) to follow the pen — vertex (index 1) and
-      // start (index 0) stay fixed, so the overall L-shape repositions at the tip.
-      snappedData.idealPoints[2] = { x: pt.x, y: pt.y, pressure: 0.5 };
     } else if (snappedData.shapeType === 'circle') {
       // Adjust radius: distance from the snapped centre to the current pen position
       const dx = pt.x - snappedData.cx;
