@@ -21,7 +21,7 @@ import { registerOverlay, requestRender }  from '../canvas/renderer.js';
 import { add, getAll }                     from './manager.js';
 import { resolvePageId }                   from '../pages/pageManager.js';
 import { getDragOffset }                   from './select.js';
-import { detectShape }                     from './shape.js';
+import { detectShape, axisSnapEndpoint }   from './shape.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -164,7 +164,8 @@ function onMove(e) {
   if (snappedData) {
     const pt = makePoint(e);
     if (snappedData.shapeType === 'line') {
-      snappedData.idealPoints[1] = { x: pt.x, y: pt.y };
+      const snapped = axisSnapEndpoint(snappedData.idealPoints[0], pt);
+      snappedData.idealPoints[1] = { x: snapped.x, y: snapped.y };
     } else if (snappedData.shapeType === 'rect') {
       const p0   = livePoints[0];
       const minX = Math.min(p0.x, pt.x), maxX = Math.max(p0.x, pt.x);

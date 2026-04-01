@@ -92,6 +92,7 @@ function initSearch({ onSearch, onNavigate }) {
     }
     if (e.key === 'Escape') {
       e.preventDefault();
+      e.stopPropagation(); // prevent global handler from also calling setTool(null)
       hideSearch();
     }
   });

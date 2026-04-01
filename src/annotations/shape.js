@@ -170,23 +170,14 @@ function _detectLine(points) {
 
   if (meanPerp / len > LINE_THRESHOLD) return null;
 
-  // Snap to perfectly horizontal or vertical if within AXIS_SNAP_DEG of an axis.
-  // The 500ms hold already gives users the "pause" feel; this locks the angle clean.
-  const AXIS_SNAP_DEG = 8;
-  const angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
-  const mod90     = ((angleDeg % 90) + 90) % 90;   // 0..90, distance to nearest axis
-  const distToAxis = Math.min(mod90, 90 - mod90);
-  let snapP1 = { x: p1.x, y: p1.y };
-  if (distToAxis < AXIS_SNAP_DEG) {
-    if (mod90 < 45) snapP1 = { x: p1.x, y: p0.y }; // horizontal
-    else            snapP1 = { x: p0.x, y: p1.y }; // vertical
-  }
-
+  // Return the straight line from start to end — no angle correction here.
+  // Axis snapping happens later during snap-adjust (see axisSnapEndpoint),
+  // giving the user sticky H/V feedback as they reposition the endpoint.
   return {
     shapeType:   'line',
     idealPoints: [
-      { x: p0.x,     y: p0.y,     pressure: 0.5 },
-      { x: snapP1.x, y: snapP1.y, pressure: 0.5 },
+      { x: p0.x, y: p0.y, pressure: 0.5 },
+      { x: p1.x, y: p1.y, pressure: 0.5 },
     ],
   };
 }
@@ -596,4 +587,33 @@ function _bounds(points) {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { detectShape };
+/**
+ * Snaps a line endpoint to the nearest axis (H or V) if it falls within
+ * AXIS_SNAP_DEG degrees of that axis.  Used during snap-adjust mode so the
+ * line "sticks" when the user drags near perfectly horizontal or vertical —
+ * the visual pause as the endpoint stops moving is the alignment feedback.
+ *
+ * @param {{ x:number, y:number }} p0   — Fixed start point of the line
+ * @param {{ x:number, y:number }} rawPt — Current pen position (canvas space)
+ * @returns {{ x:number, y:number }}    — Snapped (or original) endpoint
+ */
+function axisSnapEndpoint(p0, rawPt) {
+  const dx = rawPt.x - p0.x;
+  const dy = rawPt.y - p0.y;
+  if (dx === 0 && dy === 0) return rawPt;
+
+  const AXIS_SNAP_DEG = 8;
+  const angleDeg  = Math.atan2(dy, dx) * 180 / Math.PI;
+  const mod90      = ((angleDeg % 90) + 90) % 90; // 0–90, distance to nearest axis
+  const distToAxis = Math.min(mod90, 90 - mod90);
+
+  if (distToAxis < AXIS_SNAP_DEG) {
+    // Horizontal: lock y to p0.y
+    if (mod90 < 45) return { x: rawPt.x, y: p0.y };
+    // Vertical: lock x to p0.x
+    return { x: p0.x, y: rawPt.y };
+  }
+  return rawPt;
+}
+
+export { detectShape, axisSnapEndpoint };

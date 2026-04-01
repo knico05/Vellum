@@ -24,7 +24,7 @@ import { registerOverlay, requestRender } from '../canvas/renderer.js';
 import { add, getAll }                    from './manager.js';
 import { resolvePageId }                  from '../pages/pageManager.js';
 import { getDragOffset }                  from './select.js';
-import { detectShape }                    from './shape.js';
+import { detectShape, axisSnapEndpoint }  from './shape.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -167,8 +167,11 @@ function onMove(e) {
   if (snappedData) {
     const pt = makePoint(e);
     if (snappedData.shapeType === 'line') {
-      // Move the endpoint (index 1) to follow the pen — start (index 0) stays fixed
-      snappedData.idealPoints[1] = { x: pt.x, y: pt.y, pressure: 0.5 };
+      // Move the endpoint (index 1) toward the pen, snapping to H/V when close.
+      // axisSnapEndpoint makes the line "stick" at 0°/90° so the user sees a
+      // brief visual pause as feedback that the line is perfectly aligned.
+      const snapped = axisSnapEndpoint(snappedData.idealPoints[0], pt);
+      snappedData.idealPoints[1] = { x: snapped.x, y: snapped.y, pressure: 0.5 };
     } else if (snappedData.shapeType === 'rect') {
       // On first move after snap, find the corner of the snapped rect that is
       // farthest from the pen — that corner stays fixed while the opposite one

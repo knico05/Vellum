@@ -60,7 +60,10 @@ function init() {
   overlayEl.addEventListener('pointerdown', onPointerDown);
 
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && active) deactivate();
+    if (e.key === 'Escape' && active) {
+      e.stopPropagation(); // prevent global handler from also calling setTool(null)
+      deactivate();
+    }
   });
 }
 
