@@ -227,10 +227,11 @@ function getHandleMode() {
   if (selectedIds.size !== 1) return 'bounds';
   const anno = getSingleAnno();
   if (!anno) return 'bounds';
-  if (anno.shapeType === 'line')   return 'line';
-  if (anno.shapeType === 'rect')   return 'rect';
-  if (anno.shapeType === 'circle') return 'circle';
-  if (anno.shapeType === 'corner') return 'corner';
+  if (anno.shapeType === 'line')    return 'line';
+  if (anno.shapeType === 'rect')    return 'rect';
+  if (anno.shapeType === 'circle')  return 'circle';
+  if (anno.shapeType === 'ellipse') return 'ellipse';
+  if (anno.shapeType === 'corner')  return 'corner';
   return 'bounds';
 }
 
@@ -364,17 +365,39 @@ function startResize(handlePos, e) {
     resizeOriginals[anno.id] = { cx: anno.cx, cy: anno.cy, r: anno.r, shapeType: 'circle' };
 
     if (handlePos === 'tl') {
-      // Center handle → drag-move the whole circle via the existing drag system
       resizeHandle = 'circle_center';
       dragging  = true;
       dragStart = clientToCanvas(e);
       deltaX    = 0;
       deltaY    = 0;
-      resizing  = true; // keep true so handle's pointermove/up route to us
+      resizing  = true;
     } else {
-      // Radius handle → drag to resize
+      // tr = right (width), bl = bottom (height) — both resize uniformly (circle stays circular)
       resizeHandle  = 'circle_radius';
       resizePreview = { mode: 'circle', cx: anno.cx, cy: anno.cy, r: anno.r };
+      resizing = true;
+    }
+
+  } else if (mode === 'ellipse' && anno) {
+    resizeOriginals[anno.id] = { cx: anno.cx, cy: anno.cy, rx: anno.rx, ry: anno.ry, shapeType: 'ellipse' };
+
+    if (handlePos === 'tl') {
+      // Center handle → drag-move
+      resizeHandle = 'ellipse_center';
+      dragging  = true;
+      dragStart = clientToCanvas(e);
+      deltaX    = 0;
+      deltaY    = 0;
+      resizing  = true;
+    } else if (handlePos === 'tr') {
+      // Right handle → change rx (horizontal semi-axis)
+      resizeHandle  = 'ellipse_rx';
+      resizePreview = { mode: 'ellipse', cx: anno.cx, cy: anno.cy, rx: anno.rx, ry: anno.ry };
+      resizing = true;
+    } else if (handlePos === 'bl') {
+      // Bottom handle → change ry (vertical semi-axis)
+      resizeHandle  = 'ellipse_ry';
+      resizePreview = { mode: 'ellipse', cx: anno.cx, cy: anno.cy, rx: anno.rx, ry: anno.ry };
       resizing = true;
     }
 
@@ -423,10 +446,16 @@ function onResizeMove(e) {
   const { x: cx, y: cy } = clientToCanvas(e);
   const anno = getSingleAnno();
 
-  if (resizeHandle === 'circle_center') {
+  if (resizeHandle === 'circle_center' || resizeHandle === 'ellipse_center') {
     // Routed through drag-move: update delta
     deltaX = cx - dragStart.x;
     deltaY = cy - dragStart.y;
+
+  } else if (resizeHandle === 'ellipse_rx' && resizePreview?.mode === 'ellipse') {
+    resizePreview.rx = Math.max(5, Math.abs(cx - resizePreview.cx));
+
+  } else if (resizeHandle === 'ellipse_ry' && resizePreview?.mode === 'ellipse') {
+    resizePreview.ry = Math.max(5, Math.abs(cy - resizePreview.cy));
 
   } else if (resizeHandle === 'line_p0' || resizeHandle === 'line_p1') {
     if (!resizePreview) return;
@@ -546,9 +575,19 @@ function commitResize() {
   const anno = getSingleAnno();
   const mode = getHandleMode();
 
-  if (resizeHandle === 'circle_center') {
+  if (resizeHandle === 'circle_center' || resizeHandle === 'ellipse_center') {
     // Handled via the standard drag-move path
     commitDrag();
+    return;
+  }
+
+  if ((resizeHandle === 'ellipse_rx' || resizeHandle === 'ellipse_ry') && anno && resizePreview) {
+    const orig = resizeOriginals[anno.id];
+    batchUpdate(
+      [{ id: anno.id, changes: { rx: resizePreview.rx, ry: resizePreview.ry } }],
+      [{ id: anno.id, changes: { rx: orig.rx, ry: orig.ry } }],
+    );
+    selectionBounds = computeUnionBounds(selectedIds);
     return;
   }
 
@@ -906,26 +945,45 @@ function updateHandles() {
     handleEls.bl.classList.add('hidden');
 
   } else if (mode === 'circle' && anno && !resizing) {
-    placeHandle('tl', toScreen(anno.cx + ddx,          anno.cy + ddy), 'move');
-    placeHandle('br', toScreen(anno.cx + anno.r + ddx, anno.cy + ddy), 'ew-resize');
-    handleEls.tr.classList.add('hidden');
-    handleEls.bl.classList.add('hidden');
+    placeHandle('tl', toScreen(anno.cx + ddx,                anno.cy + ddy),          'move');
+    placeHandle('tr', toScreen(anno.cx + anno.r + ddx,       anno.cy + ddy),          'ew-resize');
+    placeHandle('bl', toScreen(anno.cx + ddx,                anno.cy + anno.r + ddy), 'ns-resize');
+    handleEls.br.classList.add('hidden');
 
   } else if (mode === 'circle' && resizePreview?.mode === 'circle') {
-    placeHandle('tl', toScreen(resizePreview.cx,                 resizePreview.cy), 'move');
-    placeHandle('br', toScreen(resizePreview.cx + resizePreview.r, resizePreview.cy), 'ew-resize');
-    handleEls.tr.classList.add('hidden');
-    handleEls.bl.classList.add('hidden');
+    placeHandle('tl', toScreen(resizePreview.cx,                   resizePreview.cy),           'move');
+    placeHandle('tr', toScreen(resizePreview.cx + resizePreview.r, resizePreview.cy),           'ew-resize');
+    placeHandle('bl', toScreen(resizePreview.cx,                   resizePreview.cy + resizePreview.r), 'ns-resize');
+    handleEls.br.classList.add('hidden');
 
   } else if (mode === 'circle' && resizeHandle === 'circle_center' && dragging) {
-    // Moving circle: show handles at offset positions
-    const cx = anno ? anno.cx + deltaX : 0;
-    const cy = anno ? anno.cy + deltaY : 0;
-    const r  = anno ? anno.r  : 0;
-    placeHandle('tl', toScreen(cx,     cy), 'move');
-    placeHandle('br', toScreen(cx + r, cy), 'ew-resize');
-    handleEls.tr.classList.add('hidden');
-    handleEls.bl.classList.add('hidden');
+    const ocx = anno ? anno.cx + deltaX : 0;
+    const ocy = anno ? anno.cy + deltaY : 0;
+    const r   = anno ? anno.r  : 0;
+    placeHandle('tl', toScreen(ocx,     ocy),     'move');
+    placeHandle('tr', toScreen(ocx + r, ocy),     'ew-resize');
+    placeHandle('bl', toScreen(ocx,     ocy + r), 'ns-resize');
+    handleEls.br.classList.add('hidden');
+
+  } else if (mode === 'ellipse' && anno && !resizing) {
+    placeHandle('tl', toScreen(anno.cx + ddx,               anno.cy + ddy),           'move');
+    placeHandle('tr', toScreen(anno.cx + anno.rx + ddx,     anno.cy + ddy),           'ew-resize');
+    placeHandle('bl', toScreen(anno.cx + ddx,               anno.cy + anno.ry + ddy), 'ns-resize');
+    handleEls.br.classList.add('hidden');
+
+  } else if (mode === 'ellipse' && resizePreview?.mode === 'ellipse') {
+    placeHandle('tl', toScreen(resizePreview.cx,                    resizePreview.cy),            'move');
+    placeHandle('tr', toScreen(resizePreview.cx + resizePreview.rx, resizePreview.cy),            'ew-resize');
+    placeHandle('bl', toScreen(resizePreview.cx,                    resizePreview.cy + resizePreview.ry), 'ns-resize');
+    handleEls.br.classList.add('hidden');
+
+  } else if (mode === 'ellipse' && resizeHandle === 'ellipse_center' && dragging) {
+    const ocx = anno ? anno.cx + deltaX : 0;
+    const ocy = anno ? anno.cy + deltaY : 0;
+    placeHandle('tl', toScreen(ocx,              ocy),              'move');
+    placeHandle('tr', toScreen(ocx + anno.rx,    ocy),              'ew-resize');
+    placeHandle('bl', toScreen(ocx,              ocy + anno.ry),    'ns-resize');
+    handleEls.br.classList.add('hidden');
 
   } else {
     // Bounds mode: 4 corners of the padded selection box.
@@ -1018,6 +1076,10 @@ function drawOverlay(ctx) {
     } else if (resizePreview.mode === 'circle') {
       ctx.beginPath();
       ctx.arc(resizePreview.cx, resizePreview.cy, resizePreview.r, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (resizePreview.mode === 'ellipse') {
+      ctx.beginPath();
+      ctx.ellipse(resizePreview.cx, resizePreview.cy, resizePreview.rx, resizePreview.ry, 0, 0, Math.PI * 2);
       ctx.stroke();
     }
 
