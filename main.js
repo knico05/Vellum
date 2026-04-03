@@ -868,6 +868,57 @@ function setupIPC(win) {
   });
 
   /**
+   * recover-annotations — finds an orphaned annotations JSON whose stored
+   * pdfFingerprint matches the given PDF, then renames it to the expected path.
+   *
+   * Called when a PDF is opened but no annotations file exists at the expected
+   * path (sha256 of the current absolute path). This happens when the user
+   * moves or renames the PDF outside of the app.
+   *
+   * @param {string} pdfPath — Absolute path of the PDF being opened
+   * @returns {string|null} The recovered annotations path, or null if not found
+   */
+  ipcMain.handle('recover-annotations', async (_event, pdfPath) => {
+    const annotationsDir = path.join(app.getPath('userData'), 'annotations');
+    const expectedHash   = crypto.createHash('sha256').update(pdfPath.replace(/\\/g, '/')).digest('hex');
+    const expectedPath   = path.join(annotationsDir, `${expectedHash}.json`);
+
+    // Already in the right place — nothing to do
+    if (fs.existsSync(expectedPath)) return null;
+
+    // Compute content fingerprint of the PDF (first 8 KB)
+    let fingerprint;
+    try {
+      const fd       = fs.openSync(pdfPath, 'r');
+      const buf      = Buffer.alloc(8192);
+      const bytesRead = fs.readSync(fd, buf, 0, 8192, 0);
+      fs.closeSync(fd);
+      fingerprint = crypto.createHash('sha256').update(buf.subarray(0, bytesRead)).digest('hex');
+    } catch {
+      return null;
+    }
+
+    // Scan all annotation JSONs for a matching fingerprint
+    let entries;
+    try { entries = fs.readdirSync(annotationsDir); } catch { return null; }
+
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      const candidate = path.join(annotationsDir, name);
+      if (candidate === expectedPath) continue;
+      try {
+        const data = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+        if (data.pdfFingerprint === fingerprint) {
+          fs.renameSync(candidate, expectedPath);
+          return expectedPath;
+        }
+      } catch { /* corrupt or unreadable — skip */ }
+    }
+
+    return null;
+  });
+
+  /**
    * backup-on-quit — synchronous IPC called by the renderer just before the
    * window closes (document switch or app quit). Creates a .vellum archive
    * of the current PDF + its annotations in the configured backup folder.

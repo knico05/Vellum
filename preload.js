@@ -313,6 +313,17 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('scan-folder-tree', dirPath),
 
   /**
+   * Scans all stored annotation JSONs for one whose pdfFingerprint matches
+   * the given PDF. If found, renames it to the expected path so the app
+   * can load it normally. Called when a PDF is opened with no annotations
+   * file at its current path (e.g. the file was moved in Explorer).
+   * @param {string} pdfPath — Absolute path of the PDF being opened
+   * @returns {Promise<string|null>} Recovered path, or null if not found
+   */
+  recoverAnnotations: (pdfPath) =>
+    ipcRenderer.invoke('recover-annotations', pdfPath),
+
+  /**
    * Registers a one-time callback invoked when the app was launched by opening
    * a file (e.g. double-clicking a .vellum in Explorer). The callback receives
    * the absolute file path as its argument.

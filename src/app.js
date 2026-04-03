@@ -397,6 +397,16 @@ async function tryLoadAnnotations(pdfPath) {
     }
   }
 
+  // Fingerprint-based recovery: if the PDF was moved or renamed outside the app
+  // the annotations JSON is orphaned under the old path hash. Scan all stored
+  // JSONs for a content-fingerprint match and rename to the correct path.
+  if (!exists) {
+    try {
+      const recovered = await window.api.recoverAnnotations(pdfPath);
+      if (recovered) exists = true;
+    } catch { /* never block startup on recovery failure */ }
+  }
+
   if (!exists) return;
 
   try {
@@ -446,7 +456,10 @@ async function _checkWhatsNew() {
     if (lastSeen === current) return; // already seen this version
 
     const CHANGELOG = {
-      '1.2.3': [
+      '1.3.0': [
+        'Annotations now survive moving or renaming files outside the app',
+        'Library: .vellum files now appear in pinned folder scans',
+        'Library: right-click any file to move it to a different folder',
         'Textbox now places at the top-left of where you click',
         'Pen/highlighter size indicator stays visible during continuous drawing',
         'Export: share notes as .vellum files that open directly in Vellum',
