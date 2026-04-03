@@ -2543,6 +2543,16 @@ button:focus-visible {
   min-width: 0;
 }
 
+.library-file-vellum-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-dim);
+  color: var(--accent);
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+
 .library-file-date {
   font-size: var(--text-xs);
   color: var(--text-muted);

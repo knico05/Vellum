@@ -473,13 +473,15 @@ function _renderFolderTree(node, container, parentDirPath, indentLevel) {
     const msg = document.createElement('div');
     msg.className   = 'library-folder-empty';
     msg.style.paddingLeft = `${indentPx}px`;
-    msg.textContent = 'No PDFs in this folder';
+    msg.textContent = 'No files in this folder';
     container.appendChild(msg);
     return;
   }
 
-  // Render PDFs in this directory
+  // Render files (PDFs and .vellum archives) in this directory
   for (const file of node.files) {
+    const isVellum = file.name.toLowerCase().endsWith('.vellum');
+
     const row = document.createElement('button');
     row.className         = 'library-file library-folder-file';
     row.title             = file.path;
@@ -490,6 +492,13 @@ function _renderFolderTree(node, container, parentDirPath, indentLevel) {
     nameEl.textContent = file.name;
 
     row.appendChild(nameEl);
+
+    if (isVellum) {
+      const badge = document.createElement('span');
+      badge.className   = 'library-file-vellum-badge';
+      badge.textContent = 'vellum';
+      row.appendChild(badge);
+    }
     row.addEventListener('click', () => {
       closeLibrary();
       openFileFn?.(file.path);
@@ -663,6 +672,35 @@ async function handleMoveFile(file) {
   }
 }
 
+/**
+ * Moves a file that lives inside a pinned folder to a new directory.
+ * Refreshes the folder tree and updates any matching recent-files entry.
+ */
+async function handleMoveFileFromFolder(filePath, dirPath) {
+  const destDir = await window.api.openFolderDialog();
+  if (!destDir) return;
+
+  try {
+    const newPath = await window.api.moveFile(filePath, destDir);
+    // Keep any matching recent-files entry in sync
+    const entry = library.files.find(f => f.path === filePath);
+    if (entry) {
+      const parts = newPath.replace(/\\/g, '/').split('/');
+      entry.path  = newPath;
+      entry.name  = parts[parts.length - 1];
+      entry.dir   = parts.slice(0, -1).join('/') || '/';
+    }
+    // Refresh the folder tree so the file disappears from its old location
+    folderFilesCache.delete(dirPath);
+    const container = _findChildrenContainer(dirPath);
+    if (container) await _expandFolder(dirPath, null, container);
+    renderList();
+    await _save();
+  } catch (err) {
+    console.error('move-file error:', err);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Inline new-folder input
 // ---------------------------------------------------------------------------
@@ -747,6 +785,11 @@ function showContextMenu(e, type, data) {
       const d = contextMenuTarget?.data;
       hideContextMenu();
       if (d) await handleRenameFile(d.filePath, d.dirPath);
+    });
+    _addMenuItem('Move to folder…', async () => {
+      const d = contextMenuTarget?.data;
+      hideContextMenu();
+      if (d) await handleMoveFileFromFolder(d.filePath, d.dirPath);
     });
     _addMenuItem('Delete file…', async () => {
       const d = contextMenuTarget?.data;

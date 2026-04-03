@@ -835,7 +835,7 @@ function setupIPC(win) {
       return { files: [], subfolders: [] };
     }
     const files = entries
-      .filter(e => e.isFile() && e.name.toLowerCase().endsWith('.pdf'))
+      .filter(e => e.isFile() && /\.(pdf|vellum)$/i.test(e.name))
       .map(e => ({ name: e.name, path: path.join(dirPath, e.name) }));
     const subfolders = entries
       .filter(e => e.isDirectory() && !e.name.startsWith('.'))
