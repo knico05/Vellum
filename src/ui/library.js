@@ -156,6 +156,45 @@ async function _initBackupUI() {
     await window.api.setBackupDir(null);
     await _refreshBackupUI();
   });
+
+  // One-time migration prompt: if the backup folder contains files from the old
+  // format (pre-v1.2.3 raw PDF/JSON copies), offer to clean them up.
+  _checkLegacyBackupMigration();
+}
+
+/**
+ * Checks whether the backup folder has non-.vellum files left over from the
+ * old backup format. If so, shows a one-time notification bar with two actions:
+ * "Clean up" (deletes them) and "Keep" (dismisses forever without deleting).
+ */
+async function _checkLegacyBackupMigration() {
+  const count = await window.api.checkLegacyBackups();
+  if (count === 0) return;
+
+  const backupFooter = document.getElementById('library-backup-footer');
+  if (!backupFooter) return;
+
+  const bar = document.createElement('div');
+  bar.className = 'library-migration-bar';
+  bar.innerHTML = `
+    <span class="library-migration-msg">Your backup folder has ${count} file${count !== 1 ? 's' : ''} from an older format.</span>
+    <div class="library-migration-actions">
+      <button class="library-migration-btn library-migration-btn--clean">Clean up</button>
+      <button class="library-migration-btn library-migration-btn--keep">Keep</button>
+    </div>
+  `;
+
+  backupFooter.insertAdjacentElement('beforebegin', bar);
+
+  bar.querySelector('.library-migration-btn--clean').addEventListener('click', async () => {
+    await window.api.cleanLegacyBackups();
+    bar.remove();
+  });
+
+  bar.querySelector('.library-migration-btn--keep').addEventListener('click', async () => {
+    await window.api.dismissLegacyBackupPrompt();
+    bar.remove();
+  });
 }
 
 // ---------------------------------------------------------------------------

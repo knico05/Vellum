@@ -626,6 +626,55 @@ function setupIPC(win) {
   });
 
   /**
+   * check-legacy-backups — counts non-.vellum files in the backup folder.
+   * Used to decide whether to show the one-time migration prompt.
+   * Returns 0 if no backup folder is set, folder is missing, or all files are .vellum.
+   */
+  ipcMain.handle('check-legacy-backups', () => {
+    const { backupDir, backupMigrationDone } = _loadSettings();
+    if (backupMigrationDone || !backupDir) return 0;
+    try {
+      return fs.readdirSync(backupDir)
+        .filter(name => !name.toLowerCase().endsWith('.vellum'))
+        .length;
+    } catch { return 0; }
+  });
+
+  /**
+   * clean-legacy-backups — deletes all non-.vellum files from the backup folder,
+   * then marks the migration as done so the prompt never shows again.
+   * Skips files it cannot delete (permissions etc.) rather than throwing.
+   */
+  ipcMain.handle('clean-legacy-backups', () => {
+    const settings = _loadSettings();
+    const { backupDir } = settings;
+    if (backupDir) {
+      try {
+        const entries = fs.readdirSync(backupDir);
+        for (const name of entries) {
+          if (!name.toLowerCase().endsWith('.vellum')) {
+            try { fs.unlinkSync(path.join(backupDir, name)); } catch { /* skip locked files */ }
+          }
+        }
+      } catch { /* folder gone or unreadable — still mark done */ }
+    }
+    settings.backupMigrationDone = true;
+    _saveSettings(settings);
+    return true;
+  });
+
+  /**
+   * dismiss-legacy-backup-prompt — records that the user chose to keep old files,
+   * so the prompt never shows again.
+   */
+  ipcMain.handle('dismiss-legacy-backup-prompt', () => {
+    const settings = _loadSettings();
+    settings.backupMigrationDone = true;
+    _saveSettings(settings);
+    return true;
+  });
+
+  /**
    * set-backup-dir — sets or clears the auto-backup folder path.
    * Pass null to disable backup.
    * @param {string|null} dirPath

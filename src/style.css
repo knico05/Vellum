@@ -2134,6 +2134,59 @@ button:focus-visible {
   color: var(--text-muted);
 }
 
+/* One-time legacy backup migration notification bar */
+.library-migration-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--accent-dim);
+  border-top: 1px solid var(--accent);
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.library-migration-msg {
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.library-migration-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.library-migration-btn {
+  padding: 3px 10px;
+  font-size: var(--text-xs);
+  font-family: inherit;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.library-migration-btn--clean {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.library-migration-btn--clean:hover {
+  background: var(--accent-hover);
+}
+
+.library-migration-btn--keep {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+
+.library-migration-btn--keep:hover {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+
 .library-empty {
   padding: 24px 16px;
   color: var(--text-muted);

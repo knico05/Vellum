@@ -204,6 +204,28 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('get-backup-dir'),
 
   /**
+   * Returns the count of non-.vellum files in the backup folder.
+   * Returns 0 if no backup folder is set or migration was already done.
+   * @returns {Promise<number>}
+   */
+  checkLegacyBackups: () =>
+    ipcRenderer.invoke('check-legacy-backups'),
+
+  /**
+   * Deletes all non-.vellum files from the backup folder and marks migration done.
+   * @returns {Promise<true>}
+   */
+  cleanLegacyBackups: () =>
+    ipcRenderer.invoke('clean-legacy-backups'),
+
+  /**
+   * Records that the user chose to keep old backup files. Hides the prompt permanently.
+   * @returns {Promise<true>}
+   */
+  dismissLegacyBackupPrompt: () =>
+    ipcRenderer.invoke('dismiss-legacy-backup-prompt'),
+
+  /**
    * Sets (or clears) the auto-backup folder. Pass null to disable.
    * @param {string|null} dirPath
    * @returns {Promise<true>}
