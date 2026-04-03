@@ -56,21 +56,14 @@ function _isNewerVersion(latest, current) {
 }
 
 // Prevent Windows Xbox Game Bar from injecting its overlay into the Electron
-// window. Without this, Chromium registers as a "game" and Windows pops up an
-// "ms-gamingoverlay" dialog every time the app launches.
+// window. Without this, Chromium fires an ms-gamingoverlay:// protocol call
+// on startup which Windows intercepts and shows a dialog.
 app.commandLine.appendSwitch('disable-features', 'GameOverlayEmbeddedBrowser,HardwareMediaKeyHandling,MediaSessionService');
 
-// Chromium fires an ms-gamingoverlay:// protocol call on startup when it
-// detects a game-like environment. If nothing is registered to handle that
-// protocol, Windows shows a "Get an app to open this link" dialog pointing to
-// the Microsoft Store. Register ourselves as the silent handler so Windows
-// routes the call back to us without showing any dialog.
-app.setAsDefaultProtocolClient('ms-gamingoverlay');
-
-// Set the App User Model ID so Windows recognises this as a known app rather
-// than an unknown process, which prevents it from prompting the Microsoft Store
-// to find a handler for various Windows protocols.
-app.setAppUserModelId('com.vellum.app');
+// Set the App User Model ID to match the installer appId exactly.
+// This is what Windows uses to group the running window with the taskbar
+// shortcut — a mismatch causes two separate taskbar entries.
+app.setAppUserModelId('com.knico05.vellum');
 
 // Enforce single instance. Without this, every time Windows routes the
 // ms-gamingoverlay:// protocol to Vellum it spawns a second copy, which
