@@ -170,6 +170,14 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('save-pdf-dialog', defaultName),
 
   /**
+   * Shows a native Save As dialog filtered to .vellum files.
+   * @param {string} defaultName — Suggested filename
+   * @returns {Promise<string|null>} Chosen path, or null if cancelled
+   */
+  saveVellumDialog: (defaultName) =>
+    ipcRenderer.invoke('save-vellum-dialog', defaultName),
+
+  /**
    * Writes raw binary data to disk.
    * Used for writing exported PDF bytes — unlike writeFile() this does not
    * apply UTF-8 encoding, which would corrupt binary data.

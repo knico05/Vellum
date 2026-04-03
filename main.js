@@ -496,6 +496,20 @@ function setupIPC(win) {
   });
 
   /**
+   * save-vellum-dialog — shows a Save As dialog for .vellum files.
+   * @param {string} defaultName — Suggested filename (e.g. "lecture3.vellum")
+   * @returns {Promise<string|null>} Chosen path, or null if cancelled
+   */
+  ipcMain.handle('save-vellum-dialog', async (_event, defaultName) => {
+    const result = await dialog.showSaveDialog(win, {
+      title:       'Export as Vellum',
+      defaultPath: defaultName,
+      filters:     [{ name: 'Vellum Files', extensions: ['vellum'] }],
+    });
+    return result.canceled ? null : result.filePath;
+  });
+
+  /**
    * write-binary — writes a Uint8Array to disk as raw binary.
    * Separate from write-file (which uses utf8 encoding) because PDF bytes
    * must not be re-encoded as UTF-8 text.

@@ -193,28 +193,75 @@ function _promptExportMode() {
 }
 
 /**
+ * Handles the Export button. Shows the format picker, then routes to either
+ * the .vellum export path or the flattened PDF path based on user choice.
+ */
+async function handleExport() {
+  const pdfPath   = getCurrentPdfPath();
+  const btnExport = document.getElementById('btn-export');
+  const lblStatus = document.getElementById('lbl-save-status');
+
+  if (!pdfPath) return;
+
+  const mode = await _promptExportMode();
+  if (!mode) return; // User cancelled
+
+  const base = pdfPath.replace(/\\/g, '/').split('/').pop().replace(/\.pdf$/i, '');
+
+  if (mode === 'vellum') {
+    await _exportVellum(pdfPath, base, btnExport, lblStatus);
+  } else {
+    await _exportPdf(pdfPath, base, mode, btnExport, lblStatus);
+  }
+}
+
+/**
+ * Exports the current note as a .vellum archive — PDF + live annotations.
+ * The recipient can open it directly in Vellum with everything intact.
+ */
+async function _exportVellum(pdfPath, baseName, btnExport, lblStatus) {
+  const savePath = await window.api.saveVellumDialog(`${baseName}.vellum`);
+  if (!savePath) return;
+
+  btnExport.disabled    = true;
+  btnExport.textContent = 'Exporting…';
+  lblStatus.textContent = 'Exporting…';
+
+  try {
+    const annotationsJsonPath = await window.api.getAnnotationsPath(pdfPath);
+    // savePath already has the full destination path from the dialog —
+    // create-vellum expects a directory, so we pass the parent and rename after.
+    const destDir  = savePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+    const destName = savePath.replace(/\\/g, '/').split('/').pop();
+
+    const created = await window.api.createVellum(pdfPath, annotationsJsonPath, destDir);
+    if (!created) throw new Error('Could not create .vellum archive');
+
+    // Rename to exactly what the user typed in the Save dialog
+    if (created !== savePath) {
+      await window.api.moveFile(created, savePath);
+    }
+
+    lblStatus.textContent = 'Exported!';
+    setTimeout(() => { lblStatus.textContent = ''; }, 2500);
+  } catch (err) {
+    console.error('Vellum export failed:', err);
+    alert(`Export failed:\n${err?.message ?? String(err)}`);
+    lblStatus.textContent = '';
+  } finally {
+    btnExport.disabled    = false;
+    btnExport.textContent = 'Export';
+  }
+}
+
+/**
  * Exports the current document as a flattened PDF.
  * Renders each page + its annotations to an offscreen canvas at 2× resolution,
  * then assembles them into a single PDF the user can share with anyone.
  */
-async function handleExport() {
-  const pdfPath  = getCurrentPdfPath();
-  const btnExport  = document.getElementById('btn-export');
-  const lblStatus  = document.getElementById('lbl-save-status');
-
-  // Let the user pick export mode before opening the save dialog.
-  const mode = await _promptExportMode();
-  if (!mode) return; // User cancelled
-
-  // Derive a default filename: "lecture3.pdf" → "lecture3-annotated.pdf"
-  let defaultName = 'annotated.pdf';
-  if (pdfPath) {
-    const base = pdfPath.replace(/\\/g, '/').split('/').pop().replace(/\.pdf$/i, '');
-    defaultName = `${base}-annotated.pdf`;
-  }
-
-  const savePath = await window.api.savePdfDialog(defaultName);
-  if (!savePath) return; // User cancelled
+async function _exportPdf(pdfPath, baseName, mode, btnExport, lblStatus) {
+  const savePath = await window.api.savePdfDialog(`${baseName}-annotated.pdf`);
+  if (!savePath) return;
 
   btnExport.disabled    = true;
   btnExport.textContent = 'Exporting…';
@@ -236,7 +283,7 @@ async function handleExport() {
     lblStatus.textContent = '';
   } finally {
     btnExport.disabled    = false;
-    btnExport.textContent = 'Export PDF';
+    btnExport.textContent = 'Export';
   }
 }
 
