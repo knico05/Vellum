@@ -86,14 +86,15 @@ if (!gotLock) {
 app.on('second-instance', (_event, argv) => {
   // A second instance was launched (e.g. by Windows routing ms-gamingoverlay://
   // or by the user double-clicking a file). Bring the existing window to front.
-  if (win) {
-    if (win.isMinimized()) win.restore();
-    win.focus();
+  const existing = BrowserWindow.getAllWindows()[0];
+  if (existing) {
+    if (existing.isMinimized()) existing.restore();
+    existing.focus();
   }
   // If a real file path was passed, open it in the existing window.
   const filePath = _getArgvFilePath(argv);
   if (filePath && !filePath.startsWith('ms-gamingoverlay')) {
-    win?.webContents.send('open-file-argv', filePath);
+    existing?.webContents.send('open-file-argv', filePath);
   }
 });
 
@@ -1009,8 +1010,8 @@ function setupIPC(win) {
  * In dev (electron .) argv[1] is the script path, file arg starts at [2].
  * In the packaged app argv[0] is the exe, file arg starts at [1].
  */
-function _getArgvFilePath() {
-  const args = process.argv.slice(app.isPackaged ? 1 : 2);
+function _getArgvFilePath(argv) {
+  const args = (argv ?? process.argv).slice(app.isPackaged ? 1 : 2);
   const file = args.find(a => /\.(pdf|vellum)$/i.test(a) && !a.startsWith('--'));
   return file ?? null;
 }
