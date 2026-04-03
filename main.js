@@ -60,12 +60,6 @@ function _isNewerVersion(latest, current) {
 // on startup which Windows intercepts and shows a dialog.
 app.commandLine.appendSwitch('disable-features', 'GameOverlayEmbeddedBrowser,GameBarBroadcastCapture,HardwareMediaKeyHandling,MediaSessionService,GameBar');
 
-// Register as the silent handler for ms-gamingoverlay:// so Windows routes
-// the protocol back to us instead of showing a "Get an app" Store dialog.
-// The single-instance lock ensures the second process quits immediately —
-// no second window ever appears and no dialog is shown.
-app.setAsDefaultProtocolClient('ms-gamingoverlay');
-
 // Set the App User Model ID to match the installer appId exactly.
 // This is what Windows uses to group the running window with the taskbar
 // shortcut — a mismatch causes two separate taskbar entries.
@@ -133,6 +127,13 @@ function createWindow() {
       // what system calls it can make. Belt-and-suspenders with contextIsolation.
       sandbox: true,
     },
+  });
+
+  // Block ms-gamingoverlay:// before Chromium hands it to the Windows shell.
+  // This fires synchronously in the renderer process — calling preventDefault()
+  // cancels the navigation entirely so Windows never sees the protocol request.
+  win.webContents.on('will-navigate', (event, url) => {
+    if (url.startsWith('ms-gamingoverlay:')) event.preventDefault();
   });
 
   // Load the app shell. In production this is a local file; in dev the same.
