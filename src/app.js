@@ -116,7 +116,35 @@ document.getElementById('btn-redo').addEventListener('click', redo);
 async function handleOpen() {
   const filePath = await window.api.openFile();
   if (!filePath) return; // User cancelled
-  await loadFile(filePath);
+
+  if (filePath.toLowerCase().endsWith('.vellum')) {
+    await loadVellum(filePath);
+  } else {
+    await loadFile(filePath);
+  }
+}
+
+/**
+ * Opens a .vellum archive: asks the user where to extract the PDF, writes
+ * the embedded annotations to the app's store, then loads normally.
+ * @param {string} vellumPath — Absolute path of the .vellum file
+ */
+async function loadVellum(vellumPath) {
+  try {
+    const result = await window.api.openVellum(vellumPath);
+    if (!result) return; // User cancelled the folder picker
+
+    // Pre-write the extracted annotations so tryLoadAnnotations finds them
+    if (result.annotationsJson) {
+      const jsonPath = await window.api.getAnnotationsPath(result.pdfPath);
+      await window.api.writeFile(jsonPath, result.annotationsJson);
+    }
+
+    await loadFile(result.pdfPath);
+  } catch (err) {
+    console.error('Failed to open .vellum:', err);
+    alert(`Could not open .vellum file:\n${err?.message ?? String(err)}`);
+  }
 }
 
 /**

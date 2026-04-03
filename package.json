@@ -1,6 +1,6 @@
 {
   "name": "vellum",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "A personal desktop app for annotating PDFs and taking notes",
   "main": "main.js",
   "scripts": {
@@ -32,6 +32,7 @@
     }
   },
   "dependencies": {
+    "adm-zip": "^0.5.17",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38"
   }

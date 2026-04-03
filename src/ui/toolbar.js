@@ -523,6 +523,12 @@ function init() {
         updateToolCursor();
       }
     });
+
+    // input.js resets container.style.cursor to '' on pointerup and space-keyup.
+    // Re-apply the tool cursor after those events so the size indicator stays
+    // visible during continuous drawing without requiring a zoom event.
+    canvasContainer.addEventListener('pointerup', updateToolCursor);
+    document.addEventListener('keyup', (e) => { if (e.key === ' ') updateToolCursor(); });
   }
 
   // Check for updates in the background — delayed so it doesn't compete with

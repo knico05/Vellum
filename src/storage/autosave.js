@@ -89,12 +89,13 @@ async function save() {
     await window.api.writeFile(savePath, json);
     showSaved();
 
-    // Auto-backup: copy annotation JSON + PDF to the configured backup folder.
+    // Auto-backup: create a timestamped .vellum archive in the backup folder.
+    // Each backup is a single self-contained file (PDF + annotations combined),
+    // named "{basename}_{ISO-timestamp}.vellum" so the folder stays ordered.
     // Runs silently — a backup failure never blocks or reports to the user.
     const backupDir = await window.api.getBackupDir();
     if (backupDir) {
-      window.api.copyFile(savePath, backupDir).catch(() => {});
-      window.api.copyFile(pdfPath,  backupDir).catch(() => {});
+      window.api.createVellum(pdfPath, savePath, backupDir).catch(() => {});
     }
   } catch (err) {
     console.error('Auto-save failed:', err);

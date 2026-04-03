@@ -45,10 +45,22 @@ let listEl    = null;
 const expandedFolders = new Set();
 
 /**
- * Live-scan cache: folder path → array of absolute PDF paths.
+ * Subfolder paths that are currently expanded within their parent folder tree.
+ * Keyed by the subfolder's absolute path.
+ */
+const expandedSubfolders = new Set();
+
+/**
+ * Live-scan cache: folder path → tree node { files: [{name,path}], subfolders: [{name,path,...}] }
  * Populated when a folder is expanded; cleared when it is collapsed or removed.
  */
 const folderFilesCache = new Map();
+
+/**
+ * Active filter for the Recent section.
+ * 'today' | 'week' | 'all'
+ */
+let recentFilter = 'all';
 
 /** Set of file paths that no longer exist on disk (for greying out recent entries) */
 const missingPaths = new Set();
@@ -247,9 +259,15 @@ async function removePinnedFolder(dirPath) {
  */
 async function toggleFolderExpand(dirPath, rowEl) {
   if (expandedFolders.has(dirPath)) {
-    // Collapse
+    // Collapse — clear this folder and all descendant subfolder states
     expandedFolders.delete(dirPath);
     folderFilesCache.delete(dirPath);
+    // Clear any expanded subfolders that were inside this folder
+    for (const key of expandedSubfolders) {
+      if (key.startsWith(dirPath + '/') || key.startsWith(dirPath + '\\')) {
+        expandedSubfolders.delete(key);
+      }
+    }
     _updateFolderRowArrow(rowEl, false);
     rowEl.nextElementSibling?.remove(); // remove children container
     return;
@@ -382,51 +400,114 @@ function _findFolderRow(dirPath) {
  * children container that follows rowEl.
  */
 async function _expandFolder(dirPath, rowEl, existingContainer) {
-  let paths = [];
+  let treeNode = { files: [], subfolders: [] };
   try {
-    paths = await window.api.scanFolder(dirPath);
+    treeNode = await window.api.scanFolderTree(dirPath);
   } catch (err) {
-    console.error('scan-folder error:', err);
+    console.error('scan-folder-tree error:', err);
   }
 
-  folderFilesCache.set(dirPath, paths);
+  folderFilesCache.set(dirPath, treeNode);
 
   const container = existingContainer
     ?? (rowEl ? rowEl.nextElementSibling : null);
   if (!container) return;
 
-  // Rebuild children DOM
-  container.innerHTML = '';
+  _renderFolderTree(treeNode, container, dirPath, 1);
+}
 
-  if (paths.length === 0) {
+/**
+ * Renders a folder tree node's contents into a container element.
+ * Recursively renders subfolders when they are expanded.
+ *
+ * @param {{ files: Array<{name,path}>, subfolders: Array<{name,path,...}> }} node
+ * @param {HTMLElement} container — element to render into (innerHTML is cleared first)
+ * @param {string} parentDirPath  — path of the parent folder (for context menu)
+ * @param {number} indentLevel    — nesting depth (1 = direct children of pinned folder)
+ */
+function _renderFolderTree(node, container, parentDirPath, indentLevel) {
+  container.innerHTML = '';
+  const indentPx = 20 + (indentLevel - 1) * 16;
+
+  const isEmpty = node.files.length === 0 && node.subfolders.length === 0;
+  if (isEmpty) {
     const msg = document.createElement('div');
     msg.className   = 'library-folder-empty';
+    msg.style.paddingLeft = `${indentPx}px`;
     msg.textContent = 'No PDFs in this folder';
     container.appendChild(msg);
     return;
   }
 
-  for (const filePath of paths) {
-    const name = filePath.replace(/\\/g, '/').split('/').pop();
-    const row  = document.createElement('button');
-    row.className = 'library-file library-folder-file';
-    row.title     = filePath;
+  // Render PDFs in this directory
+  for (const file of node.files) {
+    const row = document.createElement('button');
+    row.className         = 'library-file library-folder-file';
+    row.title             = file.path;
+    row.style.paddingLeft = `${indentPx}px`;
 
     const nameEl = document.createElement('span');
     nameEl.className   = 'library-file-name';
-    nameEl.textContent = name;
+    nameEl.textContent = file.name;
 
     row.appendChild(nameEl);
     row.addEventListener('click', () => {
       closeLibrary();
-      openFileFn?.(filePath);
+      openFileFn?.(file.path);
     });
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      showContextMenu(e, 'folder-file', { filePath, dirPath });
+      showContextMenu(e, 'folder-file', { filePath: file.path, dirPath: parentDirPath });
     });
 
     container.appendChild(row);
+  }
+
+  // Render subfolders
+  for (const sub of node.subfolders) {
+    const isExpanded = expandedSubfolders.has(sub.path);
+    const subIndentPx = indentPx;
+
+    const subRow = document.createElement('button');
+    subRow.className         = 'library-subfolder-row' + (isExpanded ? ' expanded' : '');
+    subRow.title             = sub.path;
+    subRow.style.paddingLeft = `${subIndentPx}px`;
+
+    const arrow = document.createElement('span');
+    arrow.className   = 'library-folder-arrow';
+    arrow.textContent = isExpanded ? '▾' : '▸';
+
+    const icon = document.createElement('span');
+    icon.className   = 'library-folder-icon';
+    icon.textContent = '⌂';
+
+    const nameEl = document.createElement('span');
+    nameEl.className   = 'library-folder-name';
+    nameEl.textContent = sub.name;
+
+    subRow.appendChild(arrow);
+    subRow.appendChild(icon);
+    subRow.appendChild(nameEl);
+    container.appendChild(subRow);
+
+    // Subfolder children container (only present when expanded)
+    if (isExpanded) {
+      const subContainer = document.createElement('div');
+      subContainer.className = 'library-folder-children';
+      container.appendChild(subContainer);
+      _renderFolderTree(sub, subContainer, sub.path, indentLevel + 1);
+    }
+
+    subRow.addEventListener('click', () => {
+      if (expandedSubfolders.has(sub.path)) {
+        expandedSubfolders.delete(sub.path);
+      } else {
+        expandedSubfolders.add(sub.path);
+      }
+      // Re-render the parent folder's children container
+      const parentContainer = subRow.closest('.library-folder-children');
+      if (parentContainer) _renderFolderTree(node, parentContainer, parentDirPath, indentLevel);
+    });
   }
 }
 
@@ -861,28 +942,8 @@ function _renderFolderSection() {
       const container = _makeFolderChildren(folder.path, cached);
 
       if (cached !== null) {
-        // Rebuild children from cache synchronously
-        for (const filePath of cached) {
-          const name   = filePath.replace(/\\/g, '/').split('/').pop();
-          const fileRow = document.createElement('button');
-          fileRow.className = 'library-file library-folder-file';
-          fileRow.title     = filePath;
-
-          const nameSpan = document.createElement('span');
-          nameSpan.className   = 'library-file-name';
-          nameSpan.textContent = name;
-
-          fileRow.appendChild(nameSpan);
-          fileRow.addEventListener('click', () => {
-            closeLibrary();
-            openFileFn?.(filePath);
-          });
-          fileRow.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            showContextMenu(e, 'folder-file', { filePath, dirPath: folder.path });
-          });
-          container.appendChild(fileRow);
-        }
+        // Rebuild tree from cache synchronously
+        _renderFolderTree(cached, container, folder.path, 1);
       }
 
       listEl.appendChild(container);
@@ -894,11 +955,48 @@ function _renderRecentSection() {
   const header = _makeSectionHeader('Recent');
   listEl.appendChild(header);
 
+  // Filter pills — Today / Last 7 days / All
+  const pillRow = document.createElement('div');
+  pillRow.className = 'library-filter-row';
+  for (const { label, value } of [
+    { label: 'Today', value: 'today' },
+    { label: '7 days', value: 'week' },
+    { label: 'All', value: 'all' },
+  ]) {
+    const pill = document.createElement('button');
+    pill.className   = 'library-filter-pill' + (recentFilter === value ? ' active' : '');
+    pill.textContent = label;
+    pill.addEventListener('click', () => {
+      recentFilter = value;
+      renderList();
+    });
+    pillRow.appendChild(pill);
+  }
+  listEl.appendChild(pillRow);
+
+  // Apply filter to files
+  const now = Date.now();
+  const cutoff = recentFilter === 'today' ? 86400000 : recentFilter === 'week' ? 604800000 : Infinity;
+  const visibleFiles = library.files.filter(f => {
+    if (cutoff === Infinity) return true;
+    try { return (now - new Date(f.lastOpened).getTime()) <= cutoff; } catch { return false; }
+  });
+
   // Group by directory
   const groups = new Map();
-  for (const file of library.files) {
+  for (const file of visibleFiles) {
     if (!groups.has(file.dir)) groups.set(file.dir, []);
     groups.get(file.dir).push(file);
+  }
+
+  if (visibleFiles.length === 0) {
+    const empty = document.createElement('p');
+    empty.className   = 'library-empty';
+    empty.textContent = recentFilter === 'today' ? 'No files opened today.'
+      : recentFilter === 'week' ? 'No files opened in the last 7 days.'
+      : 'No recent files.';
+    listEl.appendChild(empty);
+    return;
   }
 
   for (const [dir, files] of groups) {

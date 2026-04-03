@@ -175,8 +175,8 @@ function placeBox(e) {
   add({
     type:      'textBox',
     pageId:    resolvePageId(x, y),
-    canvasX:   x - BOX_WIDTH  / 2,
-    canvasY:   y - BOX_HEIGHT / 2,
+    canvasX:   x,
+    canvasY:   y,
     width:     BOX_WIDTH,
     height:    BOX_HEIGHT,
     text:      '',

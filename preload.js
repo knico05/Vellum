@@ -240,4 +240,35 @@ contextBridge.exposeInMainWorld('api', {
   renameFile: (oldPath, newName) =>
     ipcRenderer.invoke('rename-file', oldPath, newName),
 
+  /**
+   * Packages a PDF and its annotation JSON into a timestamped .vellum archive
+   * and writes it to the given directory.
+   * Used by auto-backup so each backup is a self-contained, named file.
+   * @param {string} pdfPath             — Absolute path of the source PDF
+   * @param {string} annotationsJsonPath — Absolute path of the annotation JSON
+   * @param {string} destDir             — Directory to write the archive into
+   * @returns {Promise<string|null>} Path of the created .vellum, or null if PDF missing
+   */
+  createVellum: (pdfPath, annotationsJsonPath, destDir) =>
+    ipcRenderer.invoke('create-vellum', pdfPath, annotationsJsonPath, destDir),
+
+  /**
+   * Extracts a .vellum archive: shows a folder picker, extracts document.pdf
+   * to the chosen folder, and returns the PDF path + raw annotations JSON.
+   * @param {string} vellumPath — Absolute path of the .vellum file
+   * @returns {Promise<{pdfPath:string, annotationsJson:string|null}|null>}
+   *          null if the user cancelled the folder dialog
+   */
+  openVellum: (vellumPath) =>
+    ipcRenderer.invoke('open-vellum', vellumPath),
+
+  /**
+   * Recursively scans a directory and returns a nested tree of PDFs and
+   * subdirectories (max 3 levels deep). Hidden directories are skipped.
+   * @param {string} dirPath — Absolute path of the directory to scan
+   * @returns {Promise<{files:Array<{name,path}>, subfolders:Array<{name,path,files,subfolders}>}>}
+   */
+  scanFolderTree: (dirPath) =>
+    ipcRenderer.invoke('scan-folder-tree', dirPath),
+
 });

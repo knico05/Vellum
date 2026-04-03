@@ -19,11 +19,12 @@
 
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const https = require('https');
+const AdmZip = require('adm-zip');
 
 // ---------------------------------------------------------------------------
 // Update check config — fill in YOUR GitHub username/repo before publishing
@@ -58,6 +59,13 @@ function _isNewerVersion(latest, current) {
 // window. Without this, Chromium registers as a "game" and Windows pops up an
 // "ms-gamingoverlay" dialog every time the app launches.
 app.commandLine.appendSwitch('disable-features', 'GameOverlayEmbeddedBrowser,HardwareMediaKeyHandling,MediaSessionService');
+
+// Chromium fires an ms-gamingoverlay:// protocol call on startup when it
+// detects a game-like environment. If nothing is registered to handle that
+// protocol, Windows shows a "Get an app to open this link" dialog pointing to
+// the Microsoft Store. Register ourselves as the silent handler so Windows
+// routes the call back to us without showing any dialog.
+app.setAsDefaultProtocolClient('ms-gamingoverlay');
 
 // Set the App User Model ID so Windows recognises this as a known app rather
 // than an unknown process, which prevents it from prompting the Microsoft Store
@@ -172,13 +180,14 @@ function _buildBlankPdf() {
 function setupIPC(win) {
 
   /**
-   * openFile — shows the native OS file picker, returns the chosen path.
-   * Filtered to PDFs only. Returns null if the user cancels.
+   * openFile — shows the native OS file picker.
+   * Accepts both PDF files and .vellum archives.
+   * Returns the chosen file path, or null if cancelled.
    */
   ipcMain.handle('open-file', async () => {
     const result = await dialog.showOpenDialog(win, {
-      title: 'Open PDF',
-      filters: [{ name: 'PDF Files', extensions: ['pdf'] }],
+      title: 'Open file',
+      filters: [{ name: 'Vellum & PDF Files', extensions: ['pdf', 'vellum'] }],
       properties: ['openFile'],
     });
 
@@ -629,6 +638,134 @@ function setupIPC(win) {
     fs.copyFileSync(srcPath, dest);
     return true;
   });
+
+  /**
+   * create-vellum — packages a PDF and its annotation JSON into a single
+   * .vellum archive (ZIP) and writes it to the destination directory.
+   *
+   * Filename format: {pdf-basename}_{ISO-timestamp}.vellum
+   * Archive contents:
+   *   document.pdf      — the original PDF
+   *   annotations.json  — annotation data (omitted if file doesn't exist)
+   *   meta.json         — { title, originalPath, createdAt, appVersion }
+   *
+   * Used by auto-backup so each backup is a self-contained, timestamped file.
+   *
+   * @param {string} pdfPath            — absolute path of the source PDF
+   * @param {string} annotationsJsonPath — absolute path of the annotation JSON
+   * @param {string} destDir            — directory to write the .vellum into
+   * @returns {string|null} path of the created .vellum, or null if PDF missing
+   */
+  ipcMain.handle('create-vellum', async (_event, pdfPath, annotationsJsonPath, destDir) => {
+    if (!fs.existsSync(pdfPath)) return null;
+
+    const zip       = new AdmZip();
+    const baseName  = path.basename(pdfPath, '.pdf');
+    const timestamp = new Date().toISOString().replace(/:/g, '-').slice(0, 19);
+    const vellumName = `${baseName}_${timestamp}.vellum`;
+
+    zip.addLocalFile(pdfPath, '', 'document.pdf');
+
+    if (fs.existsSync(annotationsJsonPath)) {
+      zip.addLocalFile(annotationsJsonPath, '', 'annotations.json');
+    }
+
+    const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+    const meta = JSON.stringify({
+      title:        baseName,
+      originalPath: pdfPath,
+      createdAt:    new Date().toISOString(),
+      appVersion:   packageJson.version,
+    });
+    zip.addFile('meta.json', Buffer.from(meta, 'utf8'));
+
+    fs.mkdirSync(destDir, { recursive: true });
+    const destPath = path.join(destDir, vellumName);
+    zip.writeZip(destPath);
+    return destPath;
+  });
+
+  /**
+   * open-vellum — extracts a .vellum archive chosen by the user.
+   *
+   * Shows a folder picker so the user can choose where to place the PDF.
+   * Extracts document.pdf there, reads annotations.json from the archive,
+   * and returns both so the renderer can load the note normally.
+   *
+   * @param {string} vellumPath — absolute path of the .vellum file
+   * @returns {{ pdfPath: string, annotationsJson: string|null }|null}
+   *          null if the user cancelled the folder dialog or the archive is invalid
+   */
+  ipcMain.handle('open-vellum', async (_event, vellumPath) => {
+    // Ask user where to place the extracted PDF
+    const folderResult = await dialog.showOpenDialog(win, {
+      title: 'Choose folder to extract PDF into',
+      properties: ['openDirectory'],
+    });
+    if (folderResult.canceled || folderResult.filePaths.length === 0) return null;
+
+    const extractDir = folderResult.filePaths[0];
+    const zip = new AdmZip(vellumPath);
+
+    const pdfEntry = zip.getEntry('document.pdf');
+    if (!pdfEntry) throw new Error('Invalid .vellum file: document.pdf not found inside archive');
+
+    // Derive PDF filename: strip the timestamp suffix from the archive name
+    let pdfName = path.basename(vellumPath, '.vellum').replace(/_\d{4}-\d{2}-\d{2}T[\d-]+$/, '') + '.pdf';
+    try {
+      const metaEntry = zip.getEntry('meta.json');
+      if (metaEntry) {
+        const meta = JSON.parse(metaEntry.getData().toString('utf8'));
+        if (meta.title) pdfName = `${meta.title}.pdf`;
+      }
+    } catch { /* ignore corrupt meta */ }
+
+    const pdfPath = path.join(extractDir, pdfName);
+    fs.writeFileSync(pdfPath, pdfEntry.getData());
+
+    const annoEntry = zip.getEntry('annotations.json');
+    const annotationsJson = annoEntry ? annoEntry.getData().toString('utf8') : null;
+
+    return { pdfPath, annotationsJson };
+  });
+
+  /**
+   * Recursively scans a directory for PDFs and subdirectories (up to 3 levels
+   * deep). Hidden directories (name starting with '.') are skipped.
+   *
+   * @param {string} dirPath — absolute directory path to scan
+   * @param {number} depth   — current recursion depth (start at 0)
+   * @returns {{ files: Array<{name,path}>, subfolders: Array<{name,path,...}> }}
+   */
+  function _scanFolderTree(dirPath, depth) {
+    if (depth > 3) return { files: [], subfolders: [] };
+    let entries;
+    try {
+      entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    } catch {
+      return { files: [], subfolders: [] };
+    }
+    const files = entries
+      .filter(e => e.isFile() && e.name.toLowerCase().endsWith('.pdf'))
+      .map(e => ({ name: e.name, path: path.join(dirPath, e.name) }));
+    const subfolders = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+      .map(e => {
+        const subPath = path.join(dirPath, e.name);
+        return { name: e.name, path: subPath, ..._scanFolderTree(subPath, depth + 1) };
+      });
+    return { files, subfolders };
+  }
+
+  /**
+   * scan-folder-tree — recursive variant of scan-folder.
+   * Returns a nested tree of PDFs and subdirectories.
+   * @param {string} dirPath — absolute path to scan
+   * @returns {{ files: Array<{name,path}>, subfolders: Array<{name,path,files,subfolders}> }}
+   */
+  ipcMain.handle('scan-folder-tree', (_event, dirPath) => {
+    return _scanFolderTree(dirPath, 0);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -640,6 +777,10 @@ app.whenReady().then(() => {
   // Must be called after app is ready; Menu is available from the start but
   // setApplicationMenu has no effect until the app is initialised.
   Menu.setApplicationMenu(null);
+
+  // Intercept ms-gamingoverlay:// at the renderer level as well, in case
+  // Chromium triggers it as an in-renderer navigation rather than a shell open.
+  protocol.handle('ms-gamingoverlay', () => new Response(''));
 
   createWindow();
 
