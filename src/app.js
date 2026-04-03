@@ -56,6 +56,14 @@ document.getElementById('btn-close').addEventListener('click', () => {
   window.api.windowControl('close');
 });
 
+// Back up the current note when the window is about to close (title bar X,
+// Alt+F4, or the close button above). backupCurrentNote uses ipcRenderer.send
+// (fire-and-forget) which completes synchronously in the main process before
+// the window is destroyed.
+window.addEventListener('beforeunload', () => {
+  backupCurrentNote();
+});
+
 // ---------------------------------------------------------------------------
 // Module initialisation (order matters)
 // ---------------------------------------------------------------------------
@@ -241,10 +249,28 @@ async function openFromLibrary(filePath) {
 }
 
 /**
+ * Creates a .vellum backup of the currently open note (if one is open and a
+ * backup folder is configured). Called before switching documents and on quit.
+ * Fire-and-forget via sendSync — the main process writes synchronously so the
+ * backup is complete before we continue.
+ */
+async function backupCurrentNote() {
+  const pdfPath = getCurrentPdfPath();
+  if (!pdfPath) return;
+  try {
+    const annotationsJsonPath = await window.api.getAnnotationsPath(pdfPath);
+    window.api.backupOnQuit(pdfPath, annotationsJsonPath);
+  } catch { /* never block on backup failure */ }
+}
+
+/**
  * Core file load routine — used by both handleOpen and openFromLibrary.
  * @param {string} filePath — Absolute path to the PDF
  */
 async function loadFile(filePath) {
+  // Back up the current note before switching away from it
+  await backupCurrentNote();
+
   btnOpen.disabled    = true;
   btnOpen.textContent = 'Loading…';
 

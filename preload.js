@@ -243,7 +243,7 @@ contextBridge.exposeInMainWorld('api', {
   /**
    * Packages a PDF and its annotation JSON into a timestamped .vellum archive
    * and writes it to the given directory.
-   * Used by auto-backup so each backup is a self-contained, named file.
+   * Used by the manual export / restore flow.
    * @param {string} pdfPath             — Absolute path of the source PDF
    * @param {string} annotationsJsonPath — Absolute path of the annotation JSON
    * @param {string} destDir             — Directory to write the archive into
@@ -251,6 +251,17 @@ contextBridge.exposeInMainWorld('api', {
    */
   createVellum: (pdfPath, annotationsJsonPath, destDir) =>
     ipcRenderer.invoke('create-vellum', pdfPath, annotationsJsonPath, destDir),
+
+  /**
+   * Synchronously signals the main process to create a .vellum backup of the
+   * current note. Uses sendSync so the write completes before the renderer
+   * continues (important when called just before closing or switching documents).
+   * Fails silently if no backup folder is configured.
+   * @param {string} pdfPath             — Absolute path of the open PDF
+   * @param {string} annotationsJsonPath — Absolute path of the annotation JSON
+   */
+  backupOnQuit: (pdfPath, annotationsJsonPath) =>
+    ipcRenderer.send('backup-on-quit', pdfPath, annotationsJsonPath),
 
   /**
    * Extracts a .vellum archive: shows a folder picker, extracts document.pdf

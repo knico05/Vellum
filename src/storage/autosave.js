@@ -89,14 +89,8 @@ async function save() {
     await window.api.writeFile(savePath, json);
     showSaved();
 
-    // Auto-backup: create a timestamped .vellum archive in the backup folder.
-    // Each backup is a single self-contained file (PDF + annotations combined),
-    // named "{basename}_{ISO-timestamp}.vellum" so the folder stays ordered.
-    // Runs silently — a backup failure never blocks or reports to the user.
-    const backupDir = await window.api.getBackupDir();
-    if (backupDir) {
-      window.api.createVellum(pdfPath, savePath, backupDir).catch(() => {});
-    }
+    // Backup (.vellum) is created on document switch and app quit — not on every
+    // save. See app.js backupCurrentNote() for the trigger points.
   } catch (err) {
     console.error('Auto-save failed:', err);
   }

@@ -766,6 +766,49 @@ function setupIPC(win) {
   ipcMain.handle('scan-folder-tree', (_event, dirPath) => {
     return _scanFolderTree(dirPath, 0);
   });
+
+  /**
+   * backup-on-quit — synchronous IPC called by the renderer just before the
+   * window closes (document switch or app quit). Creates a .vellum archive
+   * of the current PDF + its annotations in the configured backup folder.
+   *
+   * Uses sendSync / ipcMain.on (not handle/invoke) so the renderer can block
+   * until the backup write completes before the process exits.
+   *
+   * @param {string} pdfPath             — absolute path of the open PDF
+   * @param {string} annotationsJsonPath — absolute path of the annotation JSON
+   */
+  ipcMain.on('backup-on-quit', (_event, pdfPath, annotationsJsonPath) => {
+    try {
+      const backupDir = _loadSettings().backupDir;
+      if (!backupDir || !pdfPath || !fs.existsSync(pdfPath)) return;
+
+      const zip       = new AdmZip();
+      const baseName  = path.basename(pdfPath, '.pdf');
+      const timestamp = new Date().toISOString().replace(/:/g, '-').slice(0, 19);
+      const vellumName = `${baseName}_${timestamp}.vellum`;
+
+      zip.addLocalFile(pdfPath, '', 'document.pdf');
+      if (fs.existsSync(annotationsJsonPath)) {
+        zip.addLocalFile(annotationsJsonPath, '', 'annotations.json');
+      }
+
+      const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+      const meta = JSON.stringify({
+        title:        baseName,
+        originalPath: pdfPath,
+        createdAt:    new Date().toISOString(),
+        appVersion:   packageJson.version,
+      });
+      zip.addFile('meta.json', Buffer.from(meta, 'utf8'));
+
+      fs.mkdirSync(backupDir, { recursive: true });
+      zip.writeZip(path.join(backupDir, vellumName));
+    } catch (err) {
+      // Backup failure must never block or crash the app
+      console.error('backup-on-quit failed:', err);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
