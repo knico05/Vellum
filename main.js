@@ -72,6 +72,31 @@ app.setAsDefaultProtocolClient('ms-gamingoverlay');
 // to find a handler for various Windows protocols.
 app.setAppUserModelId('com.vellum.app');
 
+// Enforce single instance. Without this, every time Windows routes the
+// ms-gamingoverlay:// protocol to Vellum it spawns a second copy, which
+// re-registers the protocol handler and triggers the picker dialog in a loop.
+// With the lock, the second instance quits immediately and the first instance
+// receives a 'second-instance' event instead.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  // We are the second instance — quit silently.
+  app.quit();
+}
+
+app.on('second-instance', (_event, argv) => {
+  // A second instance was launched (e.g. by Windows routing ms-gamingoverlay://
+  // or by the user double-clicking a file). Bring the existing window to front.
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  }
+  // If a real file path was passed, open it in the existing window.
+  const filePath = _getArgvFilePath(argv);
+  if (filePath && !filePath.startsWith('ms-gamingoverlay')) {
+    win?.webContents.send('open-file-argv', filePath);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Window creation
 // ---------------------------------------------------------------------------
