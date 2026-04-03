@@ -312,4 +312,36 @@ contextBridge.exposeInMainWorld('api', {
   scanFolderTree: (dirPath) =>
     ipcRenderer.invoke('scan-folder-tree', dirPath),
 
+  /**
+   * Registers a one-time callback invoked when the app was launched by opening
+   * a file (e.g. double-clicking a .vellum in Explorer). The callback receives
+   * the absolute file path as its argument.
+   * @param {function(string): void} callback
+   */
+  onOpenFileArgv: (callback) =>
+    ipcRenderer.once('open-file-argv', (_event, filePath) => callback(filePath)),
+
+  /**
+   * Returns the version string from package.json as reported by the main process.
+   * Used by the What's New banner to detect first launch after an update.
+   * @returns {Promise<string>}
+   */
+  getAppVersion: () =>
+    ipcRenderer.invoke('get-app-version'),
+
+  /**
+   * Returns the version at which the user last saw the What's New banner,
+   * or null if they have never seen it.
+   * @returns {Promise<string|null>}
+   */
+  getLastSeenVersion: () =>
+    ipcRenderer.invoke('get-last-seen-version'),
+
+  /**
+   * Records the current version as the last seen version, dismissing the banner.
+   * @returns {Promise<true>}
+   */
+  dismissWhatsNew: () =>
+    ipcRenderer.invoke('dismiss-whats-new'),
+
 });

@@ -29,7 +29,16 @@
     "linux": {
       "target": "AppImage",
       "icon": "assets/icon.png"
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": "vellum",
+        "name": "Vellum Note",
+        "description": "Vellum annotated note",
+        "icon": "assets/icon.ico",
+        "role": "Editor"
+      }
+    ]
   },
   "dependencies": {
     "adm-zip": "^0.5.17",

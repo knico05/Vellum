@@ -105,6 +105,19 @@ initSearch({          // Search bar (Ctrl+F)
   onNavigate: (match) => goToPage(match.pageId),
 });
 
+// If the app was launched by double-clicking a .vellum or .pdf file in
+// Explorer, the main process sends the path once the renderer is ready.
+window.api.onOpenFileArgv((filePath) => {
+  if (filePath.toLowerCase().endsWith('.vellum')) {
+    loadVellum(filePath);
+  } else {
+    loadFile(filePath);
+  }
+});
+
+// Show What's New banner on first launch after an update.
+_checkWhatsNew();
+
 // ---------------------------------------------------------------------------
 // Toolbar — Open button and action buttons
 // ---------------------------------------------------------------------------
@@ -413,6 +426,64 @@ async function tryLoadAnnotations(pdfPath) {
   } catch (err) {
     console.error('Failed to load annotations:', err);
   }
+}
+
+// ---------------------------------------------------------------------------
+// What's New banner
+// ---------------------------------------------------------------------------
+
+/**
+ * Shows a one-time banner above the toolbar when the app has been updated.
+ * Compares the current version against the last version the user acknowledged.
+ * The banner is dismissed permanently when the user clicks "Got it".
+ */
+async function _checkWhatsNew() {
+  try {
+    const [current, lastSeen] = await Promise.all([
+      window.api.getAppVersion(),
+      window.api.getLastSeenVersion(),
+    ]);
+    if (lastSeen === current) return; // already seen this version
+
+    const CHANGELOG = {
+      '1.2.3': [
+        'Textbox now places at the top-left of where you click',
+        'Pen/highlighter size indicator stays visible during continuous drawing',
+        'Export: share notes as .vellum files that open directly in Vellum',
+        'Backups now create a single .vellum per note, replacing the old format',
+        'Library: folders now show subfolders up to 3 levels deep',
+        'Library: Today / 7 days / All filter in the Recent section',
+      ],
+    };
+
+    const lines = CHANGELOG[current];
+    if (!lines) {
+      // Unknown version — just dismiss silently so the banner doesn't linger
+      await window.api.dismissWhatsNew();
+      return;
+    }
+
+    const bannerSlot = document.getElementById('banner-slot');
+    if (!bannerSlot) return;
+
+    const banner = document.createElement('div');
+    banner.id        = 'whats-new-banner';
+    banner.className = 'whats-new-banner';
+    banner.innerHTML = `
+      <div class="whats-new-content">
+        <span class="whats-new-title">What's new in v${current}</span>
+        <ul class="whats-new-list">${lines.map(l => `<li>${l}</li>`).join('')}</ul>
+      </div>
+      <button class="whats-new-dismiss" id="btn-whats-new-dismiss">Got it</button>
+    `;
+
+    bannerSlot.appendChild(banner);
+
+    document.getElementById('btn-whats-new-dismiss').addEventListener('click', async () => {
+      banner.remove();
+      await window.api.dismissWhatsNew();
+    });
+  } catch { /* never block on banner failure */ }
 }
 
 // ---------------------------------------------------------------------------

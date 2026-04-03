@@ -148,7 +148,8 @@ button:focus-visible {
 
 #app {
   display: grid;
-  grid-template-rows: var(--titlebar-height) var(--toolbar-height) 1fr;
+  /* Row 3 (banner-slot) is auto so it collapses to nothing when empty */
+  grid-template-rows: var(--titlebar-height) var(--toolbar-height) auto 1fr;
   grid-template-columns: 1fr;
   height: 100vh;
   background: var(--bg-app);
@@ -210,6 +211,63 @@ button:focus-visible {
    Toolbar
 --------------------------------------------------------------------------- */
 
+/* What's New banner — injected into #banner-slot (grid-row 3); no grid-row needed here */
+.whats-new-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--accent-dim);
+  border-bottom: 1px solid var(--accent);
+  z-index: 11;
+}
+
+.whats-new-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.whats-new-title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.whats-new-list {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.whats-new-list li {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.whats-new-dismiss {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+  font-family: inherit;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 150ms ease;
+  align-self: center;
+}
+
+.whats-new-dismiss:hover {
+  background: var(--accent-hover);
+}
+
 #toolbar {
   grid-row: 2;
   display: flex;
@@ -246,8 +304,12 @@ button:focus-visible {
    Main content area
 --------------------------------------------------------------------------- */
 
-#main {
+#banner-slot {
   grid-row: 3;
+}
+
+#main {
+  grid-row: 4;
   display: grid;
   grid-template-columns: 1fr var(--panel-width);
   grid-template-rows: 1fr;

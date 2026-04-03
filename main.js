@@ -675,6 +675,32 @@ function setupIPC(win) {
   });
 
   /**
+   * get-app-version — returns the current app version from package.json.
+   */
+  ipcMain.handle('get-app-version', () => {
+    return app.getVersion();
+  });
+
+  /**
+   * get-last-seen-version — returns the version the user last acknowledged in
+   * the What's New banner, or null if never shown.
+   */
+  ipcMain.handle('get-last-seen-version', () => {
+    return _loadSettings().lastSeenVersion ?? null;
+  });
+
+  /**
+   * dismiss-whats-new — records the current version as seen so the banner
+   * never shows again for this version.
+   */
+  ipcMain.handle('dismiss-whats-new', () => {
+    const settings = _loadSettings();
+    settings.lastSeenVersion = app.getVersion();
+    _saveSettings(settings);
+    return true;
+  });
+
+  /**
    * set-backup-dir — sets or clears the auto-backup folder path.
    * Pass null to disable backup.
    * @param {string|null} dirPath
@@ -846,11 +872,24 @@ function setupIPC(win) {
       const backupDir = _loadSettings().backupDir;
       if (!backupDir || !pdfPath || !fs.existsSync(pdfPath)) return;
 
-      const zip       = new AdmZip();
-      const baseName  = path.basename(pdfPath, '.pdf');
-      const timestamp = new Date().toISOString().replace(/:/g, '-').slice(0, 19);
+      const baseName   = path.basename(pdfPath, '.pdf');
+      const timestamp  = new Date().toISOString().replace(/:/g, '-').slice(0, 19);
       const vellumName = `${baseName}_${timestamp}.vellum`;
 
+      // Remove any previous backup for this document so only the most recent
+      // session is kept. Match files whose name starts with the same basename
+      // followed by an underscore and the timestamp pattern.
+      fs.mkdirSync(backupDir, { recursive: true });
+      const prefix = `${baseName}_`;
+      try {
+        for (const name of fs.readdirSync(backupDir)) {
+          if (name.startsWith(prefix) && name.toLowerCase().endsWith('.vellum')) {
+            try { fs.unlinkSync(path.join(backupDir, name)); } catch { /* skip locked */ }
+          }
+        }
+      } catch { /* folder unreadable — continue to write new backup */ }
+
+      const zip = new AdmZip();
       zip.addLocalFile(pdfPath, '', 'document.pdf');
       if (fs.existsSync(annotationsJsonPath)) {
         zip.addLocalFile(annotationsJsonPath, '', 'annotations.json');
@@ -865,7 +904,6 @@ function setupIPC(win) {
       });
       zip.addFile('meta.json', Buffer.from(meta, 'utf8'));
 
-      fs.mkdirSync(backupDir, { recursive: true });
       zip.writeZip(path.join(backupDir, vellumName));
     } catch (err) {
       // Backup failure must never block or crash the app
@@ -878,6 +916,18 @@ function setupIPC(win) {
 // App lifecycle
 // ---------------------------------------------------------------------------
 
+/**
+ * Returns a .pdf or .vellum file path passed via argv (e.g. when launched by
+ * double-clicking a .vellum file in Explorer), or null if none was passed.
+ * In dev (electron .) argv[1] is the script path, file arg starts at [2].
+ * In the packaged app argv[0] is the exe, file arg starts at [1].
+ */
+function _getArgvFilePath() {
+  const args = process.argv.slice(app.isPackaged ? 1 : 2);
+  const file = args.find(a => /\.(pdf|vellum)$/i.test(a) && !a.startsWith('--'));
+  return file ?? null;
+}
+
 app.whenReady().then(() => {
   // Remove the default application menu — we have our own toolbar UI.
   // Must be called after app is ready; Menu is available from the start but
@@ -889,6 +939,16 @@ app.whenReady().then(() => {
   protocol.handle('ms-gamingoverlay', () => new Response(''));
 
   createWindow();
+
+  // If the app was launched by opening a file (e.g. double-click in Explorer),
+  // forward the path to the renderer once it has finished loading.
+  const argvFile = _getArgvFilePath();
+  if (argvFile) {
+    const win = BrowserWindow.getAllWindows()[0];
+    win.webContents.once('did-finish-load', () => {
+      win.webContents.send('open-file-argv', argvFile);
+    });
+  }
 
   // macOS: re-create window when dock icon is clicked and no windows are open
   app.on('activate', () => {
