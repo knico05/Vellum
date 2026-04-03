@@ -343,6 +343,17 @@ function setupIPC(win) {
         finalDest = path.join(destPath, filename);
       }
       fs.renameSync(srcPath, finalDest);
+
+      // Move companion annotations file (stored by sha256 of the PDF path in userData)
+      const annotationsDir = path.join(app.getPath('userData'), 'annotations');
+      const oldHash = crypto.createHash('sha256').update(srcPath.replace(/\\/g, '/')).digest('hex');
+      const newHash = crypto.createHash('sha256').update(finalDest.replace(/\\/g, '/')).digest('hex');
+      const oldAnno = path.join(annotationsDir, `${oldHash}.json`);
+      const newAnno = path.join(annotationsDir, `${newHash}.json`);
+      if (fs.existsSync(oldAnno) && !fs.existsSync(newAnno)) {
+        fs.renameSync(oldAnno, newAnno);
+      }
+
       return finalDest;
     } catch (err) {
       throw new Error(`Could not move file: ${err.message}`);
