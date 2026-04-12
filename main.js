@@ -999,6 +999,111 @@ function setupIPC(win) {
   }
 
   /**
+   * Groups an array of strokes into spatially coherent clusters using a
+   * union-find approach. Two strokes are merged when the gap between their
+   * bounding boxes is ≤ eps (adaptive: 2.5× median stroke height).
+   * Single-stroke clusters (noise/dots) are discarded.
+   *
+   * @param {Array<Array<{x:number,y:number}>>} strokes  raw canvas-coord strokes
+   * @returns {Array<{strokes:Array, bounds:{minX,maxX,minY,maxY}}>}
+   *          Sorted in reading order (top→bottom, then left→right per line).
+   */
+  function _clusterStrokes(strokes) {
+    const n = strokes.length;
+    if (n === 0) return [];
+
+    // Bounding box per stroke
+    const boxes = strokes.map(pts => {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const p of pts) {
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      }
+      return { minX, maxX, minY, maxY };
+    });
+
+    // Adaptive eps: 2.5x median stroke height
+    const heights = boxes.map(b => b.maxY - b.minY).filter(h => h > 0).sort((a, b) => a - b);
+    const medH    = heights.length ? heights[Math.floor(heights.length / 2)] : 20;
+    const eps     = medH * 2.5;
+
+    // Union-Find with path compression + union by rank
+    const par  = Array.from({ length: n }, (_, i) => i);
+    const rank = new Array(n).fill(0);
+    function find(i) { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; }
+    function union(a, b) {
+      a = find(a); b = find(b);
+      if (a === b) return;
+      if (rank[a] < rank[b]) { const t = a; a = b; b = t; }
+      par[b] = a;
+      if (rank[a] === rank[b]) rank[a]++;
+    }
+
+    // Gap between two AABBs (0 when overlapping or touching)
+    function gap(a, b) {
+      const dx = Math.max(0, Math.max(a.minX, b.minX) - Math.min(a.maxX, b.maxX));
+      const dy = Math.max(0, Math.max(a.minY, b.minY) - Math.min(a.maxY, b.maxY));
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    for (let i = 0; i < n; i++)
+      for (let j = i + 1; j < n; j++)
+        if (gap(boxes[i], boxes[j]) <= eps) union(i, j);
+
+    // Collect groups
+    const groups = new Map();
+    for (let i = 0; i < n; i++) {
+      const r = find(i);
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r).push(i);
+    }
+
+    // Build cluster objects, discard singletons
+    const clusters = [];
+    for (const idxs of groups.values()) {
+      if (idxs.length < 2) continue;
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const i of idxs) {
+        const b = boxes[i];
+        if (b.minX < minX) minX = b.minX; if (b.maxX > maxX) maxX = b.maxX;
+        if (b.minY < minY) minY = b.minY; if (b.maxY > maxY) maxY = b.maxY;
+      }
+      clusters.push({
+        strokes: idxs.map(i => strokes[i]),
+        bounds:  { minX, maxX, minY, maxY },
+        cx: (minX + maxX) / 2,
+        cy: (minY + maxY) / 2,
+      });
+    }
+
+    // Sort in reading order
+    clusters.sort((a, b) => Math.abs(a.cy - b.cy) > medH ? a.cy - b.cy : a.cx - b.cx);
+    return clusters;
+  }
+
+  /**
+   * Clusters strokes, recognises each cluster independently, and returns
+   * the combined text plus per-segment bounds (in original canvas coords).
+   *
+   * @param {Array<Array<{x:number,y:number}>>} strokes
+   * @returns {Promise<{text:string, segments:Array<{text:string,bounds:object}>}>}
+   */
+  async function _recognizePage(strokes) {
+    const clusters = _clusterStrokes(strokes);
+    const segments = [];
+
+    for (const cluster of clusters) {
+      const norm = _normalizeStrokes(cluster.strokes);
+      const text = await _recognizeInkStrokes(norm);
+      if (text && text.trim()) {
+        segments.push({ text: text.trim(), bounds: cluster.bounds });
+      }
+    }
+
+    return { text: segments.map(s => s.text).join(' '), segments };
+  }
+
+  /**
    * Runs the PowerShell ink recogniser on a set of normalised strokes.
    * Writes a temp JSON file, spawns recognize.ps1, collects stdout.
    *
@@ -1073,11 +1178,10 @@ function setupIPC(win) {
    * @returns {Promise<string>} recognised text
    */
   ipcMain.handle('recognize-handwriting', async (_event, strokes) => {
-    if (!Array.isArray(strokes) || strokes.length === 0) return '';
-    // Strip pressure — Windows Ink only needs x, y
+    if (!Array.isArray(strokes) || strokes.length === 0) return { text: '', segments: [] };
+    // Strip pressure — recognition only needs x, y
     const xyOnly = strokes.map(s => s.map(pt => ({ x: pt.x, y: pt.y })));
-    const normalized = _normalizeStrokes(xyOnly);
-    return _recognizeInkStrokes(normalized);
+    return _recognizePage(xyOnly);
   });
 
   /**
@@ -1162,17 +1266,18 @@ function setupIPC(win) {
       strokesByPage[anno.pageId].push(anno.points.map(pt => ({ x: pt.x, y: pt.y })));
     }
 
-    // Ensure pageInkText map exists
-    if (!annoJson.pageInkText) annoJson.pageInkText = {};
+    // Ensure cache maps exist
+    if (!annoJson.pageInkText)     annoJson.pageInkText     = {};
+    if (!annoJson.pageInkSegments) annoJson.pageInkSegments = {};
 
     let anyNewRecognition = false;
 
     // Recognise pages that don't have a cached result yet
     for (const [pageId, strokes] of Object.entries(strokesByPage)) {
       if (annoJson.pageInkText[pageId] !== undefined) continue; // already cached
-      const normalized = _normalizeStrokes(strokes);
-      const text       = await _recognizeInkStrokes(normalized);
-      annoJson.pageInkText[pageId] = text;
+      const { text, segments } = await _recognizePage(strokes);
+      annoJson.pageInkText[pageId]     = text;
+      annoJson.pageInkSegments[pageId] = segments;
       anyNewRecognition = true;
     }
 
@@ -1185,11 +1290,11 @@ function setupIPC(win) {
       } catch { /* ZIP update failed — cached text still used this session */ }
     }
 
-    // Return matching pages
+    // Return matching pages with their segments
     const matches = [];
     for (const [pageId, text] of Object.entries(annoJson.pageInkText)) {
       if (typeof text === 'string' && text.toLowerCase().includes(needle)) {
-        matches.push({ pageId, text });
+        matches.push({ pageId, text, segments: annoJson.pageInkSegments[pageId] ?? [] });
       }
     }
     return matches;

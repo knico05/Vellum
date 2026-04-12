@@ -24,10 +24,12 @@
 
 'use strict';
 
-import { getAll }                                          from '../annotations/manager.js';
-import { getPageInkText, setPageInkText, isPageInkDirty } from '../annotations/manager.js';
+import { getAll }                                                              from '../annotations/manager.js';
+import { getPageInkText, setPageInkText, isPageInkDirty,
+         getPageInkSegments, setPageInkSegments }                             from '../annotations/manager.js';
 import { getPageList }                                     from '../pages/pageManager.js';
 import { goToPage, flashPage }                             from '../pages/pageManager.js';
+import { showInkHighlights }                               from './inkHighlight.js';
 import { scheduleSave }                                    from '../storage/autosave.js';
 
 // ---------------------------------------------------------------------------
@@ -182,8 +184,9 @@ async function _searchCurrentDoc(keyword) {
   for (const pageId of pageIds) {
     if (inkText[pageId] !== undefined && !isPageInkDirty(pageId)) continue;
 
-    const text = await window.api.recognizeHandwriting(strokesByPage[pageId]);
+    const { text, segments } = await window.api.recognizeHandwriting(strokesByPage[pageId]);
     setPageInkText(pageId, text);
+    setPageInkSegments(pageId, segments);
     inkText[pageId] = text;
     recognised++;
     _setProgress(recognised, total);
@@ -213,13 +216,20 @@ async function _searchCurrentDoc(keyword) {
   const pageIndexMap = {};
   pageList.forEach((p, i) => { pageIndexMap[p.id] = i + 1; });
 
+  const inkSegs = getPageInkSegments();
   for (const { pageId, text: matchText } of matches) {
-    const label = pageIndexMap[pageId] ? `Page ${pageIndexMap[pageId]}` : pageId;
+    const label    = pageIndexMap[pageId] ? `Page ${pageIndexMap[pageId]}` : pageId;
+    const segments = inkSegs[pageId] ?? [];
     _addResult({
       title:   label,
       text:    matchText,
       keyword: needle,
-      onClick: () => { goToPage(pageId); flashPage(pageId); hide(); },
+      onClick: () => {
+        goToPage(pageId);
+        flashPage(pageId);
+        showInkHighlights(segments, needle);
+        hide();
+      },
     });
   }
 }
@@ -267,16 +277,17 @@ async function _searchAllDocs(keyword) {
 
     const fileName = vellumPath.replace(/\\/g, '/').split('/').pop().replace(/\.vellum$/i, '');
 
-    for (const { pageId, text: matchText } of matches) {
+    for (const { pageId, text: matchText, segments: matchSegs = [] } of matches) {
       totalMatches++;
       const pageNum = pageId.match(/\d+/)?.[0];
       const label   = pageNum ? `${fileName} — p.${parseInt(pageNum, 10) + 1}` : `${fileName} — ${pageId}`;
+      const needle  = keyword.toLowerCase();
       _addResult({
         title:   label,
         text:    matchText,
-        keyword: keyword.toLowerCase(),
+        keyword: needle,
         onClick: () => {
-          if (_openVellumCallback) _openVellumCallback(vellumPath, pageId);
+          if (_openVellumCallback) _openVellumCallback(vellumPath, pageId, matchSegs, needle);
           hide();
         },
       });

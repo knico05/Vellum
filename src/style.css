@@ -2990,6 +2990,20 @@ button:focus-visible {
   animation: page-flash 1.5s ease forwards;
 }
 
+/* Canvas highlight: temporary overlay rectangle for matched ink segments */
+.ink-canvas-highlight {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(91, 138, 245, 0.18);
+  border: 2px solid rgba(91, 138, 245, 0.7);
+  border-radius: 3px;
+  z-index: 20;
+  transition: opacity 0.6s ease;
+}
+.ink-canvas-highlight--fade {
+  opacity: 0;
+}
+
 .ink-search-progress-wrap {
   height: 3px;
   background: var(--surface-2);

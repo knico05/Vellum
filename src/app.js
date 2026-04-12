@@ -23,7 +23,7 @@ import {
   getCurrentPageListIndex, spliceBlankPagesFromMigration,
   getPdfDoc, getPageList, goToPage, getCurrentPageId, pageExists, flashPage,
 } from './pages/pageManager.js';
-import { clear, loadFromJSON, loadPageInkText, undo, redo } from './annotations/manager.js';
+import { clear, loadFromJSON, loadPageInkText, loadPageInkSegments, undo, redo } from './annotations/manager.js';
 import { initAutosave }                           from './storage/autosave.js';
 import { deserialise }                            from './storage/serialiser.js';
 import { initHighlight }                          from './annotations/highlight.js';
@@ -42,6 +42,7 @@ import { initLibrary, addToLibrary }              from './ui/library.js';
 import { exportToPdf }                            from './export/pdfExport.js';
 import { initSearch, showSearch }                 from './ui/search.js';
 import { initHandwritingSearch, toggleHandwritingSearch } from './ui/handwritingSearch.js';
+import { showInkHighlights }                             from './ui/inkHighlight.js';
 import { search as searchText, clearCache as clearSearchCache } from './pdf/textSearch.js';
 
 // ---------------------------------------------------------------------------
@@ -109,8 +110,9 @@ initSearch({          // Search bar (Ctrl+F)
   onNavigate: (match) => goToPage(match.pageId),
 });
 initHandwritingSearch({ // Handwriting search panel (Ctrl+Shift+H)
-  onOpenVellum: (vellumPath, pageId) => loadVellum(vellumPath).then(() => {
+  onOpenVellum: (vellumPath, pageId, segments, keyword) => loadVellum(vellumPath).then(() => {
     if (pageId) { goToPage(pageId); flashPage(pageId); }
+    if (segments?.length && keyword) showInkHighlights(segments, keyword);
   }),
 });
 
@@ -443,6 +445,7 @@ async function tryLoadAnnotations(pdfPath) {
 
     loadFromJSON(result.annotations);
     loadPageInkText(result.pageInkText ?? {});
+    loadPageInkSegments(result.pageInkSegments ?? {});
     loadPageNotes(result.pageNotes);
   } catch (err) {
     console.error('Failed to load annotations:', err);

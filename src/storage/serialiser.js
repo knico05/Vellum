@@ -45,11 +45,12 @@ const CURRENT_VERSION = 2;
  * @param {string}   fingerprint — SHA-256 hex digest of the PDF's first 8KB
  * @param {Array}    pageList    — Ordered page list from pageManager.getPageList()
  * @param {object[]} annotations — Array from annotationManager.toJSON()
- * @param {object}   pageNotes   — { [pageId]: text } from panel.getPageNotes()
- * @param {object}   pageInkText — { [pageId]: string } handwriting recognition cache
+ * @param {object}   pageNotes       — { [pageId]: text } from panel.getPageNotes()
+ * @param {object}   pageInkText     — { [pageId]: string } handwriting recognition cache
+ * @param {object}   pageInkSegments — { [pageId]: Array<{text,bounds}> } per-cluster bounds
  * @returns {string} Pretty-printed JSON
  */
-function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, pageInkText = {}) {
+function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, pageInkText = {}, pageInkSegments = {}) {
   // Strip runtime-only fields (canvasX, canvasY, width/height for PDF pages)
   // from the page list before saving — layout is recomputed at load time.
   const savedPages = pageList.map(p => p.kind === 'pdf'
@@ -62,15 +63,21 @@ function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, 
     Object.entries(pageInkText).filter(([, v]) => typeof v === 'string' && v.length > 0)
   );
 
+  // Only persist segments for pages that have ink text
+  const inkSegmentsToSave = Object.fromEntries(
+    Object.entries(pageInkSegments).filter(([k, v]) => inkTextToSave[k] && Array.isArray(v) && v.length > 0)
+  );
+
   return JSON.stringify({
-    version:        CURRENT_VERSION,
-    format:         'quicknotes',
+    version:           CURRENT_VERSION,
+    format:            'quicknotes',
     pdfPath,
-    pdfFingerprint: fingerprint,
-    updatedAt:      new Date().toISOString(),
-    pages:          savedPages,
+    pdfFingerprint:    fingerprint,
+    updatedAt:         new Date().toISOString(),
+    pages:             savedPages,
     pageNotes,
-    pageInkText:    inkTextToSave,
+    pageInkText:       inkTextToSave,
+    pageInkSegments:   inkSegmentsToSave,
     annotations,
   }, null, 2);
 }
@@ -116,9 +123,12 @@ function deserialise(jsonString) {
     pageNotes:      (data.pageNotes && typeof data.pageNotes === 'object')
                       ? data.pageNotes
                       : {},
-    pageInkText:    (data.pageInkText && typeof data.pageInkText === 'object')
-                      ? data.pageInkText
-                      : {},
+    pageInkText:     (data.pageInkText && typeof data.pageInkText === 'object')
+                       ? data.pageInkText
+                       : {},
+    pageInkSegments: (data.pageInkSegments && typeof data.pageInkSegments === 'object')
+                       ? data.pageInkSegments
+                       : {},
   };
 }
 

@@ -34,11 +34,17 @@ let annotations = [];
 // ---------------------------------------------------------------------------
 
 /**
- * { [pageId]: string } — cached Windows Ink recognition results per page.
- * Persisted to disk via serialiser.js. Cleared for a page when any draw stroke
- * on that page is added, removed, or updated, so the next search re-recognises.
+ * { [pageId]: string } — cached recognition text per page.
+ * Persisted. Cleared when any draw stroke on the page changes.
  */
 let _pageInkText = {};
+
+/**
+ * { [pageId]: Array<{text:string, bounds:{minX,maxX,minY,maxY}}> }
+ * Per-cluster recognition segments for the page, used to highlight
+ * matched areas on the canvas after a search.
+ */
+let _pageInkSegments = {};
 
 /**
  * Set of pageIds whose draw strokes have changed since the last recognition run.
@@ -92,7 +98,8 @@ let _groupBuffer = null;
  */
 function _invalidateInkCache(annotation) {
   if (annotation?.type !== 'draw' || !annotation.pageId) return;
-  _pageInkText[annotation.pageId] = undefined;
+  _pageInkText[annotation.pageId]     = undefined;
+  _pageInkSegments[annotation.pageId] = undefined;
   _dirtyInkPages.add(annotation.pageId);
 }
 
@@ -274,9 +281,10 @@ function toJSON() {
 function clear() {
   const hadContent = annotations.length > 0;
   annotations  = [];
-  undoStack    = [];
-  redoStack    = [];
-  _pageInkText = {};
+  undoStack        = [];
+  redoStack        = [];
+  _pageInkText     = {};
+  _pageInkSegments = {};
   _dirtyInkPages.clear();
   if (hadContent) emit();
 }
@@ -523,4 +531,16 @@ function clearPageInkDirty(pageId) {
   _dirtyInkPages.delete(pageId);
 }
 
-export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo, beginUndoGroup, endUndoGroup, getPageInkText, loadPageInkText, setPageInkText, isPageInkDirty, clearPageInkDirty };
+function getPageInkSegments() {
+  return { ..._pageInkSegments };
+}
+
+function loadPageInkSegments(map) {
+  _pageInkSegments = (map && typeof map === 'object') ? { ...map } : {};
+}
+
+function setPageInkSegments(pageId, segments) {
+  _pageInkSegments[pageId] = segments;
+}
+
+export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo, beginUndoGroup, endUndoGroup, getPageInkText, loadPageInkText, setPageInkText, isPageInkDirty, clearPageInkDirty, getPageInkSegments, loadPageInkSegments, setPageInkSegments };
