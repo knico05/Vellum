@@ -13,6 +13,11 @@
 
 .PARAMETER InputFile
   Absolute path to the temporary JSON file written by the Node main process.
+
+.NOTES
+  Windows.Foundation.Point is NOT loaded by name — its assembly reference varies
+  across Windows versions. Instead we derive its Type from InkPoint's constructor
+  parameter, which is guaranteed to be consistent after InkPoint is loaded.
 #>
 param([string]$InputFile)
 
@@ -35,7 +40,7 @@ try {
       $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1
     } | Select-Object -First 1
 
-    if (-not $asTaskDef) { throw 'AsTask extension method not found — check System.Runtime.WindowsRuntime is loaded.' }
+    if (-not $asTaskDef) { throw 'AsTask extension method not found.' }
 
     $tArg    = $asyncOp.GetType().GetGenericArguments()[0]
     $asTask  = $asTaskDef.MakeGenericMethod($tArg)
@@ -44,16 +49,41 @@ try {
   }
 
   # ------------------------------------------------------------------
-  # 3. Load WinRT ink types
+  # 3. Load WinRT ink types (Windows.Foundation loads as a dependency)
+  #    Do NOT try to load Windows.Foundation.Point by name — the winmd
+  #    assembly hint differs across Windows versions and fails.
   # ------------------------------------------------------------------
   $null = [Windows.UI.Input.Inking.InkRecognizerContainer,  Windows.UI.Input.Inking, ContentType=WindowsRuntime]
   $null = [Windows.UI.Input.Inking.InkStrokeBuilder,        Windows.UI.Input.Inking, ContentType=WindowsRuntime]
   $null = [Windows.UI.Input.Inking.InkPoint,                Windows.UI.Input.Inking, ContentType=WindowsRuntime]
   $null = [Windows.UI.Input.Inking.InkRecognitionTarget,    Windows.UI.Input.Inking, ContentType=WindowsRuntime]
-  $null = [Windows.Foundation.Point,                        Windows.Foundation,       ContentType=WindowsRuntime]
 
   # ------------------------------------------------------------------
-  # 4. Verify at least one handwriting recognizer is installed
+  # 4. Derive Windows.Foundation.Point from InkPoint's constructor.
+  #    This works because loading InkPoint also loads its dependencies,
+  #    including Point — we just navigate to it via reflection instead
+  #    of guessing the assembly name.
+  # ------------------------------------------------------------------
+  $inkPtCtor  = [Windows.UI.Input.Inking.InkPoint].GetConstructors() |
+                Where-Object { $_.GetParameters().Count -ge 2 } |
+                Select-Object -First 1
+
+  if (-not $inkPtCtor) { throw 'Could not find InkPoint constructor with 2+ parameters.' }
+
+  $pointType  = $inkPtCtor.GetParameters()[0].ParameterType  # Windows.Foundation.Point
+  $pointCtor  = $pointType.GetConstructors() |
+                Where-Object { $_.GetParameters().Count -eq 2 } |
+                Select-Object -First 1
+
+  if (-not $pointCtor) { throw "Could not find Point(x,y) constructor on $($pointType.FullName)." }
+
+  function New-Point($x, $y) {
+    # Invoke Point(double x, double y) via the reflected constructor
+    $pointCtor.Invoke(@([double]$x, [double]$y))
+  }
+
+  # ------------------------------------------------------------------
+  # 5. Verify at least one handwriting recognizer is installed
   # ------------------------------------------------------------------
   $container   = [Windows.UI.Input.Inking.InkRecognizerContainer]::new()
   $recognizers = $container.GetRecognizers()
@@ -62,9 +92,10 @@ try {
     Write-Output ''
     exit 0
   }
+  [Console]::Error.WriteLine("Recognizers available: $($recognizers.Count) — using: $($recognizers[0].Name)")
 
   # ------------------------------------------------------------------
-  # 5. Read stroke data from the temp file
+  # 6. Read stroke data from the temp file
   # ------------------------------------------------------------------
   $json       = Get-Content -Raw -LiteralPath $InputFile
   $strokeData = $json | ConvertFrom-Json
@@ -74,25 +105,22 @@ try {
     exit 0
   }
 
+  [Console]::Error.WriteLine("Strokes to process: $($strokeData.Count)")
+
   # ------------------------------------------------------------------
-  # 6. Build InkStroke objects
-  #    Use typed generic lists so WinRT IIterable<T> marshalling works.
+  # 7. Build InkStroke objects using typed generic lists
   # ------------------------------------------------------------------
   $builder    = [Windows.UI.Input.Inking.InkStrokeBuilder]::new()
   $identity   = [System.Numerics.Matrix3x2]::Identity
-
-  # Typed list of InkStroke — PowerShell resolves the WinRT type here
-  # because it was already loaded via ContentType=WindowsRuntime above.
   $strokeList = New-Object 'System.Collections.Generic.List[Windows.UI.Input.Inking.InkStroke]'
 
   foreach ($strokePts in $strokeData) {
     if ($strokePts.Count -lt 2) { continue }
 
-    # Typed list of InkPoint
     $inkPtList = New-Object 'System.Collections.Generic.List[Windows.UI.Input.Inking.InkPoint]'
 
     foreach ($pt in $strokePts) {
-      $winPt = [Windows.Foundation.Point]::new([double]$pt.x, [double]$pt.y)
+      $winPt = New-Point $pt.x $pt.y
       $inkPt = [Windows.UI.Input.Inking.InkPoint]::new($winPt, [float]0.5)
       $inkPtList.Add($inkPt)
     }
@@ -101,22 +129,25 @@ try {
     $strokeList.Add($stroke)
   }
 
+  [Console]::Error.WriteLine("InkStrokes built: $($strokeList.Count)")
+
   if ($strokeList.Count -eq 0) {
     Write-Output ''
     exit 0
   }
 
   # ------------------------------------------------------------------
-  # 7. Run recognition
+  # 8. Run recognition
   # ------------------------------------------------------------------
   $asyncOp = $container.RecognizeAsync(
     $strokeList,
     [Windows.UI.Input.Inking.InkRecognitionTarget]::All
   )
   $results = Await-WinRT $asyncOp
+  [Console]::Error.WriteLine("Recognition results: $($results.Count)")
 
   # ------------------------------------------------------------------
-  # 8. Collect best candidate from each result segment
+  # 9. Collect best candidate from each result segment
   # ------------------------------------------------------------------
   $words = @()
   foreach ($result in $results) {
@@ -126,11 +157,11 @@ try {
     }
   }
 
-  Write-Output ($words -join ' ')
+  $text = $words -join ' '
+  [Console]::Error.WriteLine("Recognized: '$text'")
+  Write-Output $text
 
 } catch {
-  # Write full error to stderr so Node.js can log it — stdout stays empty
-  # so the caller treats this page as unsearchable without crashing.
   [Console]::Error.WriteLine("recognize.ps1 error: $($_.Exception.Message)")
   [Console]::Error.WriteLine($_.ScriptStackTrace)
   Write-Output ''
