@@ -32,6 +32,7 @@ import { initNotes }                              from './annotations/note.js';
 import { initEraser }                             from './annotations/eraser.js';
 import { initImages, pasteImageAtCenter }         from './annotations/image.js';
 import { initSelect }                             from './annotations/select.js';
+import { initTables }                             from './annotations/table.js';
 import { init as initToolbar, setActiveTool, getActiveTool, updateStatus } from './ui/toolbar.js';
 import { init as initShortcuts }                  from './ui/shortcuts.js';
 import { initScreenshot, activateScreenshot }     from './ui/screenshot.js';
@@ -77,6 +78,7 @@ initNotes();          // Manages sticky note DOM elements
 initEraser();         // Registers pointer listeners for the eraser tool
 initImages();         // Manages image annotation DOM elements
 initSelect();         // Registers pointer listeners and overlay draw for select/move tool
+initTables();         // Manages table annotation DOM elements
 initToolbar();        // Builds toolbar UI, owns activeTool state
 initPanel();          // Builds notes panel UI, owns per-page notes state
 initShortcuts({       // Wires up global keyboard shortcuts

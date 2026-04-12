@@ -2700,3 +2700,96 @@ button:focus-visible {
   background: var(--surface-3);
 }
 
+
+/* ---------------------------------------------------------------------------
+   Table annotation
+--------------------------------------------------------------------------- */
+
+.annotation-table-wrapper {
+  position: absolute;
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+  overflow: hidden;
+  cursor: default;
+  min-width: 80px;
+}
+
+.annotation-table-drag-strip {
+  height: 28px;
+  background: #f0f0f0;
+  border-bottom: 1px solid #ccc;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  cursor: grab;
+  user-select: none;
+  gap: 6px;
+}
+
+.annotation-table-drag-strip:active { cursor: grabbing; }
+
+.annotation-table-title {
+  flex: 1;
+  font-size: 12px;
+  color: #444;
+  outline: none;
+  background: none;
+  border: none;
+  min-width: 0;
+}
+
+.annotation-table-title:empty::before {
+  content: attr(data-placeholder);
+  color: #aaa;
+  pointer-events: none;
+}
+
+.annotation-table-wrapper table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  color: #1a1a1a;
+  background: #fff;
+}
+
+.annotation-table-wrapper td {
+  border: 1px solid #bbb;
+  padding: 4px 6px;
+  min-width: 48px;
+  outline: none;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+
+.annotation-table-wrapper td:focus {
+  background: #f5f8ff;
+  border-color: #7aaaff;
+}
+
+.annotation-table-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: se-resize;
+  background: linear-gradient(135deg, transparent 50%, #bbb 50%);
+}
+
+/* Table toolbar config inputs */
+.table-config-label {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.table-dim-input {
+  width: 40px;
+  padding: 2px 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  text-align: center;
+}

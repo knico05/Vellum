@@ -156,6 +156,11 @@ function handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, ne
       setTool('note');
       break;
 
+    case 't':
+    case 'T':
+      setTool('table');
+      break;
+
     case 's':
     case 'S':
       setTool('select');
