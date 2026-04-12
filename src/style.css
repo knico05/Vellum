@@ -2973,6 +2973,23 @@ button:focus-visible {
   -webkit-box-orient: vertical;
 }
 
+.ink-search-mark {
+  background: rgba(91, 138, 245, 0.35);
+  color: var(--text-primary);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* Page flash: brief accent outline when navigating to a search result */
+@keyframes page-flash {
+  0%   { outline: 3px solid var(--accent); box-shadow: 0 0 0 4px var(--accent-dim); }
+  60%  { outline: 3px solid var(--accent); box-shadow: 0 0 0 4px var(--accent-dim); }
+  100% { outline: 3px solid transparent;  box-shadow: none; }
+}
+.page-flash {
+  animation: page-flash 1.5s ease forwards;
+}
+
 .ink-search-progress-wrap {
   height: 3px;
   background: var(--surface-2);

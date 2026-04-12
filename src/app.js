@@ -21,7 +21,7 @@ import {
   initPageManager, openPDF as openPDFPages, loadPageList, getPageCount,
   getCurrentFingerprint, getCurrentPdfPath, goToPageIndex, fitPage, addBlankPage,
   getCurrentPageListIndex, spliceBlankPagesFromMigration,
-  getPdfDoc, getPageList, goToPage, getCurrentPageId, pageExists,
+  getPdfDoc, getPageList, goToPage, getCurrentPageId, pageExists, flashPage,
 } from './pages/pageManager.js';
 import { clear, loadFromJSON, loadPageInkText, undo, redo } from './annotations/manager.js';
 import { initAutosave }                           from './storage/autosave.js';
@@ -109,7 +109,9 @@ initSearch({          // Search bar (Ctrl+F)
   onNavigate: (match) => goToPage(match.pageId),
 });
 initHandwritingSearch({ // Handwriting search panel (Ctrl+Shift+H)
-  onOpenVellum: (vellumPath) => loadVellum(vellumPath),
+  onOpenVellum: (vellumPath, pageId) => loadVellum(vellumPath).then(() => {
+    if (pageId) { goToPage(pageId); flashPage(pageId); }
+  }),
 });
 
 // If the app was launched by double-clicking a .vellum or .pdf file in

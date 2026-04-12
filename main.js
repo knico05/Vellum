@@ -1136,8 +1136,8 @@ function setupIPC(win) {
    *
    * @param {string} vellumPath   — absolute path to the .vellum archive
    * @param {string} keyword      — search term (case-insensitive substring)
-   * @returns {Promise<Array<{pageId:string, excerpt:string}>>}
-   *   One entry per matching page. excerpt is the first 120 chars of recognised text.
+   * @returns {Promise<Array<{pageId:string, text:string}>>}
+   *   One entry per matching page. text is the full recognised text for that page.
    */
   ipcMain.handle('search-ink-in-vellum', async (_event, vellumPath, keyword) => {
     if (!keyword || !vellumPath) return [];
@@ -1189,7 +1189,7 @@ function setupIPC(win) {
     const matches = [];
     for (const [pageId, text] of Object.entries(annoJson.pageInkText)) {
       if (typeof text === 'string' && text.toLowerCase().includes(needle)) {
-        matches.push({ pageId, excerpt: text.slice(0, 120) });
+        matches.push({ pageId, text });
       }
     }
     return matches;

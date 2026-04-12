@@ -688,6 +688,23 @@ function pageExists(pageId) {
   return pages.some(p => p.id === pageId);
 }
 
+/**
+ * Briefly adds a CSS flash class to the page element so the user can see
+ * which page a search result landed on. The class removes itself after the
+ * animation completes (~1.5 s).
+ *
+ * @param {string} id — page id
+ */
+function flashPage(id) {
+  const inst = pageInstances.get(id);
+  if (!inst?.element) return;
+  inst.element.classList.remove('page-flash');
+  // Force reflow so re-adding the class restarts the animation
+  void inst.element.offsetWidth;
+  inst.element.classList.add('page-flash');
+  setTimeout(() => inst.element.classList.remove('page-flash'), 1600);
+}
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -714,5 +731,6 @@ export {
   triggerLazyRender,
   spliceBlankPagesFromMigration,
   pageExists,
+  flashPage,
   tearDown,
 };

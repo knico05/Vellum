@@ -27,7 +27,7 @@
 import { getAll }                                          from '../annotations/manager.js';
 import { getPageInkText, setPageInkText, isPageInkDirty } from '../annotations/manager.js';
 import { getPageList }                                     from '../pages/pageManager.js';
-import { goToPage }                                        from '../pages/pageManager.js';
+import { goToPage, flashPage }                             from '../pages/pageManager.js';
 import { scheduleSave }                                    from '../storage/autosave.js';
 
 // ---------------------------------------------------------------------------
@@ -198,7 +198,7 @@ async function _searchCurrentDoc(keyword) {
   const matches = [];
   for (const [pageId, text] of Object.entries(inkText)) {
     if (typeof text === 'string' && text.toLowerCase().includes(needle)) {
-      matches.push({ pageId, excerpt: text.slice(0, 120) });
+      matches.push({ pageId, text });
     }
   }
 
@@ -213,12 +213,13 @@ async function _searchCurrentDoc(keyword) {
   const pageIndexMap = {};
   pageList.forEach((p, i) => { pageIndexMap[p.id] = i + 1; });
 
-  for (const { pageId, excerpt } of matches) {
+  for (const { pageId, text: matchText } of matches) {
     const label = pageIndexMap[pageId] ? `Page ${pageIndexMap[pageId]}` : pageId;
     _addResult({
       title:   label,
-      excerpt,
-      onClick: () => { goToPage(pageId); hide(); },
+      text:    matchText,
+      keyword: needle,
+      onClick: () => { goToPage(pageId); flashPage(pageId); hide(); },
     });
   }
 }
@@ -266,15 +267,16 @@ async function _searchAllDocs(keyword) {
 
     const fileName = vellumPath.replace(/\\/g, '/').split('/').pop().replace(/\.vellum$/i, '');
 
-    for (const { pageId, excerpt } of matches) {
+    for (const { pageId, text: matchText } of matches) {
       totalMatches++;
       const pageNum = pageId.match(/\d+/)?.[0];
       const label   = pageNum ? `${fileName} — p.${parseInt(pageNum, 10) + 1}` : `${fileName} — ${pageId}`;
       _addResult({
         title:   label,
-        excerpt,
+        text:    matchText,
+        keyword: keyword.toLowerCase(),
         onClick: () => {
-          if (_openVellumCallback) _openVellumCallback(vellumPath);
+          if (_openVellumCallback) _openVellumCallback(vellumPath, pageId);
           hide();
         },
       });
@@ -328,11 +330,33 @@ function _completeProgress() {
 }
 
 /**
+ * Returns an HTML string with the first occurrence of `keyword` in `text`
+ * wrapped in <mark>, surrounded by up to `window` characters of context.
+ * Ellipsis is added when the context is trimmed.
+ */
+function _buildExcerptHtml(text, keyword, window = 60) {
+  const lower = text.toLowerCase();
+  const idx   = lower.indexOf(keyword);
+  if (idx === -1) return _escapeHtml(text.slice(0, 120));
+
+  const start    = Math.max(0, idx - window);
+  const end      = Math.min(text.length, idx + keyword.length + window);
+  const before   = (start > 0 ? '…' : '') + _escapeHtml(text.slice(start, idx));
+  const matched  = `<mark class="ink-search-mark">${_escapeHtml(text.slice(idx, idx + keyword.length))}</mark>`;
+  const after    = _escapeHtml(text.slice(idx + keyword.length, end)) + (end < text.length ? '…' : '');
+  return before + matched + after;
+}
+
+function _escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
  * Appends a single result row to the results list.
  *
- * @param {{ title: string, excerpt: string, onClick: function }} opts
+ * @param {{ title: string, text: string, keyword: string, onClick: function }} opts
  */
-function _addResult({ title, excerpt, onClick }) {
+function _addResult({ title, text, keyword, onClick }) {
   const item = document.createElement('button');
   item.className = 'ink-search-result';
   item.addEventListener('click', onClick);
@@ -342,8 +366,12 @@ function _addResult({ title, excerpt, onClick }) {
   titleEl.textContent = title;
 
   const excerptEl = document.createElement('div');
-  excerptEl.className   = 'ink-search-result-excerpt';
-  excerptEl.textContent = excerpt || '(no text)';
+  excerptEl.className = 'ink-search-result-excerpt';
+  if (text && keyword) {
+    excerptEl.innerHTML = _buildExcerptHtml(text, keyword);
+  } else {
+    excerptEl.textContent = text || '(no text)';
+  }
 
   item.appendChild(titleEl);
   item.appendChild(excerptEl);
