@@ -355,4 +355,43 @@ contextBridge.exposeInMainWorld('api', {
   dismissWhatsNew: () =>
     ipcRenderer.invoke('dismiss-whats-new'),
 
+  // ---------------------------------------------------------------------------
+  // Handwriting search
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Runs the Windows Ink recogniser on a group of strokes from one page.
+   * All strokes for the page are sent together so the recogniser can resolve
+   * multi-stroke characters and words. Normalisation (bounding-box origin at 0,0)
+   * is applied in the main process before calling PowerShell.
+   *
+   * @param {Array<Array<{x:number,y:number,pressure?:number}>>} strokes
+   * @returns {Promise<string>} recognised text, empty string on any failure
+   */
+  recognizeHandwriting: (strokes) =>
+    ipcRenderer.invoke('recognize-handwriting', strokes),
+
+  /**
+   * Collects all .vellum file paths the app knows about:
+   *   • Every .vellum in pinned library folders (read from userData/library.json)
+   *   • Every .vellum in the configured backup folder
+   * Results are deduplicated by resolved path.
+   *
+   * @returns {Promise<string[]>} absolute file paths
+   */
+  listVellumFilesForSearch: () =>
+    ipcRenderer.invoke('list-vellum-files-for-search'),
+
+  /**
+   * Searches handwriting in a single .vellum archive for a keyword.
+   * Uncached pages are recognised on-the-fly and the result is written back
+   * into the ZIP so subsequent searches are instant.
+   *
+   * @param {string} vellumPath — absolute path to the .vellum file
+   * @param {string} keyword    — search term (case-insensitive)
+   * @returns {Promise<Array<{pageId:string, excerpt:string}>>}
+   */
+  searchInkInVellum: (vellumPath, keyword) =>
+    ipcRenderer.invoke('search-ink-in-vellum', vellumPath, keyword),
+
 });

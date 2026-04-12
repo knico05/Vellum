@@ -16,9 +16,14 @@
  *     { "id": "blank-x", "kind": "blank", "width": 595, "height": 842 },
  *     { "id": "pdf-1",   "kind": "pdf",   "pdfPageIndex": 1 }
  *   ],
- *   "pageNotes": { "pdf-0": "text…", "blank-x": "text…" },
+ *   "pageNotes":   { "pdf-0": "text…", "blank-x": "text…" },
+ *   "pageInkText": { "pdf-0": "velocity gradient laminar…" },
  *   "annotations": [ { …annotation objects with pageId field… } ]
  * }
+ *
+ * pageInkText — cache of Windows Ink handwriting recognition results, keyed by
+ * pageId. Written by the search pipeline the first time a page is searched.
+ * Invalidated (key deleted) by manager.js when a draw stroke on that page changes.
  *
  * v1 → v2 migration is handled in deserialise() transparently.
  *
@@ -41,14 +46,20 @@ const CURRENT_VERSION = 2;
  * @param {Array}    pageList    — Ordered page list from pageManager.getPageList()
  * @param {object[]} annotations — Array from annotationManager.toJSON()
  * @param {object}   pageNotes   — { [pageId]: text } from panel.getPageNotes()
+ * @param {object}   pageInkText — { [pageId]: string } handwriting recognition cache
  * @returns {string} Pretty-printed JSON
  */
-function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}) {
+function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, pageInkText = {}) {
   // Strip runtime-only fields (canvasX, canvasY, width/height for PDF pages)
   // from the page list before saving — layout is recomputed at load time.
   const savedPages = pageList.map(p => p.kind === 'pdf'
     ? { id: p.id, kind: 'pdf', pdfPageIndex: p.pdfPageIndex }
     : { id: p.id, kind: 'blank', width: p.width, height: p.height, template: p.template ?? 'plain' }
+  );
+
+  // Only persist non-empty ink text entries to keep file size minimal
+  const inkTextToSave = Object.fromEntries(
+    Object.entries(pageInkText).filter(([, v]) => typeof v === 'string' && v.length > 0)
   );
 
   return JSON.stringify({
@@ -59,6 +70,7 @@ function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}) 
     updatedAt:      new Date().toISOString(),
     pages:          savedPages,
     pageNotes,
+    pageInkText:    inkTextToSave,
     annotations,
   }, null, 2);
 }
@@ -103,6 +115,9 @@ function deserialise(jsonString) {
     annotations:    Array.isArray(data.annotations) ? data.annotations : [],
     pageNotes:      (data.pageNotes && typeof data.pageNotes === 'object')
                       ? data.pageNotes
+                      : {},
+    pageInkText:    (data.pageInkText && typeof data.pageInkText === 'object')
+                      ? data.pageInkText
                       : {},
   };
 }

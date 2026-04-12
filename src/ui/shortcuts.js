@@ -37,8 +37,9 @@ const SHORTCUT_DOCS = [
   { key: 'F',           description: 'Fit page to window'      },
   { key: 'P',           description: 'Toggle pages panel'      },
   { key: 'Escape',      description: 'Deselect / cancel'       },
-  { key: 'Ctrl+F',      description: 'Search text in PDF'      },
-  { key: 'Ctrl+Shift+S', description: 'Screenshot to clipboard' },
+  { key: 'Ctrl+F',       description: 'Search text in PDF'           },
+  { key: 'Ctrl+Shift+H', description: 'Search handwriting'            },
+  { key: 'Ctrl+Shift+S', description: 'Screenshot to clipboard'       },
   { key: 'Ctrl + O',    description: 'Open file'               },
   { key: 'Ctrl + Z',    description: 'Undo last annotation'    },
   { key: 'Ctrl+Shift+Z', description: 'Redo'                   },
@@ -74,11 +75,11 @@ let modalEl = null;
  *   redo       — called when Ctrl+Shift+Z is pressed
  *   openSearch — called when Ctrl+F is pressed
  */
-function init({ openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel, openSearch }) {
+function init({ openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel, openSearch, openInkSearch }) {
   buildModal();
 
   window.addEventListener('keydown', (e) => {
-    handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel, openSearch });
+    handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel, openSearch, openInkSearch });
   });
 }
 
@@ -92,7 +93,7 @@ function init({ openFile, setTool, undo, redo, fitPage, prevPage, nextPage, scre
  * @param {KeyboardEvent} e
  * @param {{ openFile: Function, setTool: Function, undo: Function, openSearch: Function }} callbacks
  */
-function handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel, openSearch }) {
+function handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, nextPage, screenshot, togglePanel, openSearch, openInkSearch }) {
   // Ctrl+O: open file (fires regardless of editable target)
   if (e.ctrlKey && !e.shiftKey && e.key === 'o') {
     e.preventDefault();
@@ -118,6 +119,13 @@ function handleKeyDown(e, { openFile, setTool, undo, redo, fitPage, prevPage, ne
   if (e.ctrlKey && !e.shiftKey && e.key === 'z') {
     e.preventDefault();
     undo();
+    return;
+  }
+
+  // Ctrl+Shift+H: handwriting search
+  if (e.ctrlKey && e.shiftKey && (e.key === 'h' || e.key === 'H')) {
+    e.preventDefault();
+    openInkSearch?.();
     return;
   }
 

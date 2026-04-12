@@ -23,7 +23,7 @@ import {
   getCurrentPageListIndex, spliceBlankPagesFromMigration,
   getPdfDoc, getPageList, goToPage, getCurrentPageId, pageExists,
 } from './pages/pageManager.js';
-import { clear, loadFromJSON, undo, redo }         from './annotations/manager.js';
+import { clear, loadFromJSON, loadPageInkText, undo, redo } from './annotations/manager.js';
 import { initAutosave }                           from './storage/autosave.js';
 import { deserialise }                            from './storage/serialiser.js';
 import { initHighlight }                          from './annotations/highlight.js';
@@ -41,6 +41,7 @@ import { init as initPanel, loadPageNotes, getCurrentPageIndex, togglePanel,
 import { initLibrary, addToLibrary }              from './ui/library.js';
 import { exportToPdf }                            from './export/pdfExport.js';
 import { initSearch, showSearch }                 from './ui/search.js';
+import { initHandwritingSearch, toggleHandwritingSearch } from './ui/handwritingSearch.js';
 import { search as searchText, clearCache as clearSearchCache } from './pdf/textSearch.js';
 
 // ---------------------------------------------------------------------------
@@ -97,7 +98,8 @@ initShortcuts({       // Wires up global keyboard shortcuts
     if (cur < getPageCount() - 1) goToPageIndex(cur + 1);
   },
   togglePanel,
-  openSearch: showSearch,
+  openSearch:    showSearch,
+  openInkSearch: toggleHandwritingSearch,
 });
 initAutosave();       // Listens for changes, writes to disk
 initScreenshot();     // Creates screenshot overlay DOM, attaches listeners
@@ -105,6 +107,9 @@ initLibrary(openFromLibrary); // File library drawer
 initSearch({          // Search bar (Ctrl+F)
   onSearch: (query) => searchText(getPdfDoc(), getPageList(), query),
   onNavigate: (match) => goToPage(match.pageId),
+});
+initHandwritingSearch({ // Handwriting search panel (Ctrl+Shift+H)
+  onOpenVellum: (vellumPath) => loadVellum(vellumPath),
 });
 
 // If the app was launched by double-clicking a .vellum or .pdf file in
@@ -129,6 +134,7 @@ btnOpen.addEventListener('click', handleOpen);
 
 document.getElementById('btn-fit-page').addEventListener('click', fitPage);
 document.getElementById('btn-screenshot').addEventListener('click', activateScreenshot);
+document.getElementById('btn-ink-search').addEventListener('click', toggleHandwritingSearch);
 document.getElementById('btn-new-page').addEventListener('click', (e) => {
   addBlankPageWithPicker(e.currentTarget);
 });
@@ -434,6 +440,7 @@ async function tryLoadAnnotations(pdfPath) {
     }
 
     loadFromJSON(result.annotations);
+    loadPageInkText(result.pageInkText ?? {});
     loadPageNotes(result.pageNotes);
   } catch (err) {
     console.error('Failed to load annotations:', err);

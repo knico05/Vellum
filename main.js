@@ -24,6 +24,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const https = require('https');
+const { spawn } = require('child_process');
 const AdmZip = require('adm-zip');
 
 // ---------------------------------------------------------------------------
@@ -971,6 +972,221 @@ function setupIPC(win) {
     }
 
     return null;
+  });
+
+  // ---------------------------------------------------------------------------
+  // Handwriting recognition helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Normalises an array of strokes so the bounding box of the entire group
+   * starts at (0, 0). Preserving relative positions between strokes is critical
+   * for the Windows Ink recogniser to understand multi-stroke letters and words.
+   *
+   * @param {Array<Array<{x:number,y:number}>>} strokes
+   * @returns {Array<Array<{x:number,y:number}>>}
+   */
+  function _normalizeStrokes(strokes) {
+    let minX = Infinity, minY = Infinity;
+    for (const stroke of strokes) {
+      for (const pt of stroke) {
+        if (pt.x < minX) minX = pt.x;
+        if (pt.y < minY) minY = pt.y;
+      }
+    }
+    if (!isFinite(minX)) return strokes;
+    return strokes.map(s => s.map(pt => ({ x: pt.x - minX, y: pt.y - minY })));
+  }
+
+  /**
+   * Runs the PowerShell ink recogniser on a set of normalised strokes.
+   * Writes a temp JSON file, spawns recognize.ps1, collects stdout.
+   *
+   * @param {Array<Array<{x:number,y:number}>>} normalizedStrokes
+   * @returns {Promise<string>} recognised text, or '' on any failure
+   */
+  async function _recognizeInkStrokes(normalizedStrokes) {
+    const tmpPath = path.join(app.getPath('temp'), `vellum_ink_${Date.now()}_${Math.random().toString(36).slice(2)}.json`);
+    try {
+      fs.writeFileSync(tmpPath, JSON.stringify(normalizedStrokes), 'utf8');
+    } catch {
+      return '';
+    }
+
+    const psScript = path.join(__dirname, 'scripts', 'recognize.ps1');
+
+    return new Promise((resolve) => {
+      const proc = spawn('powershell', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', psScript, '-InputFile', tmpPath,
+      ], { timeout: 15000 });
+
+      let stdout = '';
+      proc.stdout.on('data', chunk => { stdout += chunk.toString(); });
+      proc.on('close', () => {
+        try { fs.unlinkSync(tmpPath); } catch { /* temp cleanup best-effort */ }
+        resolve(stdout.trim());
+      });
+      proc.on('error', () => {
+        try { fs.unlinkSync(tmpPath); } catch {}
+        resolve('');
+      });
+    });
+  }
+
+  /**
+   * Recursively collects all .vellum file paths from a folder tree node
+   * returned by _scanFolderTree().
+   *
+   * @param {{ files: Array<{path:string,name:string}>, subfolders: Array }} node
+   * @returns {string[]}
+   */
+  function _collectVellumPaths(node) {
+    const paths = [];
+    for (const f of node.files ?? []) {
+      if (f.name.toLowerCase().endsWith('.vellum')) paths.push(f.path);
+    }
+    for (const sub of node.subfolders ?? []) {
+      paths.push(..._collectVellumPaths(sub));
+    }
+    return paths;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Handwriting search IPC handlers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * recognize-handwriting — runs the PowerShell ink recogniser on caller-supplied
+   * strokes. Strokes should be grouped per page (all strokes on a page together)
+   * so the recogniser can resolve multi-stroke characters and words correctly.
+   *
+   * @param {Array<Array<{x:number,y:number,pressure?:number}>>} strokes
+   *   Array of strokes; each stroke is an array of canvas-space points.
+   *   The caller is responsible for grouping strokes by page before calling.
+   * @returns {Promise<string>} recognised text
+   */
+  ipcMain.handle('recognize-handwriting', async (_event, strokes) => {
+    if (!Array.isArray(strokes) || strokes.length === 0) return '';
+    // Strip pressure — Windows Ink only needs x, y
+    const xyOnly = strokes.map(s => s.map(pt => ({ x: pt.x, y: pt.y })));
+    const normalized = _normalizeStrokes(xyOnly);
+    return _recognizeInkStrokes(normalized);
+  });
+
+  /**
+   * list-vellum-files-for-search — collects all .vellum file paths from:
+   *   1. All pinned library folders (read from userData/library.json)
+   *   2. The configured auto-backup folder (from userData/settings.json)
+   * Deduplicates by resolved absolute path.
+   *
+   * @returns {string[]} deduplicated list of absolute .vellum paths
+   */
+  ipcMain.handle('list-vellum-files-for-search', () => {
+    const seen    = new Set();
+    const results = [];
+
+    const addPath = (p) => {
+      const resolved = path.resolve(p);
+      if (!seen.has(resolved) && fs.existsSync(resolved)) {
+        seen.add(resolved);
+        results.push(resolved);
+      }
+    };
+
+    // Pinned library folders — read from userData/library.json
+    try {
+      const libPath = path.join(app.getPath('userData'), 'library.json');
+      const lib     = fs.existsSync(libPath)
+        ? JSON.parse(fs.readFileSync(libPath, 'utf8'))
+        : { folders: [] };
+      for (const folder of (lib.folders ?? [])) {
+        try {
+          const tree = _scanFolderTree(folder.path, 0);
+          for (const p of _collectVellumPaths(tree)) addPath(p);
+        } catch { /* unreadable folder — skip */ }
+      }
+    } catch { /* library.json unreadable — skip */ }
+
+    // Backup folder
+    const backupDir = _loadSettings().backupDir;
+    if (backupDir) {
+      try {
+        for (const name of fs.readdirSync(backupDir)) {
+          if (name.toLowerCase().endsWith('.vellum')) {
+            addPath(path.join(backupDir, name));
+          }
+        }
+      } catch { /* unreadable backup folder — skip */ }
+    }
+
+    return results;
+  });
+
+  /**
+   * search-ink-in-vellum — searches for a keyword in the handwriting of a single
+   * .vellum file. For pages whose ink text is not yet cached, recognition is run
+   * and the result written back into the ZIP so subsequent searches are instant.
+   *
+   * @param {string} vellumPath   — absolute path to the .vellum archive
+   * @param {string} keyword      — search term (case-insensitive substring)
+   * @returns {Promise<Array<{pageId:string, excerpt:string}>>}
+   *   One entry per matching page. excerpt is the first 120 chars of recognised text.
+   */
+  ipcMain.handle('search-ink-in-vellum', async (_event, vellumPath, keyword) => {
+    if (!keyword || !vellumPath) return [];
+
+    const needle = keyword.toLowerCase();
+
+    let zip, annoJson;
+    try {
+      zip      = new AdmZip(vellumPath);
+      const e  = zip.getEntry('annotations.json');
+      annoJson = e ? JSON.parse(e.getData().toString('utf8')) : null;
+    } catch {
+      return [];
+    }
+    if (!annoJson) return [];
+
+    // Group draw-stroke points by pageId
+    const strokesByPage = {};
+    for (const anno of (annoJson.annotations ?? [])) {
+      if (anno.type !== 'draw' || !Array.isArray(anno.points) || anno.points.length < 2) continue;
+      if (!strokesByPage[anno.pageId]) strokesByPage[anno.pageId] = [];
+      strokesByPage[anno.pageId].push(anno.points.map(pt => ({ x: pt.x, y: pt.y })));
+    }
+
+    // Ensure pageInkText map exists
+    if (!annoJson.pageInkText) annoJson.pageInkText = {};
+
+    let anyNewRecognition = false;
+
+    // Recognise pages that don't have a cached result yet
+    for (const [pageId, strokes] of Object.entries(strokesByPage)) {
+      if (annoJson.pageInkText[pageId] !== undefined) continue; // already cached
+      const normalized = _normalizeStrokes(strokes);
+      const text       = await _recognizeInkStrokes(normalized);
+      annoJson.pageInkText[pageId] = text;
+      anyNewRecognition = true;
+    }
+
+    // Write updated annotations.json back into the ZIP if anything changed
+    if (anyNewRecognition) {
+      try {
+        zip.deleteFile('annotations.json');
+        zip.addFile('annotations.json', Buffer.from(JSON.stringify(annoJson, null, 2), 'utf8'));
+        zip.writeZip(vellumPath);
+      } catch { /* ZIP update failed — cached text still used this session */ }
+    }
+
+    // Return matching pages
+    const matches = [];
+    for (const [pageId, text] of Object.entries(annoJson.pageInkText)) {
+      if (typeof text === 'string' && text.toLowerCase().includes(needle)) {
+        matches.push({ pageId, excerpt: text.slice(0, 120) });
+      }
+    }
+    return matches;
   });
 
   /**
