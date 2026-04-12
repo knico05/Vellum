@@ -37,13 +37,17 @@ try {
   #    GetGenericArguments() in the PowerShell runtime.
   # ------------------------------------------------------------------
   function Await-WinRT($asyncOp) {
-    while ($asyncOp.Status -eq 0) {
-      [System.Threading.Thread]::Sleep(10)
+    # Status is a WinRT AsyncStatus enum: Started=0, Completed=1, Canceled=2, Error=3
+    # Use ToString() to avoid integer-comparison issues with WinRT enum projection.
+    $deadline = [System.DateTime]::UtcNow.AddSeconds(30)
+    while ($asyncOp.Status.ToString() -eq 'Started' -and [System.DateTime]::UtcNow -lt $deadline) {
+      [System.Threading.Thread]::Sleep(20)
     }
-    if ($asyncOp.Status -eq 1) {
+    $statusStr = $asyncOp.Status.ToString()
+    if ($statusStr -eq 'Completed') {
       return $asyncOp.GetResults()
     }
-    throw "WinRT async operation failed: status=$($asyncOp.Status), error=$($asyncOp.ErrorCode)"
+    throw "WinRT async operation failed: status=$statusStr, error=$($asyncOp.ErrorCode)"
   }
 
   # ------------------------------------------------------------------

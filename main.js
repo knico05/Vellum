@@ -1017,7 +1017,7 @@ function setupIPC(win) {
 
     return new Promise((resolve) => {
       const proc = spawn('powershell', [
-        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-STA', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', psScript, '-InputFile', tmpPath,
       ], { timeout: 15000 });
 
