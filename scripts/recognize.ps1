@@ -25,8 +25,9 @@ $ErrorActionPreference = 'Stop'
 
 try {
   # ------------------------------------------------------------------
-  # 1. Load Numerics support (for Matrix3x2::Identity)
+  # 1. Load WinRT and Numerics support
   # ------------------------------------------------------------------
+  Add-Type -AssemblyName System.Runtime.WindowsRuntime
   Add-Type -AssemblyName System.Numerics
 
   # ------------------------------------------------------------------
@@ -37,17 +38,29 @@ try {
   #    GetGenericArguments() in the PowerShell runtime.
   # ------------------------------------------------------------------
   function Await-WinRT($asyncOp) {
-    # Status is a WinRT AsyncStatus enum: Started=0, Completed=1, Canceled=2, Error=3
-    # Use ToString() to avoid integer-comparison issues with WinRT enum projection.
-    $deadline = [System.DateTime]::UtcNow.AddSeconds(30)
-    while ($asyncOp.Status.ToString() -eq 'Started' -and [System.DateTime]::UtcNow -lt $deadline) {
-      [System.Threading.Thread]::Sleep(20)
+    # The concrete WinRT type returned by RecognizeAsync is not itself generic --
+    # GetGenericArguments() on it returns empty. The generic type arg T lives on
+    # the IAsyncOperation<T> interface the object implements. Find it there.
+    $asyncOpIface = $asyncOp.GetType().GetInterfaces() | Where-Object {
+      $_.IsGenericType -and $_.GetGenericTypeDefinition().Name -like 'IAsyncOperation*'
+    } | Select-Object -First 1
+
+    if (-not $asyncOpIface) {
+      throw "Could not find IAsyncOperation<T> interface on $($asyncOp.GetType().FullName)"
     }
-    $statusStr = $asyncOp.Status.ToString()
-    if ($statusStr -eq 'Completed') {
-      return $asyncOp.GetResults()
-    }
-    throw "WinRT async operation failed: status=$statusStr, error=$($asyncOp.ErrorCode)"
+
+    $tArg = $asyncOpIface.GetGenericArguments()[0]
+
+    $methods   = [System.WindowsRuntimeSystemExtensions].GetMethods()
+    $asTaskDef = $methods | Where-Object {
+      $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1
+    } | Select-Object -First 1
+
+    if (-not $asTaskDef) { throw 'AsTask extension method not found.' }
+
+    $asTask  = $asTaskDef.MakeGenericMethod($tArg)
+    $netTask = $asTask.Invoke($null, @($asyncOp))
+    $netTask.GetAwaiter().GetResult()
   }
 
   # ------------------------------------------------------------------
