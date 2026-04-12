@@ -15,7 +15,7 @@
   Absolute path to the temporary JSON file written by the Node main process.
 
 .NOTES
-  Windows.Foundation.Point is NOT loaded by name — its assembly reference varies
+  Windows.Foundation.Point is NOT loaded by name -- its assembly reference varies
   across Windows versions. Instead we derive its Type from InkPoint's constructor
   parameter, which is guaranteed to be consistent after InkPoint is loaded.
 #>
@@ -50,7 +50,7 @@ try {
 
   # ------------------------------------------------------------------
   # 3. Load WinRT ink types (Windows.Foundation loads as a dependency)
-  #    Do NOT try to load Windows.Foundation.Point by name — the winmd
+  #    Do NOT try to load Windows.Foundation.Point by name -- the winmd
   #    assembly hint differs across Windows versions and fails.
   # ------------------------------------------------------------------
   $null = [Windows.UI.Input.Inking.InkRecognizerContainer,  Windows.UI.Input.Inking, ContentType=WindowsRuntime]
@@ -61,7 +61,7 @@ try {
   # ------------------------------------------------------------------
   # 4. Derive Windows.Foundation.Point from InkPoint's constructor.
   #    This works because loading InkPoint also loads its dependencies,
-  #    including Point — we just navigate to it via reflection instead
+  #    including Point -- we just navigate to it via reflection instead
   #    of guessing the assembly name.
   # ------------------------------------------------------------------
   $inkPtCtor  = [Windows.UI.Input.Inking.InkPoint].GetConstructors() |
@@ -92,7 +92,7 @@ try {
     Write-Output ''
     exit 0
   }
-  [Console]::Error.WriteLine("Recognizers available: $($recognizers.Count) — using: $($recognizers[0].Name)")
+  [Console]::Error.WriteLine("Recognizers available: $($recognizers.Count), using: $($recognizers[0].Name)")
 
   # ------------------------------------------------------------------
   # 6. Read stroke data from the temp file
