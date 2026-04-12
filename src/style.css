@@ -2543,6 +2543,43 @@ button:focus-visible {
   min-width: 0;
 }
 
+/* Inline rename input — appears below the target file row */
+.library-rename-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 36px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.library-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  padding: 3px 6px;
+  outline: none;
+}
+
+.library-rename-btn {
+  flex-shrink: 0;
+  background: var(--surface-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  padding: 3px 7px;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.library-rename-btn:hover { background: var(--surface-2); color: var(--text-primary); }
+.library-rename-cancel:hover { color: var(--anno-pink); }
+
 .library-file-vellum-badge {
   font-size: 10px;
   padding: 1px 5px;

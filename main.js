@@ -126,7 +126,36 @@ function createWindow() {
       // sandbox: true runs the renderer in an OS-level sandbox, limiting
       // what system calls it can make. Belt-and-suspenders with contextIsolation.
       sandbox: true,
+
+      // Enable Chromium's built-in spell checker. Red underlines appear in
+      // contenteditable elements; right-click shows correction suggestions via
+      // the context-menu handler below.
+      spellcheck: true,
     },
+  });
+
+  // Spell-check context menu — shows suggestions and language switcher when
+  // the user right-clicks a misspelled word in any contenteditable element.
+  win.webContents.on('context-menu', (_e, params) => {
+    if (!params.misspelledWord && params.dictionarySuggestions.length === 0) return;
+    const template = [
+      ...params.dictionarySuggestions.map(s => ({
+        label: s,
+        click: () => win.webContents.replaceMisspelling(s),
+      })),
+      { type: 'separator' },
+      {
+        label: 'Add to dictionary',
+        click: () => win.webContents.session.addWordToSpellCheckerDictionary(params.misspelledWord),
+      },
+      { type: 'separator' },
+      { label: 'English', click: () => win.webContents.session.setSpellCheckerLanguages(['en-US']) },
+      { label: 'German',  click: () => win.webContents.session.setSpellCheckerLanguages(['de-DE']) },
+      { label: 'French',  click: () => win.webContents.session.setSpellCheckerLanguages(['fr-FR']) },
+      { label: 'Spanish', click: () => win.webContents.session.setSpellCheckerLanguages(['es-ES']) },
+      { label: 'Dutch',   click: () => win.webContents.session.setSpellCheckerLanguages(['nl-NL']) },
+    ];
+    Menu.buildFromTemplate(template).popup({ window: win });
   });
 
   // Block ms-gamingoverlay:// before Chromium hands it to the Windows shell.

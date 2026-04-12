@@ -881,13 +881,20 @@ function updateColourPickerVisibility() {
   const pressureVisible    = activeTool === 'draw';
   const shapeSnapVisible   = activeTool === 'draw' || activeTool === 'highlight';
 
-  colourPickerEl.style.display      = colourVisible     ? 'flex'  : 'none';
-  colourSepEl.style.display         = colourVisible     ? 'block' : 'none';
-  strokePickerEl.style.display      = strokeVisible     ? 'flex'  : 'none';
-  eraserModePickerEl.style.display  = eraserModeVisible ? 'flex'  : 'none';
-  pressureToggleEl.style.display = 'flex';
-  pressureToggleEl.classList.toggle('toolbar-btn-invisible', !pressureVisible);
-  shapeSnapToggleEl.style.display   = shapeSnapVisible  ? 'flex'  : 'none';
+  // Use visibility+pointerEvents instead of display:none so every control
+  // always occupies the same space — prevents layout shift when switching tools.
+  const show = (el, visible) => {
+    el.style.visibility   = visible ? 'visible' : 'hidden';
+    el.style.pointerEvents = visible ? ''        : 'none';
+  };
+
+  show(colourPickerEl,     colourVisible);
+  show(colourSepEl,        colourVisible);
+  show(strokePickerEl,     strokeVisible);
+  show(eraserModePickerEl, eraserModeVisible);
+  show(pressureToggleEl,   pressureVisible);
+  show(shapeSnapToggleEl,  shapeSnapVisible);
+  pressureToggleEl.classList.remove('toolbar-btn-invisible');
 
   if (colourVisible || strokeVisible || eraserModeVisible || pressureVisible) {
     restoreToolSettings(activeTool);

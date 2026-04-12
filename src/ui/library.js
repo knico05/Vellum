@@ -619,34 +619,71 @@ async function removeFromRecent(filePath) {
  * @param {string} [dirPath] — Containing folder path, for refreshing folder view
  */
 async function handleRenameFile(filePath, dirPath) {
-  const currentName = filePath.replace(/\\/g, '/').split('/').pop().replace(/\.pdf$/i, '');
-  const newName = window.prompt('Rename file:', currentName);
-  if (!newName || newName.trim() === '' || newName.trim() === currentName) return;
+  // window.prompt() is blocked by sandbox:true — use an inline input instead.
+  const currentName = filePath.replace(/\\/g, '/').split('/').pop().replace(/\.[^.]+$/, '');
 
-  try {
-    const newPath = await window.api.renameFile(filePath, newName.trim());
+  // Find the file row in the DOM to anchor the inline input below it.
+  const fileRow = [...document.querySelectorAll('.library-file')].find(el => el.title === filePath);
+  if (!fileRow) return;
 
-    // Update recent files entry if present
-    const entry = library.files.find(f => f.path === filePath);
-    if (entry) {
-      const parts = newPath.replace(/\\/g, '/').split('/');
-      entry.path = newPath;
-      entry.name = parts[parts.length - 1];
-      entry.dir  = parts.slice(0, -1).join('/') || '/';
+  // Only one rename row at a time.
+  document.querySelector('.library-rename-row')?.remove();
+
+  const row = document.createElement('div');
+  row.className = 'library-rename-row';
+
+  const input = document.createElement('input');
+  input.type      = 'text';
+  input.className = 'library-rename-input';
+  input.value     = currentName;
+
+  const okBtn = document.createElement('button');
+  okBtn.className   = 'library-rename-btn';
+  okBtn.textContent = 'OK';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className   = 'library-rename-btn library-rename-cancel';
+  cancelBtn.textContent = '✕';
+
+  row.appendChild(input);
+  row.appendChild(okBtn);
+  row.appendChild(cancelBtn);
+  fileRow.insertAdjacentElement('afterend', row);
+  input.select();
+
+  const confirm = async () => {
+    const newName = input.value.trim();
+    row.remove();
+    if (!newName || newName === currentName) return;
+    try {
+      const newPath = await window.api.renameFile(filePath, newName);
+      const entry = library.files.find(f => f.path === filePath);
+      if (entry) {
+        const parts = newPath.replace(/\\/g, '/').split('/');
+        entry.path = newPath;
+        entry.name = parts[parts.length - 1];
+        entry.dir  = parts.slice(0, -1).join('/') || '/';
+      }
+      if (dirPath) {
+        folderFilesCache.delete(dirPath);
+        const container = _findChildrenContainer(dirPath);
+        if (container) await _expandFolder(dirPath, null, container);
+      }
+      renderList();
+      await _save();
+    } catch (err) {
+      alert(`Could not rename: ${err.message}`);
     }
+  };
 
-    // Refresh the folder scan if this file lives in a pinned folder
-    if (dirPath) {
-      folderFilesCache.delete(dirPath);
-      const container = _findChildrenContainer(dirPath);
-      if (container) await _expandFolder(dirPath, null, container);
-    }
+  const cancel = () => row.remove();
 
-    renderList();
-    await _save();
-  } catch (err) {
-    alert(`Could not rename: ${err.message}`);
-  }
+  okBtn.addEventListener('click', confirm);
+  cancelBtn.addEventListener('click', cancel);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  confirm();
+    if (e.key === 'Escape') cancel();
+  });
 }
 
 /**
