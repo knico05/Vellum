@@ -57,13 +57,15 @@ try {
   }
 
   # ------------------------------------------------------------------
-  # 3. List available types (diagnostic) and find recognizers
+  # 3. Verify at least one handwriting recognizer is installed
   # ------------------------------------------------------------------
-  $inkAssembly = [System.AppDomain]::CurrentDomain.GetAssemblies() |
-    Where-Object { $_.GetName().Name -eq 'Microsoft.Ink' } |
-    Select-Object -First 1
-  $typeNames = $inkAssembly.GetTypes() | ForEach-Object { $_.FullName }
-  [Console]::Error.WriteLine("Microsoft.Ink types: $($typeNames -join ', ')")
+  $recognizers = [Microsoft.Ink.Recognizers]::new()
+  if ($recognizers.Count -eq 0) {
+    [Console]::Error.WriteLine('No handwriting recognizers found. Install a Windows handwriting language pack.')
+    Write-Output ''
+    exit 0
+  }
+  [Console]::Error.WriteLine("Recognizers available: $($recognizers.Count), first: $($recognizers[0].Name)")
 
   # ------------------------------------------------------------------
   # 4. Read stroke data from the temp file
@@ -113,7 +115,7 @@ try {
   # ------------------------------------------------------------------
   # 6. Recognize -- synchronous, no WinRT async needed
   # ------------------------------------------------------------------
-  $context          = [Microsoft.Ink.InkRecognizerContext]::new()
+  $context          = [Microsoft.Ink.RecognizerContext]::new()
   $context.Strokes  = $ink.Strokes
 
   $recoStatus = [Microsoft.Ink.RecognitionStatus]::NoError
