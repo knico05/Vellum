@@ -1022,12 +1022,18 @@ function setupIPC(win) {
       ], { timeout: 15000 });
 
       let stdout = '';
+      let stderr = '';
       proc.stdout.on('data', chunk => { stdout += chunk.toString(); });
-      proc.on('close', () => {
+      proc.stderr.on('data', chunk => { stderr += chunk.toString(); });
+      proc.on('close', (code) => {
         try { fs.unlinkSync(tmpPath); } catch { /* temp cleanup best-effort */ }
+        if (stderr.trim()) console.error('[recognize.ps1 stderr]', stderr.trim());
+        if (code !== 0) console.warn('[recognize.ps1] exit code', code, '| stdout:', stdout.trim());
+        else console.log('[recognize.ps1] result:', stdout.trim() || '(empty)');
         resolve(stdout.trim());
       });
-      proc.on('error', () => {
+      proc.on('error', (err) => {
+        console.error('[recognize.ps1] spawn error:', err.message);
         try { fs.unlinkSync(tmpPath); } catch {}
         resolve('');
       });
