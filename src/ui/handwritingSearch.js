@@ -34,13 +34,15 @@ import { scheduleSave }                                    from '../storage/auto
 // Module state
 // ---------------------------------------------------------------------------
 
-let _panelEl    = null;
-let _inputEl    = null;
-let _scopeBtns  = {}; // { current, all }
-let _resultsEl  = null;
-let _statusEl   = null;
-let _visible    = false;
-let _scope      = 'current'; // 'current' | 'all'
+let _panelEl        = null;
+let _inputEl        = null;
+let _scopeBtns      = {}; // { current, all }
+let _resultsEl      = null;
+let _statusEl       = null;
+let _progressWrapEl = null;
+let _progressBarEl  = null;
+let _visible        = false;
+let _scope          = 'current'; // 'current' | 'all'
 
 /** Called by app.js to open a .vellum file when the user clicks a cross-file result */
 let _openVellumCallback = null;
@@ -58,10 +60,12 @@ let _openVellumCallback = null;
 function init({ onOpenVellum } = {}) {
   _openVellumCallback = onOpenVellum ?? null;
 
-  _panelEl   = document.getElementById('ink-search-panel');
-  _inputEl   = document.getElementById('ink-search-input');
-  _resultsEl = document.getElementById('ink-search-results');
-  _statusEl  = document.getElementById('ink-search-status');
+  _panelEl        = document.getElementById('ink-search-panel');
+  _inputEl        = document.getElementById('ink-search-input');
+  _resultsEl      = document.getElementById('ink-search-results');
+  _statusEl       = document.getElementById('ink-search-status');
+  _progressWrapEl = document.getElementById('ink-search-progress-wrap');
+  _progressBarEl  = document.getElementById('ink-search-progress-bar');
 
   _scopeBtns.current = document.getElementById('ink-scope-current');
   _scopeBtns.all     = document.getElementById('ink-scope-all');
@@ -123,6 +127,7 @@ async function _runSearch() {
   if (!keyword) return;
 
   _setStatus('Searching…');
+  _setProgress(0, 0); // hide bar until we know the total
   _clearResults();
 
   try {
@@ -160,6 +165,7 @@ async function _searchCurrentDoc(keyword) {
   const pageIds = Object.keys(strokesByPage);
   if (pageIds.length === 0) {
     _setStatus('No handwriting in this document.');
+    _setProgress(0, 0);
     return;
   }
 
@@ -168,7 +174,10 @@ async function _searchCurrentDoc(keyword) {
   let recognised = 0;
   const total = pageIds.filter(id => inkText[id] === undefined || isPageInkDirty(id)).length;
 
-  if (total > 0) _setStatus(`Recognising ${total} page${total !== 1 ? 's' : ''}…`);
+  if (total > 0) {
+    _setStatus(`Recognising ${total} page${total !== 1 ? 's' : ''}…`);
+    _setProgress(0, total);
+  }
 
   for (const pageId of pageIds) {
     if (inkText[pageId] !== undefined && !isPageInkDirty(pageId)) continue;
@@ -177,10 +186,12 @@ async function _searchCurrentDoc(keyword) {
     setPageInkText(pageId, text);
     inkText[pageId] = text;
     recognised++;
-    if (total > 1) _setStatus(`Recognising… (${recognised}/${total})`);
+    _setProgress(recognised, total);
+    if (total > 1) _setStatus(`Recognising… (${recognised} / ${total})`);
   }
 
   if (recognised > 0) scheduleSave(); // persist the newly cached ink text
+  _completeProgress();
 
   // Search
   const needle  = keyword.toLowerCase();
@@ -228,17 +239,21 @@ async function _searchAllDocs(keyword) {
 
   if (!vellumPaths || vellumPaths.length === 0) {
     _setStatus('No .vellum files found. Pin a folder in the library or set a backup folder.');
+    _setProgress(0, 0);
     return;
   }
 
-  _setStatus(`Searching ${vellumPaths.length} file${vellumPaths.length !== 1 ? 's' : ''}…`);
+  const fileCount = vellumPaths.length;
+  _setStatus(`Searching ${fileCount} file${fileCount !== 1 ? 's' : ''}…`);
+  _setProgress(0, fileCount);
 
   let totalMatches = 0;
   let processed    = 0;
 
   for (const vellumPath of vellumPaths) {
     processed++;
-    _setStatus(`Searching ${processed} / ${vellumPaths.length}…`);
+    _setProgress(processed, fileCount);
+    _setStatus(`Searching ${processed} / ${fileCount}…`);
 
     let matches;
     try {
@@ -266,9 +281,10 @@ async function _searchAllDocs(keyword) {
     }
   }
 
+  _completeProgress();
   _setStatus(
     totalMatches > 0
-      ? `${totalMatches} match${totalMatches !== 1 ? 'es' : ''} across ${vellumPaths.length} file${vellumPaths.length !== 1 ? 's' : ''}`
+      ? `${totalMatches} match${totalMatches !== 1 ? 'es' : ''} across ${fileCount} file${fileCount !== 1 ? 's' : ''}`
       : 'No matches found.'
   );
 }
@@ -283,6 +299,32 @@ function _clearResults() {
 
 function _setStatus(text) {
   if (_statusEl) _statusEl.textContent = text;
+}
+
+/**
+ * Shows and updates the progress bar.
+ * @param {number} done  — pages/files completed so far
+ * @param {number} total — total pages/files to process
+ */
+function _setProgress(done, total) {
+  if (!_progressWrapEl || !_progressBarEl) return;
+  if (total === 0) {
+    _progressWrapEl.classList.add('hidden');
+    return;
+  }
+  _progressWrapEl.classList.remove('hidden');
+  _progressBarEl.style.width = `${Math.round((done / total) * 100)}%`;
+}
+
+/** Completes the bar to 100%, then hides it after a short delay. */
+function _completeProgress() {
+  if (!_progressWrapEl || !_progressBarEl) return;
+  _progressWrapEl.classList.remove('hidden');
+  _progressBarEl.style.width = '100%';
+  setTimeout(() => {
+    _progressWrapEl.classList.add('hidden');
+    _progressBarEl.style.width = '0%';
+  }, 500);
 }
 
 /**

@@ -2972,3 +2972,24 @@ button:focus-visible {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
 }
+
+.ink-search-progress-wrap {
+  height: 3px;
+  background: var(--surface-2);
+  margin: 0 14px 10px;
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.ink-search-progress-wrap.hidden {
+  display: none;
+}
+
+.ink-search-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 200ms ease;
+}
