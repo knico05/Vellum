@@ -55,6 +55,7 @@ try {
   # ------------------------------------------------------------------
   $null = [Windows.UI.Input.Inking.InkRecognizerContainer,  Windows.UI.Input.Inking, ContentType=WindowsRuntime]
   $null = [Windows.UI.Input.Inking.InkStrokeBuilder,        Windows.UI.Input.Inking, ContentType=WindowsRuntime]
+  $null = [Windows.UI.Input.Inking.InkStrokeContainer,      Windows.UI.Input.Inking, ContentType=WindowsRuntime]
   $null = [Windows.UI.Input.Inking.InkPoint,                Windows.UI.Input.Inking, ContentType=WindowsRuntime]
   $null = [Windows.UI.Input.Inking.InkRecognitionTarget,    Windows.UI.Input.Inking, ContentType=WindowsRuntime]
 
@@ -138,9 +139,14 @@ try {
 
   # ------------------------------------------------------------------
   # 8. Run recognition
+  #    RecognizeAsync requires an InkStrokeContainer, not a raw list.
+  #    AddStrokes accepts IIterable<InkStroke> which List<T> satisfies.
   # ------------------------------------------------------------------
+  $strokeContainer = [Windows.UI.Input.Inking.InkStrokeContainer]::new()
+  $strokeContainer.AddStrokes($strokeList)
+
   $asyncOp = $container.RecognizeAsync(
-    $strokeList,
+    $strokeContainer,
     [Windows.UI.Input.Inking.InkRecognitionTarget]::All
   )
   $results = Await-WinRT $asyncOp
