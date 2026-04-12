@@ -9,15 +9,20 @@
 
   Uses Windows.UI.Input.Inking.InkRecognizerContainer (built into Windows 10/11).
   Writes recognized text to stdout.
-  Writes diagnostic information to stderr on failure.
+  Writes diagnostic information to stderr.
 
 .PARAMETER InputFile
   Absolute path to the temporary JSON file written by the Node main process.
 
 .NOTES
-  Windows.Foundation.Point is NOT loaded by name -- its assembly reference varies
-  across Windows versions. Instead we derive its Type from InkPoint's constructor
-  parameter, which is guaranteed to be consistent after InkPoint is loaded.
+  WinRT async operations return System.__ComObject from PowerShell -- the
+  IAsyncOperation<T> interface is not projected because the generic result type
+  is unknown at call time. The fix: compile an inline C# helper via Add-Type
+  that references the WinMD files directly. C# has proper WinRT type awareness
+  and AsTask() works correctly inside compiled code.
+
+  PowerShell is responsible only for reading the JSON and extracting raw
+  coordinates as primitive double arrays. The C# helper does all WinRT work.
 #>
 param([string]$InputFile)
 
@@ -25,93 +30,108 @@ $ErrorActionPreference = 'Stop'
 
 try {
   # ------------------------------------------------------------------
-  # 1. Load WinRT and Numerics support
+  # 1. Locate Windows WinMetadata directory and required assemblies.
+  #    WinMD files contain the WinRT type definitions that C# needs.
   # ------------------------------------------------------------------
+  $winmetaDir = Join-Path $env:SystemRoot 'System32\WinMetadata'
+
+  $uiWinmd         = Join-Path $winmetaDir 'Windows.UI.winmd'
+  $foundationWinmd = Join-Path $winmetaDir 'Windows.Foundation.winmd'
+
+  if (-not (Test-Path $uiWinmd)) {
+    throw "Windows.UI.winmd not found at: $uiWinmd"
+  }
+  if (-not (Test-Path $foundationWinmd)) {
+    throw "Windows.Foundation.winmd not found at: $foundationWinmd"
+  }
+
+  # System.Runtime.WindowsRuntime.dll provides AsTask() extension method
   Add-Type -AssemblyName System.Runtime.WindowsRuntime
+  $winRTExtDll = [System.WindowsRuntimeSystemExtensions].Assembly.Location
+
+  # System.Numerics.dll provides Matrix3x2
   Add-Type -AssemblyName System.Numerics
+  $numericsDll = [System.Numerics.Matrix3x2].Assembly.Location
 
   # ------------------------------------------------------------------
-  # 2. Generic helper: block on WinRT IAsyncOperation<T>
-  #    Polls Status (0=Started, 1=Completed, 2=Canceled, 3=Error)
-  #    then calls GetResults(). Avoids AsTask<T> reflection which
-  #    fails because WinRT types don't expose generic args via
-  #    GetGenericArguments() in the PowerShell runtime.
+  # 2. Compile inline C# helper.
+  #    All WinRT types, stroke construction, and async recognition
+  #    happen inside this compiled class -- no PowerShell WinRT interop.
   # ------------------------------------------------------------------
-  function Await-WinRT($asyncOp) {
-    # The concrete WinRT type returned by RecognizeAsync is not itself generic --
-    # GetGenericArguments() on it returns empty. The generic type arg T lives on
-    # the IAsyncOperation<T> interface the object implements. Find it there.
-    $asyncOpIface = $asyncOp.GetType().GetInterfaces() | Where-Object {
-      $_.IsGenericType -and $_.GetGenericTypeDefinition().Name -like 'IAsyncOperation*'
-    } | Select-Object -First 1
+  if (-not ([System.Management.Automation.PSTypeName]'InkBridge').Type) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices.WindowsRuntime;
+using Windows.UI.Input.Inking;
 
-    if (-not $asyncOpIface) {
-      throw "Could not find IAsyncOperation<T> interface on $($asyncOp.GetType().FullName)"
+/// <summary>
+/// Builds InkStrokes from raw coordinate arrays and runs handwriting recognition.
+/// Receives strokes as double[][] (each inner array is [x0,y0, x1,y1, ...]).
+/// </summary>
+public static class InkBridge {
+    public static string[] Recognize(double[][] strokes) {
+        var builder   = new InkStrokeBuilder();
+        var container = new InkStrokeContainer();
+        var identity  = new System.Numerics.Matrix3x2(1, 0, 0, 1, 0, 0);
+        var strokeList = new List<InkStroke>();
+
+        foreach (var coords in strokes) {
+            if (coords.Length < 4) continue;  // need >= 2 points (4 coords)
+            var inkPoints = new List<InkPoint>();
+            for (int i = 0; i + 1 < coords.Length; i += 2) {
+                var pt  = new Windows.Foundation.Point(coords[i], coords[i + 1]);
+                inkPoints.Add(new InkPoint(pt, 0.5f));
+            }
+            if (inkPoints.Count >= 2) {
+                strokeList.Add(builder.CreateStrokeFromInkPoints(inkPoints, identity));
+            }
+        }
+
+        container.AddStrokes(strokeList);
+
+        var rc      = new InkRecognizerContainer();
+        var results = rc.RecognizeAsync(container, InkRecognitionTarget.All)
+                        .AsTask().GetAwaiter().GetResult();
+
+        var words = new List<string>();
+        foreach (var r in results) {
+            var candidates = r.GetTextCandidates();
+            if (candidates.Count > 0) words.Add(candidates[0]);
+        }
+        return words.ToArray();
     }
 
-    $tArg = $asyncOpIface.GetGenericArguments()[0]
+    public static int GetRecognizerCount() {
+        return new InkRecognizerContainer().GetRecognizers().Count;
+    }
 
-    $methods   = [System.WindowsRuntimeSystemExtensions].GetMethods()
-    $asTaskDef = $methods | Where-Object {
-      $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1
-    } | Select-Object -First 1
-
-    if (-not $asTaskDef) { throw 'AsTask extension method not found.' }
-
-    $asTask  = $asTaskDef.MakeGenericMethod($tArg)
-    $netTask = $asTask.Invoke($null, @($asyncOp))
-    $netTask.GetAwaiter().GetResult()
+    public static string GetFirstRecognizerName() {
+        var recs = new InkRecognizerContainer().GetRecognizers();
+        return recs.Count > 0 ? recs[0].Name : "(none)";
+    }
+}
+'@ -ReferencedAssemblies @(
+      $uiWinmd,
+      $foundationWinmd,
+      $winRTExtDll,
+      $numericsDll
+    ) -ErrorAction Stop
   }
 
   # ------------------------------------------------------------------
-  # 3. Load WinRT ink types (Windows.Foundation loads as a dependency)
-  #    Do NOT try to load Windows.Foundation.Point by name -- the winmd
-  #    assembly hint differs across Windows versions and fails.
+  # 3. Verify at least one handwriting recognizer is installed
   # ------------------------------------------------------------------
-  $null = [Windows.UI.Input.Inking.InkRecognizerContainer,  Windows.UI.Input.Inking, ContentType=WindowsRuntime]
-  $null = [Windows.UI.Input.Inking.InkStrokeBuilder,        Windows.UI.Input.Inking, ContentType=WindowsRuntime]
-  $null = [Windows.UI.Input.Inking.InkStrokeContainer,      Windows.UI.Input.Inking, ContentType=WindowsRuntime]
-  $null = [Windows.UI.Input.Inking.InkPoint,                Windows.UI.Input.Inking, ContentType=WindowsRuntime]
-  $null = [Windows.UI.Input.Inking.InkRecognitionTarget,    Windows.UI.Input.Inking, ContentType=WindowsRuntime]
-
-  # ------------------------------------------------------------------
-  # 4. Derive Windows.Foundation.Point from InkPoint's constructor.
-  #    This works because loading InkPoint also loads its dependencies,
-  #    including Point -- we just navigate to it via reflection instead
-  #    of guessing the assembly name.
-  # ------------------------------------------------------------------
-  $inkPtCtor  = [Windows.UI.Input.Inking.InkPoint].GetConstructors() |
-                Where-Object { $_.GetParameters().Count -ge 2 } |
-                Select-Object -First 1
-
-  if (-not $inkPtCtor) { throw 'Could not find InkPoint constructor with 2+ parameters.' }
-
-  $pointType  = $inkPtCtor.GetParameters()[0].ParameterType  # Windows.Foundation.Point
-  $pointCtor  = $pointType.GetConstructors() |
-                Where-Object { $_.GetParameters().Count -eq 2 } |
-                Select-Object -First 1
-
-  if (-not $pointCtor) { throw "Could not find Point(x,y) constructor on $($pointType.FullName)." }
-
-  function New-Point($x, $y) {
-    # Invoke Point(double x, double y) via the reflected constructor
-    $pointCtor.Invoke(@([double]$x, [double]$y))
-  }
-
-  # ------------------------------------------------------------------
-  # 5. Verify at least one handwriting recognizer is installed
-  # ------------------------------------------------------------------
-  $container   = [Windows.UI.Input.Inking.InkRecognizerContainer]::new()
-  $recognizers = $container.GetRecognizers()
-  if ($recognizers.Count -eq 0) {
+  $recCount = [InkBridge]::GetRecognizerCount()
+  if ($recCount -eq 0) {
     [Console]::Error.WriteLine('No handwriting recognizers found. Install a Windows handwriting language pack.')
     Write-Output ''
     exit 0
   }
-  [Console]::Error.WriteLine("Recognizers available: $($recognizers.Count), using: $($recognizers[0].Name)")
+  [Console]::Error.WriteLine("Recognizers available: $recCount, first: $([InkBridge]::GetFirstRecognizerName())")
 
   # ------------------------------------------------------------------
-  # 6. Read stroke data from the temp file
+  # 4. Read stroke data from the temp file
   # ------------------------------------------------------------------
   $json       = Get-Content -Raw -LiteralPath $InputFile
   $strokeData = $json | ConvertFrom-Json
@@ -124,59 +144,33 @@ try {
   [Console]::Error.WriteLine("Strokes to process: $($strokeData.Count)")
 
   # ------------------------------------------------------------------
-  # 7. Build InkStroke objects using typed generic lists
+  # 5. Convert stroke objects to double[][] for the C# helper.
+  #    Each stroke becomes a flat array [x0,y0, x1,y1, ...].
   # ------------------------------------------------------------------
-  $builder    = [Windows.UI.Input.Inking.InkStrokeBuilder]::new()
-  $identity   = [System.Numerics.Matrix3x2]::Identity
-  $strokeList = New-Object 'System.Collections.Generic.List[Windows.UI.Input.Inking.InkStroke]'
+  $strokeArrays = [System.Collections.Generic.List[double[]]]::new()
 
   foreach ($strokePts in $strokeData) {
     if ($strokePts.Count -lt 2) { continue }
-
-    $inkPtList = New-Object 'System.Collections.Generic.List[Windows.UI.Input.Inking.InkPoint]'
-
-    foreach ($pt in $strokePts) {
-      $winPt = New-Point $pt.x $pt.y
-      $inkPt = [Windows.UI.Input.Inking.InkPoint]::new($winPt, [float]0.5)
-      $inkPtList.Add($inkPt)
+    $coords = [double[]]::new($strokePts.Count * 2)
+    for ($i = 0; $i -lt $strokePts.Count; $i++) {
+      $coords[$i * 2]     = [double]$strokePts[$i].x
+      $coords[$i * 2 + 1] = [double]$strokePts[$i].y
     }
-
-    $stroke = $builder.CreateStrokeFromInkPoints($inkPtList, $identity)
-    $strokeList.Add($stroke)
+    $strokeArrays.Add($coords)
   }
 
-  [Console]::Error.WriteLine("InkStrokes built: $($strokeList.Count)")
+  [Console]::Error.WriteLine("Stroke arrays built: $($strokeArrays.Count)")
 
-  if ($strokeList.Count -eq 0) {
+  if ($strokeArrays.Count -eq 0) {
     Write-Output ''
     exit 0
   }
 
   # ------------------------------------------------------------------
-  # 8. Run recognition
-  #    RecognizeAsync requires an InkStrokeContainer, not a raw list.
-  #    AddStrokes accepts IIterable<InkStroke> which List<T> satisfies.
+  # 6. Run recognition via C# helper
   # ------------------------------------------------------------------
-  $strokeContainer = [Windows.UI.Input.Inking.InkStrokeContainer]::new()
-  $strokeContainer.AddStrokes($strokeList)
-
-  $asyncOp = $container.RecognizeAsync(
-    $strokeContainer,
-    [Windows.UI.Input.Inking.InkRecognitionTarget]::All
-  )
-  $results = Await-WinRT $asyncOp
-  [Console]::Error.WriteLine("Recognition results: $($results.Count)")
-
-  # ------------------------------------------------------------------
-  # 9. Collect best candidate from each result segment
-  # ------------------------------------------------------------------
-  $words = @()
-  foreach ($result in $results) {
-    $candidates = $result.GetTextCandidates()
-    if ($candidates.Count -gt 0) {
-      $words += $candidates[0]
-    }
-  }
+  $words = [InkBridge]::Recognize($strokeArrays.ToArray())
+  [Console]::Error.WriteLine("Recognition results: $($words.Length)")
 
   $text = $words -join ' '
   [Console]::Error.WriteLine("Recognized: '$text'")
