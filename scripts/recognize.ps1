@@ -25,27 +25,25 @@ $ErrorActionPreference = 'Stop'
 
 try {
   # ------------------------------------------------------------------
-  # 1. Load WinRT and Numerics support
+  # 1. Load Numerics support (for Matrix3x2::Identity)
   # ------------------------------------------------------------------
-  Add-Type -AssemblyName System.Runtime.WindowsRuntime
   Add-Type -AssemblyName System.Numerics
 
   # ------------------------------------------------------------------
   # 2. Generic helper: block on WinRT IAsyncOperation<T>
-  #    Derives T from the async-op's own runtime type automatically.
+  #    Polls Status (0=Started, 1=Completed, 2=Canceled, 3=Error)
+  #    then calls GetResults(). Avoids AsTask<T> reflection which
+  #    fails because WinRT types don't expose generic args via
+  #    GetGenericArguments() in the PowerShell runtime.
   # ------------------------------------------------------------------
   function Await-WinRT($asyncOp) {
-    $methods   = [System.WindowsRuntimeSystemExtensions].GetMethods()
-    $asTaskDef = $methods | Where-Object {
-      $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1
-    } | Select-Object -First 1
-
-    if (-not $asTaskDef) { throw 'AsTask extension method not found.' }
-
-    $tArg    = $asyncOp.GetType().GetGenericArguments()[0]
-    $asTask  = $asTaskDef.MakeGenericMethod($tArg)
-    $netTask = $asTask.Invoke($null, @($asyncOp))
-    $netTask.GetAwaiter().GetResult()
+    while ($asyncOp.Status -eq 0) {
+      [System.Threading.Thread]::Sleep(10)
+    }
+    if ($asyncOp.Status -eq 1) {
+      return $asyncOp.GetResults()
+    }
+    throw "WinRT async operation failed: status=$($asyncOp.Status), error=$($asyncOp.ErrorCode)"
   }
 
   # ------------------------------------------------------------------
