@@ -1,28 +1,21 @@
 <#
 .SYNOPSIS
-  Recognizes handwritten ink strokes using the Windows Ink API.
+  Recognizes handwritten ink strokes using the Microsoft.Ink (Tablet PC) API.
 
 .DESCRIPTION
   Reads a JSON file whose path is passed as -InputFile.
   The JSON is an array of strokes; each stroke is an array of { x, y } objects.
   All coordinates are already normalized by the caller (bounding box starts at 0,0).
 
-  Uses Windows.UI.Input.Inking.InkRecognizerContainer (built into Windows 10/11).
+  Uses Microsoft.Ink.InkRecognizerContext (synchronous, standard .NET assembly).
+  This avoids the WinRT IAsyncOperation<T> COM interop issues encountered with
+  Windows.UI.Input.Inking from PowerShell.
+
   Writes recognized text to stdout.
   Writes diagnostic information to stderr.
 
 .PARAMETER InputFile
   Absolute path to the temporary JSON file written by the Node main process.
-
-.NOTES
-  WinRT async operations return System.__ComObject from PowerShell -- the
-  IAsyncOperation<T> interface is not projected because the generic result type
-  is unknown at call time. The fix: compile an inline C# helper via Add-Type
-  that references the WinMD files directly. C# has proper WinRT type awareness
-  and AsTask() works correctly inside compiled code.
-
-  PowerShell is responsible only for reading the JSON and extracting raw
-  coordinates as primitive double arrays. The C# helper does all WinRT work.
 #>
 param([string]$InputFile)
 
@@ -30,105 +23,49 @@ $ErrorActionPreference = 'Stop'
 
 try {
   # ------------------------------------------------------------------
-  # 1. Locate Windows WinMetadata directory and required assemblies.
-  #    WinMD files contain the WinRT type definitions that C# needs.
+  # 1. Load System.Drawing for Point type used by Microsoft.Ink
   # ------------------------------------------------------------------
-  $winmetaDir = Join-Path $env:SystemRoot 'System32\WinMetadata'
+  Add-Type -AssemblyName System.Drawing
 
-  $uiWinmd         = Join-Path $winmetaDir 'Windows.UI.winmd'
-  $foundationWinmd = Join-Path $winmetaDir 'Windows.Foundation.winmd'
-
-  if (-not (Test-Path $uiWinmd)) {
-    throw "Windows.UI.winmd not found at: $uiWinmd"
+  # ------------------------------------------------------------------
+  # 2. Locate and load Microsoft.Ink.dll (Tablet PC managed API).
+  #    Standard .NET assembly -- no WinRT interop needed.
+  #    Ships with Windows 10/11 when handwriting recognizers are installed.
+  # ------------------------------------------------------------------
+  $inkDll = $null
+  $searchPaths = @(
+    (Join-Path $env:ProgramFiles      'Common Files\Microsoft Shared\Ink\Microsoft.Ink.dll'),
+    (Join-Path ${env:ProgramFiles(x86)} 'Common Files\Microsoft Shared\Ink\Microsoft.Ink.dll'),
+    (Join-Path $env:SystemRoot        'System32\Microsoft.Ink.dll'),
+    (Join-Path $env:SystemRoot        'SysWOW64\Microsoft.Ink.dll')
+  )
+  foreach ($p in $searchPaths) {
+    if ($p -and (Test-Path $p)) { $inkDll = $p; break }
   }
-  if (-not (Test-Path $foundationWinmd)) {
-    throw "Windows.Foundation.winmd not found at: $foundationWinmd"
-  }
 
-  # System.Runtime.WindowsRuntime.dll provides AsTask() extension method
-  Add-Type -AssemblyName System.Runtime.WindowsRuntime
-  $winRTExtDll = [System.WindowsRuntimeSystemExtensions].Assembly.Location
-
-  # System.Numerics.dll provides Matrix3x2
-  Add-Type -AssemblyName System.Numerics
-  $numericsDll = [System.Numerics.Matrix3x2].Assembly.Location
-
-  # ------------------------------------------------------------------
-  # 2. Compile inline C# helper.
-  #    All WinRT types, stroke construction, and async recognition
-  #    happen inside this compiled class -- no PowerShell WinRT interop.
-  # ------------------------------------------------------------------
-  if (-not ([System.Management.Automation.PSTypeName]'InkBridge').Type) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Collections.Generic;
-using System.Runtime.InteropServices.WindowsRuntime;
-using Windows.UI.Input.Inking;
-
-/// <summary>
-/// Builds InkStrokes from raw coordinate arrays and runs handwriting recognition.
-/// Receives strokes as double[][] (each inner array is [x0,y0, x1,y1, ...]).
-/// </summary>
-public static class InkBridge {
-    public static string[] Recognize(double[][] strokes) {
-        var builder   = new InkStrokeBuilder();
-        var container = new InkStrokeContainer();
-        var identity  = new System.Numerics.Matrix3x2(1, 0, 0, 1, 0, 0);
-        var strokeList = new List<InkStroke>();
-
-        foreach (var coords in strokes) {
-            if (coords.Length < 4) continue;  // need >= 2 points (4 coords)
-            var inkPoints = new List<InkPoint>();
-            for (int i = 0; i + 1 < coords.Length; i += 2) {
-                var pt  = new Windows.Foundation.Point(coords[i], coords[i + 1]);
-                inkPoints.Add(new InkPoint(pt, 0.5f));
-            }
-            if (inkPoints.Count >= 2) {
-                strokeList.Add(builder.CreateStrokeFromInkPoints(inkPoints, identity));
-            }
-        }
-
-        container.AddStrokes(strokeList);
-
-        var rc      = new InkRecognizerContainer();
-        var results = rc.RecognizeAsync(container, InkRecognitionTarget.All)
-                        .AsTask().GetAwaiter().GetResult();
-
-        var words = new List<string>();
-        foreach (var r in results) {
-            var candidates = r.GetTextCandidates();
-            if (candidates.Count > 0) words.Add(candidates[0]);
-        }
-        return words.ToArray();
+  if ($inkDll) {
+    [Console]::Error.WriteLine("Loading Microsoft.Ink from: $inkDll")
+    Add-Type -Path $inkDll
+  } else {
+    # Fallback: try the GAC (version shipped with Windows Vista/7/8/10)
+    [Console]::Error.WriteLine('Microsoft.Ink.dll not found on disk -- trying GAC...')
+    try {
+      Add-Type -AssemblyName 'Microsoft.Ink, Version=6.1.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'
+    } catch {
+      throw "Microsoft.Ink.dll not found. Ensure Tablet PC / Windows Ink components are installed."
     }
-
-    public static int GetRecognizerCount() {
-        return new InkRecognizerContainer().GetRecognizers().Count;
-    }
-
-    public static string GetFirstRecognizerName() {
-        var recs = new InkRecognizerContainer().GetRecognizers();
-        return recs.Count > 0 ? recs[0].Name : "(none)";
-    }
-}
-'@ -ReferencedAssemblies @(
-      $uiWinmd,
-      $foundationWinmd,
-      $winRTExtDll,
-      $numericsDll
-    ) -ErrorAction Stop
   }
 
   # ------------------------------------------------------------------
   # 3. Verify at least one handwriting recognizer is installed
   # ------------------------------------------------------------------
-  $recCount = [InkBridge]::GetRecognizerCount()
-  if ($recCount -eq 0) {
+  $recognizers = [Microsoft.Ink.InkRecognizers]::new()
+  if ($recognizers.Count -eq 0) {
     [Console]::Error.WriteLine('No handwriting recognizers found. Install a Windows handwriting language pack.')
     Write-Output ''
     exit 0
   }
-  [Console]::Error.WriteLine("Recognizers available: $recCount, first: $([InkBridge]::GetFirstRecognizerName())")
+  [Console]::Error.WriteLine("Recognizers available: $($recognizers.Count), first: $($recognizers[0].Name)")
 
   # ------------------------------------------------------------------
   # 4. Read stroke data from the temp file
@@ -144,35 +81,53 @@ public static class InkBridge {
   [Console]::Error.WriteLine("Strokes to process: $($strokeData.Count)")
 
   # ------------------------------------------------------------------
-  # 5. Convert stroke objects to double[][] for the C# helper.
-  #    Each stroke becomes a flat array [x0,y0, x1,y1, ...].
+  # 5. Build Microsoft.Ink.Ink object with strokes.
+  #    CreateStroke() takes System.Drawing.Point[] (integers).
+  #    Scale by 26.4 to approximate HIMETRIC units (0.01mm per unit,
+  #    assuming ~96 DPI screen: 1 px = 26.46 HIMETRIC units).
+  #    Exact scale does not affect recognition -- shape is what counts.
   # ------------------------------------------------------------------
-  $strokeArrays = [System.Collections.Generic.List[double[]]]::new()
+  $ink       = [Microsoft.Ink.Ink]::new()
+  $builtCount = 0
+  $SCALE = 26.4
 
   foreach ($strokePts in $strokeData) {
     if ($strokePts.Count -lt 2) { continue }
-    $coords = [double[]]::new($strokePts.Count * 2)
+
+    $points = [System.Drawing.Point[]]::new($strokePts.Count)
     for ($i = 0; $i -lt $strokePts.Count; $i++) {
-      $coords[$i * 2]     = [double]$strokePts[$i].x
-      $coords[$i * 2 + 1] = [double]$strokePts[$i].y
+      $points[$i] = [System.Drawing.Point]::new(
+        [int][Math]::Round($strokePts[$i].x * $SCALE),
+        [int][Math]::Round($strokePts[$i].y * $SCALE)
+      )
     }
-    $strokeArrays.Add($coords)
+    $null = $ink.CreateStroke($points)
+    $builtCount++
   }
 
-  [Console]::Error.WriteLine("Stroke arrays built: $($strokeArrays.Count)")
+  [Console]::Error.WriteLine("InkStrokes built: $builtCount")
 
-  if ($strokeArrays.Count -eq 0) {
+  if ($builtCount -eq 0) {
     Write-Output ''
     exit 0
   }
 
   # ------------------------------------------------------------------
-  # 6. Run recognition via C# helper
+  # 6. Recognize -- synchronous, no WinRT async needed
   # ------------------------------------------------------------------
-  $words = [InkBridge]::Recognize($strokeArrays.ToArray())
-  [Console]::Error.WriteLine("Recognition results: $($words.Length)")
+  $context          = [Microsoft.Ink.InkRecognizerContext]::new()
+  $context.Strokes  = $ink.Strokes
 
-  $text = $words -join ' '
+  $recoStatus = [Microsoft.Ink.RecognitionStatus]::NoError
+  $result     = $context.Recognize([ref]$recoStatus)
+
+  [Console]::Error.WriteLine("Recognition status: $recoStatus")
+
+  $text = ''
+  if ($null -ne $result -and $recoStatus -eq [Microsoft.Ink.RecognitionStatus]::NoError) {
+    $text = $result.TopString
+  }
+
   [Console]::Error.WriteLine("Recognized: '$text'")
   Write-Output $text
 
