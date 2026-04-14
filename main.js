@@ -999,84 +999,153 @@ function setupIPC(win) {
   }
 
   /**
-   * Groups an array of strokes into spatially coherent clusters using a
-   * union-find approach. Two strokes are merged when the gap between their
-   * bounding boxes is ≤ eps (adaptive: 2.5× median stroke height).
-   * Single-stroke clusters (noise/dots) are discarded.
+   * Groups strokes into word-sized clusters using a line-first, word-second
+   * strategy that mirrors how ink recognizers expect input.
+   *
+   * Algorithm:
+   *   1. Compute bounding box per stroke.
+   *   2. Group strokes into lines: two strokes share a line when their Y-center
+   *      distance ≤ lineEps (0.7× median stroke height). Only Y is used — this
+   *      prevents diagonal merging across lines regardless of horizontal proximity.
+   *   3. Within each line, sort left→right by minX and split into words when the
+   *      horizontal gap between adjacent strokes exceeds wordGap (0.8× medH).
+   *      Character height ≈ character width for most handwriting, so ~1 char
+   *      height is a reliable word-boundary threshold.
+   *   4. After word clusters are formed, absorb tiny orphaned single strokes
+   *      (height < 0.25× medH — dots on i/j, accents, periods) into the nearest
+   *      word cluster by X-center proximity.
+   *   5. Sort all clusters in reading order (top→bottom, left→right within a line).
+   *
+   * Single-stroke clusters that are NOT tiny dots are kept as-is — they may be
+   * real letters (I, l, 1, dash) and must be sent to the recognizer.
    *
    * @param {Array<Array<{x:number,y:number}>>} strokes  raw canvas-coord strokes
    * @returns {Array<{strokes:Array, bounds:{minX,maxX,minY,maxY}}>}
-   *          Sorted in reading order (top→bottom, then left→right per line).
+   *          Sorted in reading order.
    */
   function _clusterStrokes(strokes) {
     const n = strokes.length;
     if (n === 0) return [];
 
-    // Bounding box per stroke
+    // -- Step 1: bounding box per stroke --
     const boxes = strokes.map(pts => {
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
       for (const p of pts) {
         if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
         if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
       }
-      return { minX, maxX, minY, maxY };
+      // Ensure non-degenerate box for single-point strokes
+      if (minX === maxX) { minX -= 1; maxX += 1; }
+      if (minY === maxY) { minY -= 1; maxY += 1; }
+      return { minX, maxX, minY, maxY, cy: (minY + maxY) / 2 };
     });
 
-    // Adaptive eps: 2.5x median stroke height
-    const heights = boxes.map(b => b.maxY - b.minY).filter(h => h > 0).sort((a, b) => a - b);
+    // Median stroke height (ignore zero-height degenerate strokes)
+    const heights = boxes.map(b => b.maxY - b.minY).filter(h => h > 2).sort((a, b) => a - b);
     const medH    = heights.length ? heights[Math.floor(heights.length / 2)] : 20;
-    const eps     = medH * 2.5;
+    // lineEps: max Y-center gap between consecutive strokes (sorted) to be on the
+    // same line. Using 0.5× medH so that normal line spacing (≥ 1.5× medH apart)
+    // always creates a new line, while strokes within the same text line stay together.
+    const lineEps = medH * 0.5;
+    // wordGap: min X-gap between adjacent strokes (within a line) to treat as a
+    // word boundary. ~1 character width, which empirically equals ~1 char height.
+    const wordGap = medH * 0.8;
 
-    // Union-Find with path compression + union by rank
-    const par  = Array.from({ length: n }, (_, i) => i);
-    const rank = new Array(n).fill(0);
-    function find(i) { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; }
-    function union(a, b) {
-      a = find(a); b = find(b);
-      if (a === b) return;
-      if (rank[a] < rank[b]) { const t = a; a = b; b = t; }
-      par[b] = a;
-      if (rank[a] === rank[b]) rank[a]++;
+    // -- Step 2: group into lines by sorting on Y-center and splitting on gaps --
+    // Union-find is intentionally avoided here: it chains transitively, so stroke A
+    // merging with B and B merging with C would put A and C together even when
+    // |cy_A - cy_C| >> lineEps. Sorting + gap splitting has no such runaway.
+    const sortedByY = [...Array(n).keys()].sort((a, b) => boxes[a].cy - boxes[b].cy);
+    const lineGroups = [[ sortedByY[0] ]];
+    for (let k = 1; k < sortedByY.length; k++) {
+      const prev = sortedByY[k - 1];
+      const curr = sortedByY[k];
+      if (boxes[curr].cy - boxes[prev].cy > lineEps) {
+        lineGroups.push([ curr ]);
+      } else {
+        lineGroups[lineGroups.length - 1].push(curr);
+      }
     }
 
-    // Gap between two AABBs (0 when overlapping or touching)
-    function gap(a, b) {
-      const dx = Math.max(0, Math.max(a.minX, b.minX) - Math.min(a.maxX, b.maxX));
-      const dy = Math.max(0, Math.max(a.minY, b.minY) - Math.min(a.maxY, b.maxY));
-      return Math.sqrt(dx * dx + dy * dy);
+    // -- Step 3: within each line, split into word clusters by X-gap --
+    const wordClusters = []; // { strokeIdxs: number[], bounds }
+
+    for (const idxs of lineGroups.values()) {
+      // Sort left-to-right
+      idxs.sort((a, b) => boxes[a].minX - boxes[b].minX);
+
+      let current = [idxs[0]];
+      for (let k = 1; k < idxs.length; k++) {
+        const prev = idxs[k - 1];
+        const curr = idxs[k];
+        const xGap = boxes[curr].minX - boxes[prev].maxX;
+        if (xGap > wordGap) {
+          // Start a new word cluster
+          wordClusters.push({ strokeIdxs: current });
+          current = [curr];
+        } else {
+          current.push(curr);
+        }
+      }
+      wordClusters.push({ strokeIdxs: current });
     }
 
-    for (let i = 0; i < n; i++)
-      for (let j = i + 1; j < n; j++)
-        if (gap(boxes[i], boxes[j]) <= eps) union(i, j);
+    // -- Step 4: absorb tiny dot/accent strokes into nearest word cluster --
+    // Identify orphan single-stroke dots (very short height)
+    const dotThreshold = medH * 0.25;
+    const dotIdxs      = [];
+    const wordIdxSets  = wordClusters.map(wc => new Set(wc.strokeIdxs));
 
-    // Collect groups
-    const groups = new Map();
     for (let i = 0; i < n; i++) {
-      const r = find(i);
-      if (!groups.has(r)) groups.set(r, []);
-      groups.get(r).push(i);
+      const h = boxes[i].maxY - boxes[i].minY;
+      if (h < dotThreshold) dotIdxs.push(i);
     }
 
-    // Build cluster objects, discard singletons
-    const clusters = [];
-    for (const idxs of groups.values()) {
-      if (idxs.length < 2) continue;
+    for (const di of dotIdxs) {
+      // Only absorb if the dot is currently alone in its word cluster
+      const ownerCluster = wordClusters.find(wc => wc.strokeIdxs.includes(di));
+      if (!ownerCluster || ownerCluster.strokeIdxs.length > 1) continue; // already grouped
+
+      const dotCx = (boxes[di].minX + boxes[di].maxX) / 2;
+      let bestCluster = null;
+      let bestDist    = Infinity;
+
+      for (const wc of wordClusters) {
+        if (wc === ownerCluster) continue;
+        const wcMinX = Math.min(...wc.strokeIdxs.map(i => boxes[i].minX));
+        const wcMaxX = Math.max(...wc.strokeIdxs.map(i => boxes[i].maxX));
+        const wcCx   = (wcMinX + wcMaxX) / 2;
+        const dist   = Math.abs(dotCx - wcCx);
+        if (dist < bestDist && dist < medH * 2) {
+          bestDist    = dist;
+          bestCluster = wc;
+        }
+      }
+
+      if (bestCluster) {
+        bestCluster.strokeIdxs.push(di);
+        // Remove the now-empty singleton cluster
+        const ownerIdx = wordClusters.indexOf(ownerCluster);
+        if (ownerIdx !== -1) wordClusters.splice(ownerIdx, 1);
+      }
+    }
+
+    // -- Step 5: build final cluster objects with bounds and sort in reading order --
+    const clusters = wordClusters.map(wc => {
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for (const i of idxs) {
+      for (const i of wc.strokeIdxs) {
         const b = boxes[i];
         if (b.minX < minX) minX = b.minX; if (b.maxX > maxX) maxX = b.maxX;
         if (b.minY < minY) minY = b.minY; if (b.maxY > maxY) maxY = b.maxY;
       }
-      clusters.push({
-        strokes: idxs.map(i => strokes[i]),
+      return {
+        strokes: wc.strokeIdxs.map(i => strokes[i]),
         bounds:  { minX, maxX, minY, maxY },
         cx: (minX + maxX) / 2,
         cy: (minY + maxY) / 2,
-      });
-    }
+      };
+    });
 
-    // Sort in reading order
     clusters.sort((a, b) => Math.abs(a.cy - b.cy) > medH ? a.cy - b.cy : a.cx - b.cx);
     return clusters;
   }
@@ -1290,11 +1359,14 @@ function setupIPC(win) {
       } catch { /* ZIP update failed — cached text still used this session */ }
     }
 
-    // Return matching pages with their segments
+    // Return one entry per matching segment (not per page) so the UI can show
+    // each occurrence as a separate result row with its own canvas highlight.
     const matches = [];
-    for (const [pageId, text] of Object.entries(annoJson.pageInkText)) {
-      if (typeof text === 'string' && text.toLowerCase().includes(needle)) {
-        matches.push({ pageId, text, segments: annoJson.pageInkSegments[pageId] ?? [] });
+    for (const [pageId, segs] of Object.entries(annoJson.pageInkSegments)) {
+      for (const seg of (segs ?? [])) {
+        if (typeof seg.text === 'string' && seg.text.toLowerCase().includes(needle)) {
+          matches.push({ pageId, text: seg.text, segments: [seg] });
+        }
       }
     }
     return matches;

@@ -196,42 +196,43 @@ async function _searchCurrentDoc(keyword) {
   if (recognised > 0) scheduleSave(); // persist the newly cached ink text
   _completeProgress();
 
-  // Search
-  const needle  = keyword.toLowerCase();
-  const matches = [];
-  for (const [pageId, text] of Object.entries(inkText)) {
-    if (typeof text === 'string' && text.toLowerCase().includes(needle)) {
-      matches.push({ pageId, text });
-    }
-  }
+  // Search — per-segment, not per page
+  const needle = keyword.toLowerCase();
 
-  if (matches.length === 0) {
-    _setStatus('No matches found.');
-    return;
-  }
-
-  _setStatus(`${matches.length} match${matches.length !== 1 ? 'es' : ''} in this document`);
-
-  // Render results — map pageId → human-readable label
+  // Render results — one row per matching segment, not per page.
+  // Map pageId → human-readable label.
   const pageIndexMap = {};
   pageList.forEach((p, i) => { pageIndexMap[p.id] = i + 1; });
 
-  const inkSegs = getPageInkSegments();
-  for (const { pageId, text: matchText } of matches) {
-    const label    = pageIndexMap[pageId] ? `Page ${pageIndexMap[pageId]}` : pageId;
-    const segments = inkSegs[pageId] ?? [];
-    _addResult({
-      title:   label,
-      text:    matchText,
-      keyword: needle,
-      onClick: () => {
-        goToPage(pageId);
-        flashPage(pageId);
-        showInkHighlights(segments, needle);
-        hide();
-      },
-    });
+  const inkSegs     = getPageInkSegments();
+  let   totalShown  = 0;
+
+  for (const [pageId, segs] of Object.entries(inkSegs)) {
+    for (const seg of (segs ?? [])) {
+      if (!seg.text?.toLowerCase().includes(needle)) continue;
+      const label = pageIndexMap[pageId] ? `Page ${pageIndexMap[pageId]}` : pageId;
+      // Capture seg by value so each onClick closes over its own segment
+      const matchedSeg = seg;
+      _addResult({
+        title:   label,
+        text:    matchedSeg.text,
+        keyword: needle,
+        onClick: () => {
+          goToPage(pageId);
+          flashPage(pageId);
+          showInkHighlights([matchedSeg], needle); // highlight only this occurrence
+          hide();
+        },
+      });
+      totalShown++;
+    }
   }
+
+  if (totalShown === 0) {
+    _setStatus('No matches found.');
+    return;
+  }
+  _setStatus(`${totalShown} match${totalShown !== 1 ? 'es' : ''} in this document`);
 }
 
 // ---------------------------------------------------------------------------

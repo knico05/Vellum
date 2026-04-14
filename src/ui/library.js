@@ -70,6 +70,9 @@ let contextMenuEl     = null;
 /** { type: 'file'|'folder', data } */
 let contextMenuTarget = null;
 
+/** Absolute path of the currently open file, used to highlight its row */
+let currentOpenPath = null;
+
 // ---------------------------------------------------------------------------
 // Folder drag-and-drop reorder state
 // ---------------------------------------------------------------------------
@@ -466,13 +469,12 @@ async function _expandFolder(dirPath, rowEl, existingContainer) {
  */
 function _renderFolderTree(node, container, parentDirPath, indentLevel) {
   container.innerHTML = '';
-  const indentPx = 20 + (indentLevel - 1) * 16;
 
   const isEmpty = node.files.length === 0 && node.subfolders.length === 0;
   if (isEmpty) {
     const msg = document.createElement('div');
     msg.className   = 'library-folder-empty';
-    msg.style.paddingLeft = `${indentPx}px`;
+    msg.style.paddingLeft = '10px';
     msg.textContent = 'No files in this folder';
     container.appendChild(msg);
     return;
@@ -483,9 +485,10 @@ function _renderFolderTree(node, container, parentDirPath, indentLevel) {
     const isVellum = file.name.toLowerCase().endsWith('.vellum');
 
     const row = document.createElement('button');
-    row.className         = 'library-file library-folder-file';
+    const isActive = file.path === currentOpenPath;
+    row.className         = 'library-file library-folder-file' + (isActive ? ' library-file-active' : '');
     row.title             = file.path;
-    row.style.paddingLeft = `${indentPx}px`;
+    row.style.paddingLeft = '10px';
 
     const nameEl = document.createElement('span');
     nameEl.className   = 'library-file-name';
@@ -514,12 +517,10 @@ function _renderFolderTree(node, container, parentDirPath, indentLevel) {
   // Render subfolders
   for (const sub of node.subfolders) {
     const isExpanded = expandedSubfolders.has(sub.path);
-    const subIndentPx = indentPx;
 
     const subRow = document.createElement('button');
-    subRow.className         = 'library-subfolder-row' + (isExpanded ? ' expanded' : '');
-    subRow.title             = sub.path;
-    subRow.style.paddingLeft = `${subIndentPx}px`;
+    subRow.className = 'library-subfolder-row' + (isExpanded ? ' expanded' : '');
+    subRow.title     = sub.path;
 
     const arrow = document.createElement('span');
     arrow.className   = 'library-folder-arrow';
@@ -1129,7 +1130,8 @@ function _renderRecentSection() {
       const isMissing = missingPaths.has(file.path);
 
       const row = document.createElement('button');
-      row.className = 'library-file' + (isMissing ? ' library-file-missing' : '');
+      const isActive = file.path === currentOpenPath;
+      row.className = 'library-file' + (isMissing ? ' library-file-missing' : '') + (isActive ? ' library-file-active' : '');
       row.title     = isMissing ? `${file.path}\n(file not found)` : file.path;
 
       const nameEl = document.createElement('span');
@@ -1208,4 +1210,16 @@ function _formatDate(iso) {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { initLibrary, addToLibrary, toggleLibrary };
+/**
+ * Marks a file path as currently open so its row is highlighted in the panel.
+ * Call this after successfully opening a PDF.
+ *
+ * @param {string|null} filePath — Absolute path, or null to clear the highlight
+ */
+function setCurrentFile(filePath) {
+  currentOpenPath = filePath ?? null;
+  // Re-render the panel content if it's open so the highlight appears immediately
+  if (panelOpen) renderList();
+}
+
+export { initLibrary, addToLibrary, toggleLibrary, setCurrentFile };

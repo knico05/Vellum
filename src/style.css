@@ -1056,6 +1056,8 @@ button:focus-visible {
 .colour-saved-wrapper {
   position: relative;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
 }
 
 /* Saved custom palette swatch */
@@ -1099,6 +1101,41 @@ button:focus-visible {
   background: #e53e3e;
   color: #fff;
   border-color: transparent;
+}
+
+/* Context menu popup for colour swatches (right-click / long-press) */
+.colour-swatch-menu {
+  position: fixed;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 9999;
+  overflow: hidden;
+  min-width: 140px;
+}
+
+.colour-swatch-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  transition: background 100ms ease;
+}
+
+.colour-swatch-menu-item:hover {
+  background: var(--surface-3);
+}
+
+.colour-swatch-menu-item-delete:hover {
+  color: #f87171;
 }
 
 .colour-swatch,
@@ -1309,6 +1346,44 @@ button:focus-visible {
 .selection-action-btn.active {
   background: var(--accent-dim);
   color: var(--accent);
+}
+
+.selection-action-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border-subtle);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
+/* Inline colour swatch popover shown below the action bar colour button */
+.sel-colour-popover {
+  position: fixed;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 300;
+  max-width: 140px;
+}
+
+.sel-colour-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+
+.sel-colour-swatch:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2451,10 +2526,11 @@ button:focus-visible {
   border-color: var(--border-strong);
 }
 
-/* Expanded folder children container */
+/* Expanded folder children container — tree-line style hierarchy */
 .library-folder-children {
-  background: var(--surface-1);
-  border-bottom: 1px solid var(--border-subtle);
+  margin-left: 26px;
+  margin-bottom: 4px;
+  border-left: 1px solid var(--border-subtle);
 }
 
 /* File row inside an expanded folder — indented */
@@ -2596,6 +2672,17 @@ button:focus-visible {
   flex-shrink: 0;
 }
 
+/* Currently open file — accent left border + tinted background */
+.library-file-active {
+  background: var(--accent-dim) !important;
+  box-shadow: inset 2px 0 0 var(--accent);
+  color: var(--text-primary);
+}
+
+.library-file-active .library-file-name {
+  color: var(--accent);
+}
+
 /* File that no longer exists on disk — greyed out, not clickable */
 .library-file-missing {
   opacity: 0.4;
@@ -2647,7 +2734,7 @@ button:focus-visible {
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 5px 12px 5px 20px;
+  padding: 5px 12px 5px 10px;
   background: none;
   border: none;
   cursor: pointer;

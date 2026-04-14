@@ -115,8 +115,12 @@ try {
   # ------------------------------------------------------------------
   # 6. Recognize -- synchronous, no WinRT async needed
   # ------------------------------------------------------------------
-  $context          = [Microsoft.Ink.RecognizerContext]::new()
-  $context.Strokes  = $ink.Strokes
+  $context                  = [Microsoft.Ink.RecognizerContext]::new()
+  # RecognitionFlags must be set BEFORE assigning Strokes — the API enforces this order.
+  # WordMode: tells the recognizer the input is a single word, improving accuracy for
+  # word-sized stroke groups produced by our clustering step.
+  $context.RecognitionFlags = [Microsoft.Ink.RecognitionModes]::WordMode
+  $context.Strokes          = $ink.Strokes
 
   $recoStatus = [Microsoft.Ink.RecognitionStatus]::NoError
   $result     = $context.Recognize([ref]$recoStatus)

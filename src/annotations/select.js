@@ -33,7 +33,7 @@
 
 import { toCanvas, toScreen, state as viewportState } from '../canvas/viewport.js';
 import { registerOverlay, requestRender }             from '../canvas/renderer.js';
-import { getAll, batchUpdate, add, remove }           from './manager.js';
+import { getAll, batchUpdate, add, remove, update }   from './manager.js';
 import { toggleCropMode, isCropMode }                 from './image.js';
 
 // ---------------------------------------------------------------------------
@@ -163,6 +163,14 @@ function init() {
         <path d="M4 6h12M8 6V4h4v2M7 9v6M10 9v6M13 9v6M5 6l1 11h8l1-11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
     </button>
+    <div class="selection-action-sep"></div>
+    <button class="selection-action-btn" id="btn-sel-colour" title="Change colour">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4 13l7-7 3 3-7 7H4v-3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="M14 3l3 3-1.5 1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="16.5" cy="16.5" r="1.5" fill="currentColor"/>
+      </svg>
+    </button>
   `;
   document.body.appendChild(actionBarEl);
 
@@ -180,6 +188,13 @@ function init() {
     if (!id) return;
     const active = toggleCropMode(id);
     actionBarEl.querySelector('#btn-sel-crop').classList.toggle('active', active);
+  });
+
+  // Colour picker — shows a small swatch popover with toolbar colours
+  const colourBtn = actionBarEl.querySelector('#btn-sel-colour');
+  colourBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    _toggleSelectionColourPopover(colourBtn);
   });
 
   // Build 4 corner resize handles
@@ -716,6 +731,12 @@ function finaliseSelection() {
   selectionBounds = selectedIds.size > 0
     ? computeUnionBounds(selectedIds)
     : null;
+
+  if (selectedIds.size === 0) {
+    // Lasso caught nothing — signal so the previous tool can be restored
+    document.dispatchEvent(new CustomEvent('select-deselected'));
+  }
+
   updateActionBar();
 }
 
@@ -793,6 +814,89 @@ function duplicateSelection() {
 function deleteSelection() {
   for (const id of selectedIds) remove(id);
   clearSelection();
+}
+
+/**
+ * Applies a new colour to every currently selected annotation that has a
+ * colour field (draw strokes, highlights). Annotations without a colour field
+ * (images, tables) are skipped silently.
+ *
+ * @param {string} hex — CSS hex colour string e.g. '#ff5733'
+ */
+function applyColourToSelection(hex) {
+  for (const id of selectedIds) {
+    const anno = getAll().find(a => a.id === id);
+    if (anno && typeof anno.colour === 'string') {
+      update(id, { colour: hex });
+    }
+  }
+}
+
+// Preset colours — kept in sync with toolbar.js COLOURS array
+const _PRESET_COLOURS = [
+  { name: 'blue',   hex: '#5b8af5' },
+  { name: 'black',  hex: '#1a1a1a' },
+  { name: 'yellow', hex: '#f5c518' },
+  { name: 'red',    hex: '#e53e3e' },
+  { name: 'green',  hex: '#3ecf8e' },
+];
+
+/**
+ * Toggles a small colour-swatch popover below the given button.
+ * Shows the same preset swatches as the toolbar plus any custom saved colours.
+ *
+ * @param {HTMLElement} anchorEl — The button to position the popover below
+ */
+function _toggleSelectionColourPopover(anchorEl) {
+  const existing = document.getElementById('sel-colour-popover');
+  if (existing) { existing.remove(); return; }
+
+  const popover = document.createElement('div');
+  popover.id        = 'sel-colour-popover';
+  popover.className = 'sel-colour-popover';
+
+  // Read custom palette from localStorage (same key as toolbar.js)
+  let custom = [];
+  try {
+    const stored = localStorage.getItem('qn-custom-palette');
+    custom = stored ? JSON.parse(stored) : [];
+    if (!Array.isArray(custom)) custom = [];
+  } catch { custom = []; }
+
+  const allColours = [
+    ..._PRESET_COLOURS.map(c => c.hex),
+    ...custom,
+  ];
+
+  for (const hex of allColours) {
+    const btn = document.createElement('button');
+    btn.className        = 'sel-colour-swatch';
+    btn.style.background = hex;
+    btn.title            = hex;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      applyColourToSelection(hex);
+      popover.remove();
+    });
+    popover.appendChild(btn);
+  }
+
+  document.body.appendChild(popover);
+
+  // Position below the anchor button
+  const rect = anchorEl.getBoundingClientRect();
+  popover.style.left = `${rect.left}px`;
+  popover.style.top  = `${rect.bottom + 4}px`;
+
+  // Dismiss when clicking outside
+  setTimeout(() => {
+    document.addEventListener('pointerdown', function onDown(e) {
+      if (!popover.contains(e.target) && e.target !== anchorEl) {
+        popover.remove();
+        document.removeEventListener('pointerdown', onDown);
+      }
+    });
+  }, 0);
 }
 
 function clearSelection() {

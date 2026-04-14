@@ -32,6 +32,7 @@ import { PDFPage, PAGE_GAP }                                   from '../pdf/page
 import { BlankPage }                                           from './blankPage.js';
 import { centreOn, toCanvas, toScreen, state as viewportState } from '../canvas/viewport.js';
 import { register, requestRender }                             from '../canvas/renderer.js';
+import { shiftAnnotationsByPageDelta, getByPage, remove as removeAnnotation } from '../annotations/manager.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -107,6 +108,33 @@ function init() {
 // ---------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------
+
+/**
+ * Snapshots canvasY for every page, runs layoutFn(), then shifts annotations
+ * for each page whose canvasY changed. This is the single safe path for any
+ * operation that moves pages (insert, remove, reorder).
+ *
+ * @param {Function} layoutFn — Synchronous callback that mutates pages[] and
+ *                              calls recomputeLayout(). Must NOT call
+ *                              _recomputeAndShift() recursively.
+ */
+function _recomputeAndShift(layoutFn) {
+  // Snapshot Y positions of all existing pages BEFORE the layout change
+  const before = new Map(pages.map(p => [p.id, p.canvasY]));
+
+  layoutFn(); // may splice pages[], will call recomputeLayout()
+
+  // Build delta map: only pages that existed before AND moved
+  const deltas = new Map();
+  for (const p of pages) {
+    const oldY = before.get(p.id);
+    if (oldY === undefined) continue; // new page — no annotations to shift
+    const dy = p.canvasY - oldY;
+    if (dy !== 0) deltas.set(p.id, dy);
+  }
+
+  shiftAnnotationsByPageDelta(deltas);
+}
 
 /**
  * Recomputes canvasX/canvasY for every page in pages[] based on list order.
@@ -334,8 +362,13 @@ function removePage(id) {
     pageInstances.delete(id);
   }
 
-  pages.splice(idx, 1);
-  recomputeLayout();
+  // Delete all annotations that belong to this page before removing it
+  for (const anno of getByPage(id)) removeAnnotation(anno.id);
+
+  _recomputeAndShift(() => {
+    pages.splice(idx, 1);
+    recomputeLayout();
+  });
 
   document.dispatchEvent(new CustomEvent('pages-changed'));
   requestRender();
@@ -366,8 +399,10 @@ function _insertBlankPageAt(listIndex, template = 'plain', width = BLANK_WIDTH, 
     canvasY:  0,
   };
 
-  pages.splice(listIndex, 0, page);
-  recomputeLayout(); // sets page.canvasX/canvasY
+  _recomputeAndShift(() => {
+    pages.splice(listIndex, 0, page);
+    recomputeLayout(); // sets page.canvasX/canvasY
+  });
 
   const inst = new BlankPage(page.width, page.height, template);
   inst.canvasX = page.canvasX;
@@ -522,10 +557,12 @@ function movePage(fromIdx, toIdx) {
   if (fromIdx < 0 || fromIdx >= pages.length) return;
   if (toIdx   < 0 || toIdx   >= pages.length) return;
 
-  const [page] = pages.splice(fromIdx, 1);
-  pages.splice(toIdx, 0, page);
+  _recomputeAndShift(() => {
+    const [page] = pages.splice(fromIdx, 1);
+    pages.splice(toIdx, 0, page);
+    recomputeLayout();
+  });
 
-  recomputeLayout();
   document.dispatchEvent(new CustomEvent('pages-changed'));
   requestRender();
 }

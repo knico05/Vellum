@@ -38,7 +38,7 @@ import { init as initShortcuts }                  from './ui/shortcuts.js';
 import { initScreenshot, activateScreenshot }     from './ui/screenshot.js';
 import { init as initPanel, loadPageNotes, getCurrentPageIndex, togglePanel,
          addBlankPageWithPicker } from './ui/panel.js';
-import { initLibrary, addToLibrary }              from './ui/library.js';
+import { initLibrary, addToLibrary, setCurrentFile } from './ui/library.js';
 import { exportToPdf }                            from './export/pdfExport.js';
 import { initSearch, showSearch }                 from './ui/search.js';
 import { initHandwritingSearch, toggleHandwritingSearch } from './ui/handwritingSearch.js';
@@ -364,8 +364,9 @@ async function loadFile(filePath) {
     // 4. Jump to the last-viewed page for this PDF (if one was saved)
     _restoreLastPage();
 
-    // 5. Record in library
+    // 5. Record in library and mark as currently open
     await addToLibrary(filePath);
+    setCurrentFile(filePath);
 
     updateStatusBar();
   } catch (err) {

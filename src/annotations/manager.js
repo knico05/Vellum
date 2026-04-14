@@ -543,4 +543,49 @@ function setPageInkSegments(pageId, segments) {
   _pageInkSegments[pageId] = segments;
 }
 
-export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo, beginUndoGroup, endUndoGroup, getPageInkText, loadPageInkText, setPageInkText, isPageInkDirty, clearPageInkDirty, getPageInkSegments, loadPageInkSegments, setPageInkSegments };
+// ---------------------------------------------------------------------------
+// Coordinate shifting (used when pages move due to insert / remove / reorder)
+// ---------------------------------------------------------------------------
+
+/**
+ * Shifts annotation coordinates for a set of pages by their measured Y delta.
+ *
+ * pageDeltas is a Map<pageId, dy> where dy is the exact canvas-unit change in
+ * that page's canvasY (positive = moved down, negative = moved up).
+ *
+ * Handles every coordinate format in use:
+ *   - points[].y   — freehand draw strokes, highlight strokes, line/rect shapes
+ *   - cy           — circle and ellipse shapes (points is [] for these)
+ *   - canvasY      — DOM-overlay annotations: sticky notes, tables, images
+ *
+ * Does not record an undo entry — layout changes are not themselves undoable.
+ * Emits 'annotations-changed' so the renderer and autosave pick up the new positions.
+ *
+ * @param {Map<string, number>} pageDeltas — pageId → signed Y delta in canvas units
+ */
+function shiftAnnotationsByPageDelta(pageDeltas) {
+  if (annotations.length === 0 || pageDeltas.size === 0) return;
+
+  let changed = false;
+
+  for (const anno of annotations) {
+    const dy = pageDeltas.get(anno.pageId);
+    if (dy === undefined || dy === 0) continue;
+    changed = true;
+
+    // Freehand strokes, line/rect snapped shapes — geometry lives in points[]
+    if (Array.isArray(anno.points) && anno.points.length > 0) {
+      for (const p of anno.points) p.y += dy;
+    }
+
+    // Circle / ellipse shapes store centre in cx/cy; points is [] for these
+    if (typeof anno.cy === 'number') anno.cy += dy;
+
+    // DOM-overlay annotations (sticky notes, tables, images) use canvasY
+    if (typeof anno.canvasY === 'number') anno.canvasY += dy;
+  }
+
+  if (changed) emit();
+}
+
+export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo, beginUndoGroup, endUndoGroup, getPageInkText, loadPageInkText, setPageInkText, isPageInkDirty, clearPageInkDirty, getPageInkSegments, loadPageInkSegments, setPageInkSegments, shiftAnnotationsByPageDelta };

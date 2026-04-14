@@ -214,6 +214,9 @@ const TOOLS = [
 /** Which tool is currently active, or null for the default cursor */
 let activeTool = null;
 
+/** Tool that was active before switching to 'select', used to revert after empty lasso */
+let _prevTool = null;
+
 /**
  * Currently selected colour — either a preset name ('blue') or a CSS hex
  * string ('#ff5733') when a custom colour has been picked.
@@ -372,6 +375,7 @@ function init() {
   // The hidden <input type="color"> drives the native OS colour picker
   const colourInput = document.createElement('input');
   colourInput.type  = 'color';
+  colourInput.id    = 'colour-input-hidden';
   colourInput.value = '#ffffff';
   colourInput.style.cssText = 'position:absolute;opacity:0;pointer-events:none;width:0;height:0;';
   colourInput.addEventListener('input', (e) => handleCustomColour(e.target.value));
@@ -603,6 +607,14 @@ function init() {
   // Check for updates in the background — delayed so it doesn't compete with
   // startup rendering. Shows a badge in the toolbar if a newer release exists.
   setTimeout(_checkForUpdates, 4000);
+
+  // Restore the previous tool when the lasso selection catches nothing
+  document.addEventListener('select-deselected', () => {
+    if (activeTool !== 'select') return;
+    const revertTo = _prevTool ?? null;
+    _prevTool = null;
+    setActiveTool(revertTo);
+  });
 }
 
 /**
@@ -658,6 +670,13 @@ function handleToolClick(toolId) {
  * @param {string|null} toolName — Tool id or null for cursor/none
  */
 function setActiveTool(toolName) {
+  // Track the tool we're leaving so we can restore it after an empty lasso
+  if (toolName === 'select' && activeTool !== 'select') {
+    _prevTool = activeTool;
+  } else if (toolName !== 'select') {
+    _prevTool = null;
+  }
+
   // Deactivate whatever is currently running
   deactivateCurrentTool();
 
@@ -776,7 +795,8 @@ function removeCustomColourFromPalette(hex) {
 
 /**
  * Rebuilds the custom palette swatch DOM from the current customPalette array.
- * Each swatch shows a remove × on hover. Right-click sets it as default.
+ * Right-click (mouse) or long-press (touch) opens a context menu with options
+ * to delete the colour or re-edit it in the colour picker.
  */
 function renderCustomPalette() {
   if (!customPaletteContainerEl) return;
@@ -794,25 +814,100 @@ function renderCustomPalette() {
     wrapper.className = 'colour-saved-wrapper';
 
     const swatch = document.createElement('button');
-    swatch.className      = 'colour-swatch colour-swatch-saved';
-    swatch.title          = `${hex} — right-click to set as default`;
+    swatch.className        = 'colour-swatch colour-swatch-saved';
+    swatch.title            = hex;
     swatch.style.background = hex;
-    swatch.dataset.colour = hex;
+    swatch.dataset.colour   = hex;
     swatch.addEventListener('click', () => handleColourClick(hex));
 
-    const removeBtn = document.createElement('button');
-    removeBtn.className   = 'colour-saved-remove';
-    removeBtn.textContent = '×';
-    removeBtn.title       = 'Remove from palette';
-    removeBtn.addEventListener('click', (e) => {
+    // Right-click → context menu
+    swatch.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
       e.stopPropagation();
-      removeCustomColourFromPalette(hex);
+      _showSwatchMenu(hex, e.clientX, e.clientY);
     });
 
+    // Long-press (touch) → context menu after 500 ms
+    let longPressTimer = null;
+    swatch.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse') return; // handled by contextmenu
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        _showSwatchMenu(hex, e.clientX, e.clientY);
+      }, 500);
+    });
+    swatch.addEventListener('pointerup',    () => clearTimeout(longPressTimer));
+    swatch.addEventListener('pointermove',  () => clearTimeout(longPressTimer));
+    swatch.addEventListener('pointercancel',() => clearTimeout(longPressTimer));
+
     wrapper.appendChild(swatch);
-    wrapper.appendChild(removeBtn);
     customPaletteContainerEl.appendChild(wrapper);
   }
+}
+
+/**
+ * Shows a context menu for a custom palette swatch at the given screen position.
+ * Provides "Delete colour" and "Edit colour" options.
+ *
+ * @param {string} hex     — The colour hex string this swatch represents
+ * @param {number} screenX — Cursor X in viewport coordinates
+ * @param {number} screenY — Cursor Y in viewport coordinates
+ */
+function _showSwatchMenu(hex, screenX, screenY) {
+  // Remove any existing menu
+  _dismissSwatchMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'colour-swatch-menu';
+  menu.id        = 'colour-swatch-context-menu';
+
+  const editBtn = document.createElement('button');
+  editBtn.className   = 'colour-swatch-menu-item';
+  editBtn.textContent = 'Edit colour';
+  editBtn.addEventListener('click', () => {
+    _dismissSwatchMenu();
+    // Pre-fill the colour input with the current value and open it
+    const colourInput = document.getElementById('colour-input-hidden');
+    if (colourInput) {
+      colourInput.value = hex;
+      colourInput.click();
+    }
+  });
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className   = 'colour-swatch-menu-item colour-swatch-menu-item-delete';
+  deleteBtn.textContent = 'Delete colour';
+  deleteBtn.addEventListener('click', () => {
+    _dismissSwatchMenu();
+    removeCustomColourFromPalette(hex);
+  });
+
+  menu.appendChild(editBtn);
+  menu.appendChild(deleteBtn);
+  document.body.appendChild(menu);
+
+  // Position: keep inside viewport
+  const { innerWidth, innerHeight } = window;
+  const menuW = 140, menuH = 72;
+  const x = Math.min(screenX, innerWidth  - menuW - 8);
+  const y = Math.min(screenY, innerHeight - menuH - 8);
+  menu.style.left = `${x}px`;
+  menu.style.top  = `${y}px`;
+
+  // Dismiss when clicking outside the menu
+  setTimeout(() => {
+    document.addEventListener('pointerdown', function onDown(e) {
+      if (!menu.contains(e.target)) {
+        _dismissSwatchMenu();
+        document.removeEventListener('pointerdown', onDown);
+      }
+    });
+  }, 0);
+}
+
+/** Removes the swatch context menu if present. */
+function _dismissSwatchMenu() {
+  document.getElementById('colour-swatch-context-menu')?.remove();
 }
 
 // ---------------------------------------------------------------------------
