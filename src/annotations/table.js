@@ -246,8 +246,10 @@ function createTableElement(anno) {
   el.appendChild(resizeHandle);
 
   // Event wiring
-  // Dragging only starts on the drag strip itself, not on the title input
+  // Dragging only starts on the drag strip itself, not on the title input.
+  // In select mode the select tool owns all dragging, so we skip the table's own drag.
   dragStrip.addEventListener('pointerdown', (e) => {
+    if (container.dataset.tool === 'select') return;
     if (e.target === titleEl || titleEl.contains(e.target)) return;
     onDragStart(e, anno.id, dragStrip);
   });
@@ -280,9 +282,13 @@ function createTableElement(anno) {
     showContextMenu(e.clientX, e.clientY, anno.id);
   });
 
-  // Prevent canvas events from firing through the table
+  // Block canvas events only during drawing tools — in cursor/select/table mode
+  // events must bubble so the select tool can start a lasso or drag the selection.
   el.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'touch') e.stopPropagation();
+    const tool = container.dataset.tool;
+    if (e.pointerType !== 'touch' && tool !== 'select' && tool !== 'cursor' && tool !== 'table') {
+      e.stopPropagation();
+    }
   });
   el.addEventListener('wheel', (e) => e.stopPropagation());
 

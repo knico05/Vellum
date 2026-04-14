@@ -2792,8 +2792,8 @@ button:focus-visible {
    Table annotation
 --------------------------------------------------------------------------- */
 
-/* Tables are inert by default so drawing tools and lasso work through them.
-   Pointer events are only restored when the table tool is active. */
+/* Tables are always interactive so cells can be edited.
+   Pointer events are blocked only when a drawing/erasing tool is active. */
 .annotation-table {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border-subtle);
@@ -2802,11 +2802,13 @@ button:focus-visible {
   overflow: hidden;
   cursor: default;
   min-width: 80px;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
-#canvas-container[data-tool="table"] .annotation-table {
-  pointer-events: auto;
+#canvas-container[data-tool="draw"] .annotation-table,
+#canvas-container[data-tool="highlight"] .annotation-table,
+#canvas-container[data-tool="eraser"] .annotation-table {
+  pointer-events: none;
 }
 
 .annotation-table-drag {
