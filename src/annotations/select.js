@@ -1241,7 +1241,7 @@ function hitTestAnnotation(cx, cy) {
     const anno = all[i];
     if (anno.type === 'blankPage') continue;
 
-    if (anno.type === 'textBox' || anno.type === 'image') {
+    if (anno.type === 'textBox' || anno.type === 'image' || anno.type === 'table') {
       if (cx >= anno.canvasX - PAD && cx <= anno.canvasX + anno.width  + PAD &&
           cy >= anno.canvasY - PAD && cy <= anno.canvasY + anno.height + PAD) {
         return anno;
@@ -1361,7 +1361,7 @@ function computeUnionBounds(ids) {
       minY = Math.min(minY, anno.cy - anno.ry);
       maxX = Math.max(maxX, anno.cx + anno.rx);
       maxY = Math.max(maxY, anno.cy + anno.ry);
-    } else if (anno.type === 'textBox' || anno.type === 'image') {
+    } else if (anno.type === 'textBox' || anno.type === 'image' || anno.type === 'table') {
       minX = Math.min(minX, anno.canvasX);
       minY = Math.min(minY, anno.canvasY);
       maxX = Math.max(maxX, anno.canvasX + anno.width);

@@ -2792,19 +2792,26 @@ button:focus-visible {
    Table annotation
 --------------------------------------------------------------------------- */
 
+/* Tables are inert by default so drawing tools and lasso work through them.
+   Pointer events are only restored when the table tool is active. */
 .annotation-table {
-  background: var(--surface-1);
+  background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
   overflow: hidden;
   cursor: default;
   min-width: 80px;
+  pointer-events: none;
+}
+
+#canvas-container[data-tool="table"] .annotation-table {
+  pointer-events: auto;
 }
 
 .annotation-table-drag {
-  height: 28px;
-  background: var(--surface-2);
+  height: 24px;
+  background: rgba(255, 255, 255, 0.06);
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
@@ -2818,8 +2825,8 @@ button:focus-visible {
 
 .annotation-table-title {
   flex: 1;
-  font-size: 12px;
-  color: var(--text-secondary);
+  font-size: 11px;
+  color: var(--text-muted);
   outline: none;
   background: none;
   border: none;
@@ -2832,16 +2839,42 @@ button:focus-visible {
   pointer-events: none;
 }
 
+/* Delete × — only visible when table tool is active */
+.annotation-table-delete {
+  display: none;
+}
+
+#canvas-container[data-tool="table"] .annotation-table-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 100ms ease, color 100ms ease;
+}
+
+#canvas-container[data-tool="table"] .annotation-table-delete:hover {
+  background: rgba(248, 113, 113, 0.2);
+  color: #f87171;
+}
+
 .annotation-table-grid {
   border-collapse: collapse;
   width: 100%;
   font-size: 13px;
   color: var(--text-primary);
-  background: var(--surface-1);
+  background: transparent;
 }
 
 .annotation-table-grid td {
-  border: 1px solid var(--border-subtle);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   padding: 4px 6px;
   min-width: 48px;
   outline: none;
@@ -2861,7 +2894,12 @@ button:focus-visible {
   width: 14px;
   height: 14px;
   cursor: se-resize;
-  background: linear-gradient(135deg, transparent 50%, var(--border-strong) 50%);
+  background: linear-gradient(135deg, transparent 50%, var(--border-subtle) 50%);
+  display: none;
+}
+
+#canvas-container[data-tool="table"] .annotation-table-resize {
+  display: block;
 }
 
 /* Table toolbar config inputs */
