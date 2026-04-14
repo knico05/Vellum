@@ -2794,9 +2794,10 @@ button:focus-visible {
 
 .annotation-table-wrapper {
   position: absolute;
-  background: #fff;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
   border-radius: 4px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.18);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
   overflow: hidden;
   cursor: default;
   min-width: 80px;
@@ -2804,8 +2805,8 @@ button:focus-visible {
 
 .annotation-table-drag-strip {
   height: 28px;
-  background: #f0f0f0;
-  border-bottom: 1px solid #ccc;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
   padding: 0 8px;
@@ -2819,7 +2820,7 @@ button:focus-visible {
 .annotation-table-title {
   flex: 1;
   font-size: 12px;
-  color: #444;
+  color: var(--text-secondary);
   outline: none;
   background: none;
   border: none;
@@ -2828,7 +2829,7 @@ button:focus-visible {
 
 .annotation-table-title:empty::before {
   content: attr(data-placeholder);
-  color: #aaa;
+  color: var(--text-muted);
   pointer-events: none;
 }
 
@@ -2836,12 +2837,12 @@ button:focus-visible {
   border-collapse: collapse;
   width: 100%;
   font-size: 13px;
-  color: #1a1a1a;
-  background: #fff;
+  color: var(--text-primary);
+  background: var(--surface-1);
 }
 
 .annotation-table-wrapper td {
-  border: 1px solid #bbb;
+  border: 1px solid var(--border-subtle);
   padding: 4px 6px;
   min-width: 48px;
   outline: none;
@@ -2850,8 +2851,8 @@ button:focus-visible {
 }
 
 .annotation-table-wrapper td:focus {
-  background: #f5f8ff;
-  border-color: #7aaaff;
+  background: var(--accent-dim);
+  border-color: var(--accent);
 }
 
 .annotation-table-resize-handle {
@@ -2861,7 +2862,7 @@ button:focus-visible {
   width: 14px;
   height: 14px;
   cursor: se-resize;
-  background: linear-gradient(135deg, transparent 50%, #bbb 50%);
+  background: linear-gradient(135deg, transparent 50%, var(--border-strong) 50%);
 }
 
 /* Table toolbar config inputs */
