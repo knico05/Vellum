@@ -3,7 +3,23 @@
     "allow": [
       "Bash(npm install:*)",
       "Bash(node -e \"const e = require\\(''c:/Users/nkued/dev/QuickNotes/node_modules/electron''\\); console.log\\(typeof e, Object.keys\\(e || {}\\)\\)\")",
-      "Bash(c:/Users/nkued/dev/QuickNotes/node_modules/electron/dist/electron.exe --version)"
+      "Bash(c:/Users/nkued/dev/QuickNotes/node_modules/electron/dist/electron.exe --version)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(find c:UsersnkueddevQuickNotes -name *.annotations.json -type f)",
+      "Bash(find c:UsersnkueddevQuickNotes -name *.json -type f)",
+      "Bash(grep -r \"pageIndex\" src/annotations/*.js)",
+      "Bash(xargs grep:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(wc -l /c/Users/nkued/dev/QuickNotes/src/**/*.js)",
+      "Bash(gh release:*)",
+      "Bash(node -e \"try{require\\('adm-zip'\\);console.log\\('adm-zip found'\\)}catch\\(e\\){console.log\\('not found'\\)}\")",
+      "Bash(node launch.js)",
+      "Bash(node -e \"require\\('./main.js'\\)\")",
+      "Bash(node --check main.js)",
+      "Bash(node --check preload.js)"
     ]
   }
 }

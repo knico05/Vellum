@@ -54,11 +54,6 @@ import {
   deactivate as deactivateNote,
 } from '../annotations/note.js';
 
-import {
-  activateTable,
-  deactivateTable,
-  setTableDimensions,
-} from '../annotations/table.js';
 
 import { state as viewportState } from '../canvas/viewport.js';
 
@@ -194,17 +189,6 @@ const TOOLS = [
       <line x1="6.5" y1="11" x2="11" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
     </svg>`,
   },
-  {
-    id: 'table',
-    title: 'Table (T) — tap/click to place',
-    svg: `<svg width="18" height="18" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect x="2.5" y="2.5" width="15" height="15" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
-      <line x1="2.5" y1="8" x2="17.5" y2="8" stroke="currentColor" stroke-width="1.2"/>
-      <line x1="2.5" y1="13" x2="17.5" y2="13" stroke="currentColor" stroke-width="1.2"/>
-      <line x1="9" y1="2.5" x2="9" y2="17.5" stroke="currentColor" stroke-width="1.2"/>
-      <line x1="14" y1="2.5" x2="14" y2="17.5" stroke="currentColor" stroke-width="1.2"/>
-    </svg>`,
-  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -291,8 +275,6 @@ let pressureOn = true;
 /** The #shape-snap-toggle container element */
 let shapeSnapToggleEl = null;
 
-/** The #table-config container element */
-let tableConfigEl = null;
 
 /** Whether hold-to-snap shape recognition is currently on */
 let shapeSnapOn = true;
@@ -325,7 +307,6 @@ function init() {
   eraserModePickerEl = document.getElementById('eraser-mode-picker');
   pressureToggleEl   = document.getElementById('pressure-toggle');
   shapeSnapToggleEl  = document.getElementById('shape-snap-toggle');
-  tableConfigEl      = document.getElementById('table-config');
   lblPageEl          = document.getElementById('lbl-page');
   lblZoomEl          = document.getElementById('lbl-zoom');
 
@@ -531,53 +512,6 @@ function init() {
     setActiveTool(null);
   });
 
-  // When a table is placed, the table tool self-deactivates — switch to cursor
-  document.addEventListener('table-placed', () => {
-    setActiveTool(null);
-  });
-
-  // Build table config UI (rows × cols inputs)
-  {
-    const rowsLabel = document.createElement('span');
-    rowsLabel.className = 'table-config-label';
-    rowsLabel.textContent = 'Rows';
-    tableConfigEl.appendChild(rowsLabel);
-
-    const rowsInput = document.createElement('input');
-    rowsInput.id = 'table-rows-input';
-    rowsInput.type = 'number';
-    rowsInput.min = '1'; rowsInput.max = '20'; rowsInput.value = '3';
-    rowsInput.className = 'table-dim-input';
-    tableConfigEl.appendChild(rowsInput);
-
-    const sepLabel = document.createElement('span');
-    sepLabel.className = 'table-config-label';
-    sepLabel.textContent = '×';
-    tableConfigEl.appendChild(sepLabel);
-
-    const colsLabel = document.createElement('span');
-    colsLabel.className = 'table-config-label';
-    colsLabel.textContent = 'Cols';
-    tableConfigEl.appendChild(colsLabel);
-
-    const colsInput = document.createElement('input');
-    colsInput.id = 'table-cols-input';
-    colsInput.type = 'number';
-    colsInput.min = '1'; colsInput.max = '20'; colsInput.value = '4';
-    colsInput.className = 'table-dim-input';
-    tableConfigEl.appendChild(colsInput);
-
-    const sync = () => {
-      const r = Math.max(1, Math.min(20, parseInt(rowsInput.value, 10) || 3));
-      const c = Math.max(1, Math.min(20, parseInt(colsInput.value, 10) || 4));
-      rowsInput.value = r; colsInput.value = c;
-      setTableDimensions(r, c);
-    };
-    rowsInput.addEventListener('change', sync);
-    colsInput.addEventListener('change', sync);
-    rowsInput.addEventListener('keydown', e => e.stopPropagation());
-    colsInput.addEventListener('keydown', e => e.stopPropagation());
-  }
 
   // When a text box is focused for editing, switch any active tool to cursor
   document.addEventListener('request-cursor-tool', () => {
@@ -688,7 +622,6 @@ function setActiveTool(toolName) {
   if (activeTool === 'eraser')    activateEraser();
   if (activeTool === 'select')    activateSelect();
   if (activeTool === 'note')      activateNote();
-  if (activeTool === 'table')     activateTable();
 
   // Stamp the active tool onto #canvas-container so CSS can gate
   // pointer-events on image annotations (images are inert outside select mode)
@@ -710,7 +643,6 @@ function deactivateCurrentTool() {
   if (activeTool === 'eraser')    deactivateEraser();
   if (activeTool === 'select')    deactivateSelect();
   if (activeTool === 'note')      deactivateNote();
-  if (activeTool === 'table')     deactivateTable();
 }
 
 /**
@@ -1046,7 +978,6 @@ function updateColourPickerVisibility() {
   const eraserModeVisible  = activeTool === 'eraser';
   const pressureVisible    = activeTool === 'draw';
   const shapeSnapVisible   = activeTool === 'draw' || activeTool === 'highlight';
-  const tableConfigVisible = activeTool === 'table';
 
   const show = (el, visible, displayVal = 'flex') => {
     el.style.display       = visible ? displayVal : 'none';
@@ -1059,7 +990,6 @@ function updateColourPickerVisibility() {
   show(eraserModePickerEl, eraserModeVisible);
   show(pressureToggleEl,   pressureVisible);
   show(shapeSnapToggleEl,  shapeSnapVisible);
-  show(tableConfigEl,      tableConfigVisible);
   pressureToggleEl.classList.remove('toolbar-btn-invisible');
 
   if (colourVisible || strokeVisible || eraserModeVisible || pressureVisible) {
