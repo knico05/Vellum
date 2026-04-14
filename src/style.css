@@ -2792,8 +2792,7 @@ button:focus-visible {
    Table annotation
 --------------------------------------------------------------------------- */
 
-.annotation-table-wrapper {
-  position: absolute;
+.annotation-table {
   background: var(--surface-1);
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
@@ -2803,7 +2802,7 @@ button:focus-visible {
   min-width: 80px;
 }
 
-.annotation-table-drag-strip {
+.annotation-table-drag {
   height: 28px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--border-subtle);
@@ -2815,7 +2814,7 @@ button:focus-visible {
   gap: 6px;
 }
 
-.annotation-table-drag-strip:active { cursor: grabbing; }
+.annotation-table-drag:active { cursor: grabbing; }
 
 .annotation-table-title {
   flex: 1;
@@ -2833,7 +2832,7 @@ button:focus-visible {
   pointer-events: none;
 }
 
-.annotation-table-wrapper table {
+.annotation-table-grid {
   border-collapse: collapse;
   width: 100%;
   font-size: 13px;
@@ -2841,7 +2840,7 @@ button:focus-visible {
   background: var(--surface-1);
 }
 
-.annotation-table-wrapper td {
+.annotation-table-grid td {
   border: 1px solid var(--border-subtle);
   padding: 4px 6px;
   min-width: 48px;
@@ -2850,12 +2849,12 @@ button:focus-visible {
   white-space: pre-wrap;
 }
 
-.annotation-table-wrapper td:focus {
+.annotation-table-grid td:focus {
   background: var(--accent-dim);
   border-color: var(--accent);
 }
 
-.annotation-table-resize-handle {
+.annotation-table-resize {
   position: absolute;
   right: 0;
   bottom: 0;

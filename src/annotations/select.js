@@ -1302,7 +1302,7 @@ function pointInPolygon(px, py, polygon) {
  * @returns {{ cx: number|null, cy: number|null }}
  */
 function annotationCentroid(anno) {
-  if (anno.type === 'textBox' || anno.type === 'image') {
+  if (anno.type === 'textBox' || anno.type === 'image' || anno.type === 'table') {
     return { cx: anno.canvasX + anno.width / 2, cy: anno.canvasY + anno.height / 2 };
   }
   if (anno.shapeType === 'circle' || anno.shapeType === 'ellipse') {
