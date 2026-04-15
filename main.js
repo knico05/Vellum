@@ -203,6 +203,13 @@ function createWindow() {
 function _buildBlankPdf() {
   const W = 595, H = 842; // A4 at 72 dpi
 
+  // A random 16-byte hex ID embedded in the PDF trailer.
+  // Without this, every blank PDF is byte-for-byte identical, causing the
+  // annotation recovery mechanism to incorrectly match annotations from one
+  // blank file to another (they share the same content fingerprint).
+  // The /ID array is standard PDF spec (§14.4) and accepted by all readers.
+  const docId = crypto.randomBytes(16).toString('hex').toUpperCase();
+
   // Build the body objects first so we can measure their offsets
   const obj1 = '1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n';
   const obj2 = '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n';
@@ -224,7 +231,7 @@ function _buildBlankPdf() {
     `${pad(off1)} 00000 n \n`,
     `${pad(off2)} 00000 n \n`,
     `${pad(off3)} 00000 n \n`,
-    'trailer<</Size 4/Root 1 0 R>>\n',
+    `trailer<</Size 4/Root 1 0 R/ID[<${docId}><${docId}>]>>\n`,
     'startxref\n',
     `${xrefOff}\n`,
     '%%EOF\n',
@@ -965,6 +972,12 @@ function setupIPC(win) {
       try {
         const data = JSON.parse(fs.readFileSync(candidate, 'utf8'));
         if (data.pdfFingerprint === fingerprint) {
+          // Only recover if the PDF this JSON was originally saved for no longer
+          // exists on disk. If it still exists, this is a different file that
+          // happens to have identical content (e.g. two newly-created blank PDFs)
+          // and its annotations must not be stolen.
+          const originalPath = typeof data.pdfPath === 'string' ? data.pdfPath : null;
+          if (originalPath && fs.existsSync(originalPath)) continue;
           fs.renameSync(candidate, expectedPath);
           return expectedPath;
         }
