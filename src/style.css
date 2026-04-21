@@ -351,7 +351,23 @@ button:focus-visible {
 
 /* Eraser tool cursor */
 #canvas-container.tool-eraser {
-  cursor: cell;
+  cursor: none; /* ring overlay replaces cursor */
+}
+
+/* Eraser size ring — on-canvas overlay that visualises the erase radius */
+#eraser-ring {
+  position: fixed;
+  pointer-events: none;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  outline: 1px solid rgba(0, 0, 0, 0.45);
+  box-sizing: border-box;
+  display: none;
+  transform: translate(-50%, -50%);
+  z-index: 9999;
+}
+#eraser-ring.visible {
+  display: block;
 }
 
 /* Text box tool — crosshair to indicate placement mode */
@@ -415,14 +431,16 @@ button:focus-visible {
 
 .image-anno {
   border-radius: var(--radius-sm);
-  box-sizing: border-box;
-  border: 1.5px solid transparent;
   overflow: visible;
-  transition: border-color 100ms ease;
+  transition: outline-color 100ms ease;
+  outline: 1.5px solid transparent;
+  outline-offset: 0;
+  will-change: transform;
+  backface-visibility: hidden; /* GPU compositing eliminates sub-pixel edge artifact */
 }
 
 .image-anno:hover {
-  border-color: var(--accent);
+  outline-color: var(--accent);
 }
 
 /* Clip wrapper — clips the image for crop, sits flush inside the outer element */
@@ -434,6 +452,7 @@ button:focus-visible {
   height: 100%;
   overflow: hidden;
   border-radius: inherit;
+  will-change: transform; /* promotes to composited layer — eliminates edge artifacts */
 }
 
 .image-anno-delete {
@@ -509,33 +528,32 @@ button:focus-visible {
   border-color: var(--accent);
 }
 
-/* Crop handles — one at each corner */
+/* Crop handles — one at each corner. Always amber since handles always crop. */
 .image-anno-handle {
   position: absolute;
   width: 10px;
   height: 10px;
-  background: var(--accent);
+  background: #f0b429;
   border: 1.5px solid #fff;
   border-radius: 2px;
   opacity: 0;
-  transition: opacity 150ms ease;
+  transition: opacity 150ms ease, transform 100ms ease;
   z-index: 3;
 }
 
-.image-anno:hover .image-anno-handle {
+.image-anno:hover .image-anno-handle,
+.image-anno-handle.crop-mode {
   opacity: 1;
+}
+
+.image-anno-handle:active {
+  transform: scale(1.3);
 }
 
 .image-anno-handle-tl { top: -5px;  left: -5px;  cursor: nwse-resize; }
 .image-anno-handle-tr { top: -5px;  right: -5px; cursor: nesw-resize; }
 .image-anno-handle-bl { bottom: -5px; left: -5px;  cursor: nesw-resize; }
 .image-anno-handle-br { bottom: -5px; right: -5px; cursor: nwse-resize; }
-
-/* Crop mode — handle turns amber when held long enough */
-.image-anno-handle.crop-mode {
-  background: #f0b429;
-  transform: scale(1.3);
-}
 
 /* Images sit below the annotation canvas (z-index:1) in ALL tool modes because
    .image-anno has no explicit z-index (auto), placing it at stack level 0.
@@ -564,6 +582,15 @@ button:focus-visible {
 #canvas-container[data-tool="select"] .image-anno-crop-btn {
   opacity: 0 !important;
   pointer-events: none !important;
+}
+
+/* Exception: when crop mode is active, show the 4 corner handles and make them
+   interactive so the user can drag them to crop. The crop-mode class on a handle
+   has higher specificity + !important so it beats the rule above. */
+#canvas-container[data-tool="select"] .image-anno-handle.crop-mode {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  z-index: 10 !important;
 }
 
 /* Hide handles and delete/crop buttons when not in select mode */

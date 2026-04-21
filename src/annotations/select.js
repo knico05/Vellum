@@ -188,6 +188,7 @@ function init() {
     if (!id) return;
     const active = toggleCropMode(id);
     actionBarEl.querySelector('#btn-sel-crop').classList.toggle('active', active);
+    updateHandles(); // show/hide resize handles based on new crop state
   });
 
   // Colour picker — shows a small swatch popover with toolbar colours
@@ -269,6 +270,8 @@ function onPointerDown(e) {
   const { x: cx, y: cy } = clientToCanvas(e);
 
   if (selectionBounds && isInsideBounds(cx, cy, expandBounds(selectionBounds, INTERACTION_PAD))) {
+    // Don't move the selection while any selected image is in crop mode
+    if ([...selectedIds].some(id => isCropMode(id))) return;
     // Inside existing selection → start drag-move
     dragging  = true;
     dragStart = { x: cx, y: cy };
@@ -920,6 +923,11 @@ function clearSelection() {
       }
     }
   }
+  // Deactivate crop mode on any image that was selected
+  for (const id of selectedIds) {
+    if (isCropMode(id)) toggleCropMode(id);
+  }
+
   selectedIds.clear();
   lassoPoints     = null;
   selectionBounds = null;
@@ -988,6 +996,13 @@ function updateActionBar() {
 function updateHandles() {
   const show = active && selectedIds.size > 0 && selectionBounds && !lassoPoints;
   if (!show) {
+    for (const el of Object.values(handleEls)) el.classList.add('hidden');
+    return;
+  }
+
+  // Hide select-tool resize handles while any selected image is in crop mode —
+  // only the image's own amber crop handles should be active at that time.
+  if ([...selectedIds].some(id => isCropMode(id))) {
     for (const el of Object.values(handleEls)) el.classList.add('hidden');
     return;
   }

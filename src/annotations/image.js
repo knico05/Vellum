@@ -302,17 +302,15 @@ function updatePositions() {
     const displayX = anno.canvasX + (offset ? offset.dx : 0);
     const displayY = anno.canvasY + (offset ? offset.dy : 0);
     const { x, y } = toScreen(displayX, displayY);
-    el.style.transform = `translate(${x}px, ${y}px) scale(${viewportState.scale})`;
+    // Round translate values to avoid sub-pixel positions that create
+    // ghost lines at the clip boundary when zoomed in.
+    el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) scale(${viewportState.scale})`;
 
-    // Keep width/height and inner image sizing in sync every frame so that
-    // live resize preview (mutations from select.js) is reflected immediately.
-    const wPx = `${anno.width}px`;
-    const hPx = `${anno.height}px`;
-    if (el.style.width !== wPx || el.style.height !== hPx) {
-      el.style.width  = wPx;
-      el.style.height = hPx;
-      _applyImgStyle(el, anno);
-    }
+    // Always sync clip size and inner image position every frame so that
+    // crop changes to any edge (including left/top) are reflected immediately.
+    el.style.width  = `${anno.width}px`;
+    el.style.height = `${anno.height}px`;
+    _applyImgStyle(el, anno);
   }
 }
 
@@ -412,6 +410,7 @@ function createImageElement(anno) {
     e.stopPropagation(); // prevent canvas pan in draw/cursor/eraser modes
     if (e.target.closest('.image-anno-handle')) return;
     if (e.target.closest('.image-anno-delete')) return;
+    if (cropModeIds.has(anno.id)) return; // locked while in crop mode
     onMoveStart(e, anno.id, el);
   });
   el.addEventListener('pointermove',   onMoveMove);
@@ -470,16 +469,16 @@ function onHandleDown(e, annotationId, corner, handle) {
   handle.setPointerCapture(e.pointerId);
 
   const anno = getAll().find(a => a.id === annotationId);
-  const isCrop = cropModeIds.has(annotationId);
 
+  // Handles always crop — dragging any corner removes that portion of the image.
+  // (Scaling / resize is handled by the select tool's bounding-box handles.)
   resizeState = {
     annotationId,
     corner,
     handle,
     startClientX: e.clientX,
     startClientY: e.clientY,
-    cropMode: isCrop,
-    aspect: anno.width / anno.height,  // locked aspect ratio for resize mode
+    cropMode: true,
     startAnno: {
       canvasX: anno.canvasX,
       canvasY: anno.canvasY,
@@ -492,7 +491,7 @@ function onHandleDown(e, annotationId, corner, handle) {
     },
   };
 
-  if (isCrop) handle.classList.add('crop-mode');
+  handle.classList.add('crop-mode');
 }
 
 function onHandleMove(e) {
@@ -588,10 +587,6 @@ function onHandleMove(e) {
 
 function onHandleUp(e, handle) {
   if (!resizeState) return;
-  // Only remove crop-mode highlight if we're NOT persistently in crop mode
-  if (!cropModeIds.has(resizeState.annotationId)) {
-    handle.classList.remove('crop-mode');
-  }
   handle.releasePointerCapture(e.pointerId);
   resizeState = null;
 }

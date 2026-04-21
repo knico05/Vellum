@@ -25,9 +25,9 @@
 
 'use strict';
 
-import { getAll }                    from '../annotations/manager.js';
-import { getPageList, getPdfDoc }    from '../pages/pageManager.js';
-import { PDFDocument }               from '../../node_modules/pdf-lib/dist/pdf-lib.esm.js';
+import { getAll }                                           from '../annotations/manager.js';
+import { getPageList, getPdfDoc }                          from '../pages/pageManager.js';
+import { PDFDocument, rgb, LineCapStyle, LineJoinStyle }   from '../../node_modules/pdf-lib/dist/pdf-lib.esm.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,6 +57,42 @@ const LINE_HEIGHT_RATIO = 1.4;
  * Controls how aggressively pressure maps to stroke width.
  */
 const PRESSURE_EXPONENT = 0.7;
+
+// ---------------------------------------------------------------------------
+// Colour parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Parses a CSS colour string into { r, g, b, a } components (0–255 / 0–1).
+ * Handles rgba(...), rgb(...), #rrggbb, and #rgb.
+ *
+ * @param {string} css
+ * @returns {{ r:number, g:number, b:number, a:number }}
+ */
+function parseCssColour(css) {
+  if (!css) return { r: 0, g: 0, b: 0, a: 1 };
+
+  const rgba = css.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)/);
+  if (rgba) {
+    return {
+      r: parseInt(rgba[1], 10),
+      g: parseInt(rgba[2], 10),
+      b: parseInt(rgba[3], 10),
+      a: rgba[4] !== undefined ? parseFloat(rgba[4]) : 1,
+    };
+  }
+
+  const hex = css.replace(/^#/, '');
+  const full = hex.length === 3
+    ? hex.split('').map(c => c + c).join('')
+    : hex;
+  return {
+    r: parseInt(full.slice(0, 2), 16),
+    g: parseInt(full.slice(2, 4), 16),
+    b: parseInt(full.slice(4, 6), 16),
+    a: 1,
+  };
+}
 
 /**
  * Semi-transparent colours for named highlight presets.
@@ -91,7 +127,7 @@ async function exportToPdf(onProgress, options = { mode: 'pages' }) {
   if (pages.length === 0) throw new Error('No pages to export.');
 
   const allAnnotations = getAll();
-  const pageImageData  = [];
+  const output = await PDFDocument.create();
 
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i];
@@ -114,13 +150,25 @@ async function exportToPdf(onProgress, options = { mode: 'pages' }) {
       };
     }
 
-    const pngBytes = await renderPageToPng(page, pdfDoc, allAnnotations, exportBounds);
+    const originX  = exportBounds ? exportBounds.minX : page.canvasX;
+    const originY  = exportBounds ? exportBounds.minY : page.canvasY;
     const ptWidth  = exportBounds ? (exportBounds.maxX - exportBounds.minX) : page.width;
     const ptHeight = exportBounds ? (exportBounds.maxY - exportBounds.minY) : page.height;
-    pageImageData.push({ pngBytes, ptWidth, ptHeight });
+
+    // Render the page background (PDF content + highlights + images + text boxes)
+    // WITHOUT ink strokes — those are added as vector paths below.
+    const pngBytes = await renderPageToPng(page, pdfDoc, allAnnotations, exportBounds, true);
+
+    const img     = await output.embedPng(pngBytes);
+    const pdfPage = output.addPage([ptWidth, ptHeight]);
+    pdfPage.drawImage(img, { x: 0, y: 0, width: ptWidth, height: ptHeight });
+
+    // Add ink strokes as vector PDF paths (infinitely sharp at any zoom).
+    const pageAnnos = allAnnotations.filter(a => a.pageId === page.id);
+    addVectorInkToPdfPage(pdfPage, pageAnnos, originX, originY, ptHeight);
   }
 
-  return assemblePdf(pageImageData);
+  return output.save();
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +229,7 @@ function _getAnnotationBounds(annotations, page) {
  *   rather than the page dimensions. The PDF page is composited at the correct offset.
  * @returns {Promise<Uint8Array>} PNG bytes at EXPORT_SCALE resolution
  */
-async function renderPageToPng(page, pdfDoc, allAnnotations, exportBounds = null) {
+async function renderPageToPng(page, pdfDoc, allAnnotations, exportBounds = null, skipInk = false) {
   // Determine the canvas-space region that maps to the output image.
   // Pages mode: exactly the page rectangle.
   // Canvas mode: the pre-computed exportBounds (page ∪ annotations + padding).
@@ -237,9 +285,10 @@ async function renderPageToPng(page, pdfDoc, allAnnotations, exportBounds = null
   // Pre-load all image elements (async, must complete before drawing)
   const imageCache = await preloadImages(pageAnnos);
 
-  // Draw in layer order: highlights → ink → images → text boxes
+  // Draw in layer order: highlights → ink → images → text boxes.
+  // skipInk = true when ink is rendered separately as vector PDF paths.
   drawHighlights(ctx, pageAnnos);
-  drawInkStrokes(ctx, pageAnnos);
+  if (!skipInk) drawInkStrokes(ctx, pageAnnos);
   await drawImages(ctx, pageAnnos, imageCache);
   drawTextBoxes(ctx, pageAnnos);
 
@@ -521,6 +570,88 @@ function wrapText(ctx, text, maxWidth) {
   }
 
   return lines;
+}
+
+// ---------------------------------------------------------------------------
+// Vector ink paths
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds an SVG path string for a smooth bezier ink stroke using the same
+ * midpoint quadratic bezier algorithm as draw.js and drawInkPath().
+ * Coordinates are page-local (origin at top-left) — compatible with pdf-lib's
+ * drawSvgPath which applies a Y-flip internally.
+ *
+ * @param {Array<{x:number, y:number, pressure:number}>} points
+ * @param {number} originX — canvas-space X of the page/export-region top-left
+ * @param {number} originY — canvas-space Y of the page/export-region top-left
+ * @returns {string} SVG path data string
+ */
+function _buildInkSvgPath(points, originX, originY) {
+  if (!points || points.length < 2) return '';
+
+  const px = p => p.x - originX;
+  const py = p => p.y - originY;
+
+  const parts = [`M ${px(points[0]).toFixed(3)} ${py(points[0]).toFixed(3)}`];
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const mx = ((points[i].x + points[i + 1].x) / 2 - originX).toFixed(3);
+    const my = ((points[i].y + points[i + 1].y) / 2 - originY).toFixed(3);
+    parts.push(`Q ${px(points[i]).toFixed(3)} ${py(points[i]).toFixed(3)} ${mx} ${my}`);
+  }
+
+  const last = points[points.length - 1];
+  parts.push(`L ${px(last).toFixed(3)} ${py(last).toFixed(3)}`);
+
+  return parts.join(' ');
+}
+
+/**
+ * Draws all draw-type annotations for a page directly onto a pdf-lib PDFPage
+ * as vector SVG paths. This produces infinitely sharp strokes at any zoom level,
+ * unlike the rasterized PNG approach.
+ *
+ * Coordinate system:
+ *   pdf-lib's drawSvgPath internally applies scale(1, -1) to the path, treating
+ *   path coordinates as SVG (Y down). The anchor { x:0, y:ptHeight } places
+ *   the path origin at the top-left of the page, matching canvas-space Y-down.
+ *
+ * @param {object}   pdfPage    — pdf-lib PDFPage instance
+ * @param {object[]} annos      — All annotations for this page
+ * @param {number}   originX    — Canvas-space X of the export region's top-left
+ * @param {number}   originY    — Canvas-space Y of the export region's top-left
+ * @param {number}   ptHeight   — Height of the PDF page in points
+ */
+function addVectorInkToPdfPage(pdfPage, annos, originX, originY, ptHeight) {
+  for (const anno of annos) {
+    if (anno.type !== 'draw') continue;
+    if (!anno.points || anno.points.length < 2) continue;
+
+    const svgPath = _buildInkSvgPath(anno.points, originX, originY);
+    if (!svgPath) continue;
+
+    const avgPressure   = anno.points.reduce((s, p) => s + (p.pressure ?? 0.5), 0) / anno.points.length;
+    const pressureWidth = (anno.strokeWidth ?? 2) * Math.pow(Math.min(avgPressure * 2, 1), PRESSURE_EXPONENT);
+    const strokeWidth   = Math.max(pressureWidth, 0.3);
+
+    const { r, g, b, a } = parseCssColour(anno.colour ?? '#000000');
+
+    try {
+      pdfPage.drawSvgPath(svgPath, {
+        x:           0,
+        y:           ptHeight,  // anchor at top-left of page (pdf-lib flips Y for path)
+        borderColor: rgb(r / 255, g / 255, b / 255),
+        borderWidth: strokeWidth,
+        borderLineCap:  LineCapStyle.Round,
+        borderLineJoin: LineJoinStyle.Round,
+        borderOpacity:  a,
+        color:       undefined, // no fill — stroke only
+      });
+    } catch (err) {
+      console.warn('Vector ink path skipped:', err.message);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

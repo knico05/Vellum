@@ -563,26 +563,41 @@ function setPageInkSegments(pageId, segments) {
  *
  * @param {Map<string, number>} pageDeltas — pageId → signed Y delta in canvas units
  */
+/**
+ * @param {Map<string, number | {dx:number, dy:number}>} pageDeltas
+ *   Map of pageId → dy (number, Y-only, legacy) or {dx, dy} (2D, for layout changes
+ *   like two-page mode that move pages in both axes).
+ */
 function shiftAnnotationsByPageDelta(pageDeltas) {
   if (annotations.length === 0 || pageDeltas.size === 0) return;
 
   let changed = false;
 
   for (const anno of annotations) {
-    const dy = pageDeltas.get(anno.pageId);
-    if (dy === undefined || dy === 0) continue;
+    const delta = pageDeltas.get(anno.pageId);
+    if (delta === undefined) continue;
+
+    // Support both legacy number (dy-only) and new {dx, dy} format
+    const dx = (typeof delta === 'object') ? (delta.dx ?? 0) : 0;
+    const dy = (typeof delta === 'object') ? (delta.dy ?? 0) : delta;
+    if (dx === 0 && dy === 0) continue;
     changed = true;
 
     // Freehand strokes, line/rect snapped shapes — geometry lives in points[]
     if (Array.isArray(anno.points) && anno.points.length > 0) {
-      for (const p of anno.points) p.y += dy;
+      for (const p of anno.points) {
+        if (dx !== 0) p.x += dx;
+        if (dy !== 0) p.y += dy;
+      }
     }
 
-    // Circle / ellipse shapes store centre in cx/cy; points is [] for these
-    if (typeof anno.cy === 'number') anno.cy += dy;
+    // Circle / ellipse shapes store centre in cx/cy
+    if (typeof anno.cx === 'number' && dx !== 0) anno.cx += dx;
+    if (typeof anno.cy === 'number' && dy !== 0) anno.cy += dy;
 
-    // DOM-overlay annotations (sticky notes, tables, images) use canvasY
-    if (typeof anno.canvasY === 'number') anno.canvasY += dy;
+    // DOM-overlay annotations (sticky notes, tables, images) use canvasX/canvasY
+    if (typeof anno.canvasX === 'number' && dx !== 0) anno.canvasX += dx;
+    if (typeof anno.canvasY === 'number' && dy !== 0) anno.canvasY += dy;
   }
 
   if (changed) emit();

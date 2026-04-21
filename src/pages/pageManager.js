@@ -83,6 +83,14 @@ let container = null;
 /** Number of PDF.js renders currently in flight */
 let activeRenders = 0;
 
+/** Gap between paired pages in two-page layout (canvas units) */
+const PAGE_PAIR_GAP = 20;
+
+/** Whether pages are displayed two-per-row in two-page layout mode */
+let twoPageMode = (() => {
+  try { return localStorage.getItem('twoPageMode') === 'true'; } catch { return false; }
+})();
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
@@ -119,18 +127,19 @@ function init() {
  *                              _recomputeAndShift() recursively.
  */
 function _recomputeAndShift(layoutFn) {
-  // Snapshot Y positions of all existing pages BEFORE the layout change
-  const before = new Map(pages.map(p => [p.id, p.canvasY]));
+  // Snapshot X and Y positions of all existing pages BEFORE the layout change
+  const before = new Map(pages.map(p => [p.id, { x: p.canvasX, y: p.canvasY }]));
 
   layoutFn(); // may splice pages[], will call recomputeLayout()
 
-  // Build delta map: only pages that existed before AND moved
+  // Build delta map: only pages that existed before AND moved (in X or Y or both)
   const deltas = new Map();
   for (const p of pages) {
-    const oldY = before.get(p.id);
-    if (oldY === undefined) continue; // new page — no annotations to shift
-    const dy = p.canvasY - oldY;
-    if (dy !== 0) deltas.set(p.id, dy);
+    const old = before.get(p.id);
+    if (!old) continue; // new page — no annotations to shift
+    const dx = p.canvasX - old.x;
+    const dy = p.canvasY - old.y;
+    if (dx !== 0 || dy !== 0) deltas.set(p.id, { dx, dy });
   }
 
   shiftAnnotationsByPageDelta(deltas);
@@ -145,21 +154,61 @@ function _recomputeAndShift(layoutFn) {
  */
 function recomputeLayout() {
   let y = 0;
-  for (const page of pages) {
-    page.canvasX = -page.width / 2;
-    page.canvasY = y;
 
-    const inst = pageInstances.get(page.id);
-    if (inst) {
-      inst.canvasX = page.canvasX;
-      inst.canvasY = page.canvasY;
-      inst.updatePosition();
+  if (twoPageMode && pages.length > 0) {
+    for (let i = 0; i < pages.length; i += 2) {
+      const pageA = pages[i];
+      const pageB = pages[i + 1];
+
+      if (pageB) {
+        const totalW  = pageA.width + PAGE_PAIR_GAP + pageB.width;
+        pageA.canvasX = -totalW / 2;
+        pageB.canvasX = -totalW / 2 + pageA.width + PAGE_PAIR_GAP;
+        pageA.canvasY = y;
+        pageB.canvasY = y;
+
+        for (const page of [pageA, pageB]) {
+          const inst = pageInstances.get(page.id);
+          if (inst) { inst.canvasX = page.canvasX; inst.canvasY = page.canvasY; inst.updatePosition(); }
+        }
+
+        y += Math.max(pageA.height, pageB.height) + PAGE_GAP;
+      } else {
+        // Odd last page — centre it alone
+        pageA.canvasX = -pageA.width / 2;
+        pageA.canvasY = y;
+        const inst = pageInstances.get(pageA.id);
+        if (inst) { inst.canvasX = pageA.canvasX; inst.canvasY = pageA.canvasY; inst.updatePosition(); }
+        y += pageA.height + PAGE_GAP;
+      }
     }
+  } else {
+    for (const page of pages) {
+      page.canvasX = -page.width / 2;
+      page.canvasY = y;
 
-    y += page.height + PAGE_GAP;
+      const inst = pageInstances.get(page.id);
+      if (inst) {
+        inst.canvasX = page.canvasX;
+        inst.canvasY = page.canvasY;
+        inst.updatePosition();
+      }
+
+      y += page.height + PAGE_GAP;
+    }
   }
+
   requestRender();
 }
+
+function setTwoPageMode(enabled) {
+  twoPageMode = enabled;
+  try { localStorage.setItem('twoPageMode', String(enabled)); } catch { /* ignore */ }
+  // Use _recomputeAndShift so annotations move with their pages (both X and Y change).
+  _recomputeAndShift(() => recomputeLayout());
+}
+
+function getTwoPageMode() { return twoPageMode; }
 
 // ---------------------------------------------------------------------------
 // PDF loading
@@ -756,6 +805,8 @@ export {
   movePage,
   resolvePageId,
   recomputeLayout,
+  setTwoPageMode,
+  getTwoPageMode,
   getCurrentPageId,
   getCurrentPageListIndex,
   goToPage,

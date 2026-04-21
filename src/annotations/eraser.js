@@ -26,8 +26,8 @@
 
 'use strict';
 
-import { toCanvas }              from '../canvas/viewport.js';
-import { requestRender }         from '../canvas/renderer.js';
+import { toCanvas, state as viewportState } from '../canvas/viewport.js';
+import { requestRender }                   from '../canvas/renderer.js';
 import { getAll, remove, add, beginUndoGroup, endUndoGroup } from './manager.js';
 
 // ---------------------------------------------------------------------------
@@ -48,6 +48,9 @@ let container = null;
 /** 'partial' — splits strokes; 'full' — removes whole annotations */
 let eraseMode = 'partial';
 
+/** The on-canvas ring overlay element that visualises the erase radius */
+let ringEl = null;
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -62,17 +65,45 @@ function init() {
   container.addEventListener('pointermove', onPointerMove);
   container.addEventListener('pointerup',   onPointerUp);
   container.addEventListener('pointercancel', onPointerUp);
+
+  // Build the size-ring overlay element (follows pointer when eraser active)
+  ringEl = document.createElement('div');
+  ringEl.id = 'eraser-ring';
+  document.body.appendChild(ringEl);
+
+  // Re-size the ring when the user zooms (scale changes affect ring diameter)
+  container.addEventListener('viewport-changed', () => {
+    if (!active || !ringEl) return;
+    const diameterPx = ERASE_RADIUS * 2 * viewportState.scale;
+    ringEl.style.width  = `${diameterPx}px`;
+    ringEl.style.height = `${diameterPx}px`;
+  });
 }
 
 function activate() {
   active = true;
   container.classList.add('tool-eraser');
+  // Hide the CSS cursor so the ring overlay replaces it
+  container.style.cursor = 'none';
+  if (ringEl) ringEl.classList.add('visible');
 }
 
 function deactivate() {
   active  = false;
   erasing = false;
   container.classList.remove('tool-eraser');
+  container.style.cursor = '';
+  if (ringEl) ringEl.classList.remove('visible');
+}
+
+/** Moves and sizes the ring overlay to match the current pointer position. */
+function _updateRing(clientX, clientY) {
+  if (!ringEl) return;
+  const diameterPx = ERASE_RADIUS * 2 * viewportState.scale;
+  ringEl.style.width  = `${diameterPx}px`;
+  ringEl.style.height = `${diameterPx}px`;
+  ringEl.style.left   = `${clientX}px`;
+  ringEl.style.top    = `${clientY}px`;
 }
 
 /**
@@ -82,6 +113,12 @@ function deactivate() {
  */
 function setEraseRadius(radius) {
   ERASE_RADIUS = radius;
+  // Re-size the ring if it's currently visible (tool is active)
+  if (active && ringEl) {
+    const diameterPx = ERASE_RADIUS * 2 * viewportState.scale;
+    ringEl.style.width  = `${diameterPx}px`;
+    ringEl.style.height = `${diameterPx}px`;
+  }
 }
 
 /**
@@ -102,14 +139,17 @@ function onPointerDown(e) {
   if (e.pointerType === 'touch') return;
   e.stopImmediatePropagation();
   erasing = true;
+  _updateRing(e.clientX, e.clientY);
   // Open a group so every remove/add during this stroke is one undo step
   beginUndoGroup();
   eraseAt(e.clientX, e.clientY);
 }
 
 function onPointerMove(e) {
-  if (!active || !erasing) return;
+  if (!active) return;
   if (e.pointerType === 'touch') return;
+  _updateRing(e.clientX, e.clientY);
+  if (!erasing) return;
   e.stopImmediatePropagation();
   eraseAt(e.clientX, e.clientY);
 }

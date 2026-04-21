@@ -305,6 +305,7 @@ function createBoxElement(anno) {
   const body = document.createElement('div');
   body.className       = 'text-box-body';
   body.contentEditable = 'true';
+  body.spellcheck      = false;
   body.innerHTML       = deserializeText(anno.text);
   applyBodyStyle(el, anno); // set initial colour + font size
 

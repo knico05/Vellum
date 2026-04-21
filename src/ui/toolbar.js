@@ -55,7 +55,8 @@ import {
 } from '../annotations/note.js';
 
 
-import { state as viewportState } from '../canvas/viewport.js';
+import { state as viewportState }        from '../canvas/viewport.js';
+import { setTwoPageMode, getTwoPageMode } from '../pages/pageManager.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -506,6 +507,17 @@ function init() {
     saveToolSettings();
   });
   shapeSnapToggleEl.appendChild(shapeSnapBtn);
+
+  // ── Two-page layout toggle ─────────────────────────────────────────────────
+  const twoPageBtn = document.getElementById('btn-two-page');
+  if (twoPageBtn) {
+    twoPageBtn.classList.toggle('active', getTwoPageMode());
+    twoPageBtn.addEventListener('click', () => {
+      const next = !getTwoPageMode();
+      setTwoPageMode(next);
+      twoPageBtn.classList.toggle('active', next);
+    });
+  }
 
   // When a text box is placed, the note tool self-deactivates — switch to cursor
   document.addEventListener('note-placed', () => {
@@ -1121,8 +1133,7 @@ function updateToolCursor() {
     const diameterPx = (sizeDef?.width ?? 2) * scale;
     container.style.cursor = buildCursor(diameterPx);
   } else if (activeTool === 'eraser') {
-    const diameterPx = (sizeDef?.eraseRadius ?? 12) * 2 * scale;
-    container.style.cursor = buildCursor(diameterPx);
+    // Cursor is managed by eraser.js (ring overlay replaces cursor — leave as none)
   } else {
     // Let CSS handle cursor for other tools (cursor, select, note)
     container.style.cursor = '';
