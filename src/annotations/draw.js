@@ -63,6 +63,57 @@ let container     = null;
 /** Points recorded in the current in-progress stroke */
 let livePoints = [];
 
+// ---------------------------------------------------------------------------
+// Committed-stroke cache
+//
+// Re-drawing every bezier curve on every frame is O(strokes × points) and
+// tanks frame rate when there are many annotations. We bake all committed
+// strokes into an OffscreenCanvas with the current viewport transform and
+// blit it each frame instead. Cost during active drawing: one drawImage call.
+//
+// Invalidated when: strokes added/removed, viewport changes, canvas resizes.
+// ---------------------------------------------------------------------------
+
+/** The cached bitmap of all committed draw strokes, or null when stale. */
+let _strokeCache = null;
+
+/** Viewport snapshot at the time the cache was last built. */
+let _cacheVpScale = null;
+let _cacheVpPanX  = null;
+let _cacheVpPanY  = null;
+
+function _invalidateCache() { _strokeCache = null; }
+
+function _isCacheValid(W, H) {
+  return (
+    _strokeCache !== null &&
+    _strokeCache.width  === W &&
+    _strokeCache.height === H &&
+    _cacheVpScale === viewport.scale &&
+    _cacheVpPanX  === viewport.panX  &&
+    _cacheVpPanY  === viewport.panY
+  );
+}
+
+function _buildCache(W, H, dpr) {
+  _strokeCache = new OffscreenCanvas(W, H);
+  const cacheCtx = _strokeCache.getContext('2d');
+  cacheCtx.setTransform(
+    viewport.scale * dpr, 0,
+    0, viewport.scale * dpr,
+    viewport.panX * dpr, viewport.panY * dpr,
+  );
+  for (const anno of getAll()) {
+    if (anno.type !== 'draw') continue;
+    cacheCtx.save();
+    _renderAnnotation(cacheCtx, anno);
+    cacheCtx.restore();
+  }
+  _cacheVpScale = viewport.scale;
+  _cacheVpPanX  = viewport.panX;
+  _cacheVpPanY  = viewport.panY;
+}
+
 /** True while a pointer is held down */
 let drawing = false;
 
@@ -94,7 +145,7 @@ function init() {
   container.addEventListener('pointerup',     onUp);
   container.addEventListener('pointercancel', onCancel);
 
-  document.addEventListener('annotations-changed', () => requestRender());
+  document.addEventListener('annotations-changed', () => { _invalidateCache(); requestRender(); });
 
   registerOverlay(drawExisting);
   registerOverlay(drawLivePreview);
@@ -335,18 +386,35 @@ function commitStroke() {
 
 /** Draws all committed draw annotations. */
 function drawExisting(ctx) {
-  for (const anno of getAll()) {
-    if (anno.type !== 'draw') continue;
-    const offset = getDragOffset(anno.id);
-    if (offset) {
-      ctx.save();
-      ctx.translate(offset.dx, offset.dy);
-      _renderAnnotation(ctx, anno);
-      ctx.restore();
-    } else {
-      _renderAnnotation(ctx, anno);
+  const hasDragged = getAll().some(a => a.type === 'draw' && getDragOffset(a.id));
+
+  if (hasDragged) {
+    // During a drag fall back to per-stroke redraw so the offset applies correctly
+    for (const anno of getAll()) {
+      if (anno.type !== 'draw') continue;
+      const offset = getDragOffset(anno.id);
+      if (offset) {
+        ctx.save();
+        ctx.translate(offset.dx, offset.dy);
+        _renderAnnotation(ctx, anno);
+        ctx.restore();
+      } else {
+        _renderAnnotation(ctx, anno);
+      }
     }
+    return;
   }
+
+  const dpr = window.devicePixelRatio || 1;
+  const W   = ctx.canvas.width;
+  const H   = ctx.canvas.height;
+
+  if (!_isCacheValid(W, H)) _buildCache(W, H, dpr);
+
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(_strokeCache, 0, 0);
+  ctx.restore();
 }
 
 /** Draws the stroke in progress while the pointer is still held. */
