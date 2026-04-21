@@ -78,13 +78,13 @@ const overlayCallbacks = [];
 let dotColour = null;
 
 // ---------------------------------------------------------------------------
-// CSS-pan optimisation state
+// CSS viewport-deferred optimisation state
 // ---------------------------------------------------------------------------
 
-/** True while a pan gesture (including momentum) is in progress */
-let _panMode = false;
+/** True while a gesture (pan OR zoom) is in progress */
+let _deferred = false;
 
-/** Viewport pan/scale at which fgCanvas content was last fully rendered */
+/** Viewport state at which fgCanvas content was last fully rendered */
 let _fgRenderedPanX  = 0;
 let _fgRenderedPanY  = 0;
 let _fgRenderedScale = 1;
@@ -234,17 +234,26 @@ function render() {
 
   // 5. Draw foreground (annotation) layer on the canvas that sits above pages.
   //
-  //    In pan-optimisation mode: if only pan changed (not scale), skip the
-  //    expensive canvas redraw and CSS-translate the element instead.
-  //    The GPU composites it at zero CPU cost, keeping annotations visually
-  //    locked to the PDF. One full redraw happens when the pan settles.
-  if (USE_CSS_PAN_OPTIMIZATION && _panMode && viewport.scale === _fgRenderedScale) {
-    const dx = viewport.panX - _fgRenderedPanX;
-    const dy = viewport.panY - _fgRenderedPanY;
-    fgCanvas.style.transform = `translate(${dx}px, ${dy}px)`;
+  //    During a gesture (pan OR zoom) skip the expensive canvas redraw and
+  //    CSS-transform the element instead — the GPU composites it for free.
+  //    The transform math handles both pan and zoom correctly so annotations
+  //    stay locked to the PDF at all times. One full redraw happens when the
+  //    gesture fully settles (momentum dies out).
+  //
+  //    For zoom: content appears slightly blurry mid-gesture (we're scaling
+  //    a raster), but that's imperceptible during a fast pinch and far better
+  //    than the twitching caused by rebuilding every frame.
+  if (USE_CSS_PAN_OPTIMIZATION && _deferred) {
+    // r = zoom ratio since last full render; stays 1 during pure pan
+    const r  = viewport.scale / _fgRenderedScale;
+    const tx = viewport.panX - _fgRenderedPanX * r;
+    const ty = viewport.panY - _fgRenderedPanY * r;
+    fgCanvas.style.transformOrigin = '0 0';
+    fgCanvas.style.transform = `translate(${tx}px, ${ty}px) scale(${r})`;
   } else {
     // Full redraw — reset CSS transform so canvas sits at its natural position
-    _panMode = false;
+    _deferred = false;
+    fgCanvas.style.transformOrigin = '';
     fgCanvas.style.transform = '';
     _fgRenderedPanX  = viewport.panX;
     _fgRenderedPanY  = viewport.panY;
@@ -345,23 +354,23 @@ function getCanvas() {
 // ---------------------------------------------------------------------------
 
 /**
- * Called by input.js when a pan gesture begins.
- * Switches the foreground canvas into CSS-translate mode.
+ * Called by input.js when any gesture (pan or zoom) begins.
+ * Switches the foreground canvas into CSS-transform mode.
  */
-function enterPanMode() {
+function enterDeferredMode() {
   if (!USE_CSS_PAN_OPTIMIZATION) return;
-  _panMode = true;
+  _deferred = true;
 }
 
 /**
- * Called by input.js when a pan gesture (including momentum) fully settles,
- * and by annotation modules when content changes during a pan.
+ * Called by input.js when all gesture activity (including momentum) fully
+ * settles, and by annotation modules when content changes mid-gesture.
  * Resets the CSS transform and triggers one full canvas redraw.
  */
-function exitPanMode() {
-  if (!_panMode) return;
-  _panMode = false;
-  if (fgCanvas) fgCanvas.style.transform = '';
+function exitDeferredMode() {
+  if (!_deferred) return;
+  _deferred = false;
+  if (fgCanvas) { fgCanvas.style.transformOrigin = ''; fgCanvas.style.transform = ''; }
   requestRender();
 }
 
@@ -369,4 +378,4 @@ function exitPanMode() {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init, requestRender, register, registerOverlay, getCanvas, enterPanMode, exitPanMode };
+export { init, requestRender, register, registerOverlay, getCanvas, enterDeferredMode, exitDeferredMode };
