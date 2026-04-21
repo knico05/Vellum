@@ -64,44 +64,64 @@ let container     = null;
 let livePoints = [];
 
 // ---------------------------------------------------------------------------
-// Committed-stroke cache
+// Committed-stroke cache (oversized)
 //
 // Re-drawing every bezier curve on every frame is O(strokes × points) and
-// tanks frame rate when there are many annotations. We bake all committed
-// strokes into an OffscreenCanvas with the current viewport transform and
-// blit it each frame instead. Cost during active drawing: one drawImage call.
+// tanks frame rate when there are many annotations. We pre-render all strokes
+// into an OffscreenCanvas and blit it each frame instead (one drawImage call).
 //
-// Invalidated when: strokes added/removed, viewport changes, canvas resizes.
+// The cache is built LARGER than the viewport — one full viewport of buffer on
+// each side (3× total). Panning within that buffer only shifts the blit offset;
+// no rebuild is needed. This eliminates blank-area artifacts while keeping
+// full redraws fast across typical pan distances.
+//
+// Invalidated when: strokes added/removed, scale changes, pan exceeds buffer.
 // ---------------------------------------------------------------------------
 
-/** The cached bitmap of all committed draw strokes, or null when stale. */
+/** How much extra space to add around the viewport on each side (fraction). */
+const CACHE_BUFFER = 1.0; // 1.0 = one full viewport of padding on each side
+
+/** The oversized OffscreenCanvas, or null when stale. */
 let _strokeCache = null;
 
-/** Viewport snapshot at the time the cache was last built. */
+/** Viewport state and buffer offsets at cache build time. */
 let _cacheVpScale = null;
 let _cacheVpPanX  = null;
 let _cacheVpPanY  = null;
+let _cacheBufX    = 0;   // physical-pixel buffer on left/right
+let _cacheBufY    = 0;   // physical-pixel buffer on top/bottom
 
 function _invalidateCache() { _strokeCache = null; }
 
 function _isCacheValid(W, H) {
-  return (
-    _strokeCache !== null &&
-    _strokeCache.width  === W &&
-    _strokeCache.height === H &&
-    _cacheVpScale === viewport.scale &&
-    _cacheVpPanX  === viewport.panX  &&
-    _cacheVpPanY  === viewport.panY
-  );
+  if (!_strokeCache || _cacheVpScale !== viewport.scale) return false;
+  const dpr  = window.devicePixelRatio || 1;
+  const panDx = (viewport.panX - _cacheVpPanX) * dpr;
+  const panDy = (viewport.panY - _cacheVpPanY) * dpr;
+  // Valid while pan delta stays within the pre-rendered buffer
+  return Math.abs(panDx) <= _cacheBufX && Math.abs(panDy) <= _cacheBufY;
 }
 
 function _buildCache(W, H, dpr) {
-  _strokeCache = new OffscreenCanvas(W, H);
+  const bufX = Math.round(W * CACHE_BUFFER);
+  const bufY = Math.round(H * CACHE_BUFFER);
+  const BW   = W + 2 * bufX;
+  const BH   = H + 2 * bufY;
+
+  // Reuse the existing buffer when possible — avoids a costly GPU reallocation
+  if (!_strokeCache || _strokeCache.width !== BW || _strokeCache.height !== BH) {
+    _strokeCache = new OffscreenCanvas(BW, BH);
+  }
   const cacheCtx = _strokeCache.getContext('2d');
+  cacheCtx.clearRect(0, 0, BW, BH);
+
+  // The current viewport is centred inside the oversized buffer.
+  // bufX / bufY shift the viewport origin so strokes in both directions are covered.
   cacheCtx.setTransform(
     viewport.scale * dpr, 0,
     0, viewport.scale * dpr,
-    viewport.panX * dpr, viewport.panY * dpr,
+    viewport.panX * dpr + bufX,
+    viewport.panY * dpr + bufY,
   );
   for (const anno of getAll()) {
     if (anno.type !== 'draw') continue;
@@ -109,9 +129,12 @@ function _buildCache(W, H, dpr) {
     _renderAnnotation(cacheCtx, anno);
     cacheCtx.restore();
   }
+
   _cacheVpScale = viewport.scale;
   _cacheVpPanX  = viewport.panX;
   _cacheVpPanY  = viewport.panY;
+  _cacheBufX    = bufX;
+  _cacheBufY    = bufY;
 }
 
 /** True while a pointer is held down */
@@ -411,9 +434,15 @@ function drawExisting(ctx) {
 
   if (!_isCacheValid(W, H)) _buildCache(W, H, dpr);
 
+  // Shift the blit by the pan delta since the cache was built.
+  // The oversized buffer means this stays fully correct for pan distances
+  // up to one full viewport width/height without any rebuild.
+  const panDx = (viewport.panX - _cacheVpPanX) * dpr;
+  const panDy = (viewport.panY - _cacheVpPanY) * dpr;
+
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.drawImage(_strokeCache, 0, 0);
+  ctx.drawImage(_strokeCache, panDx - _cacheBufX, panDy - _cacheBufY);
   ctx.restore();
 }
 

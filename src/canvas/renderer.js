@@ -32,7 +32,7 @@ import { state as viewport, toCanvas } from './viewport.js';
  *
  * Set to false to revert to the original full-redraw-every-frame behaviour.
  */
-const USE_CSS_PAN_OPTIMIZATION = true;
+const USE_CSS_PAN_OPTIMIZATION = false;
 
 /** Spacing between grid dots in canvas units */
 const GRID_SIZE = 24;
