@@ -370,7 +370,9 @@ function enterDeferredMode() {
 function exitDeferredMode() {
   if (!_deferred) return;
   _deferred = false;
-  if (fgCanvas) { fgCanvas.style.transformOrigin = ''; fgCanvas.style.transform = ''; }
+  // Do NOT touch the CSS transform here — render() resets it in the same frame
+  // as the full redraw, so there is no frame where old content shows at the
+  // wrong position (which is what caused the visible jump).
   requestRender();
 }
 
