@@ -25,6 +25,15 @@ import { state as viewport, toCanvas } from './viewport.js';
 // Constants
 // ---------------------------------------------------------------------------
 
+/**
+ * When true, panning skips redrawing the annotation canvas entirely and
+ * instead CSS-translates it — the GPU composites it for free.
+ * The canvas is rebuilt once when the pan gesture settles (~150 ms of stillness).
+ *
+ * Set to false to revert to the original full-redraw-every-frame behaviour.
+ */
+const USE_CSS_PAN_OPTIMIZATION = true;
+
 /** Spacing between grid dots in canvas units */
 const GRID_SIZE = 24;
 
@@ -67,6 +76,18 @@ const overlayCallbacks = [];
 
 /** Cached dot colour — read once from CSS, avoids getComputedStyle every frame */
 let dotColour = null;
+
+// ---------------------------------------------------------------------------
+// CSS-pan optimisation state
+// ---------------------------------------------------------------------------
+
+/** True while a pan gesture (including momentum) is in progress */
+let _panMode = false;
+
+/** Viewport pan/scale at which fgCanvas content was last fully rendered */
+let _fgRenderedPanX  = 0;
+let _fgRenderedPanY  = 0;
+let _fgRenderedScale = 1;
 
 // ---------------------------------------------------------------------------
 // Initialisation
@@ -211,19 +232,37 @@ function render() {
   // Reset background transform
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-  // 5. Draw foreground (annotation) layer on the canvas that sits above pages
-  fgCtx.clearRect(0, 0, W, H);
-  fgCtx.setTransform(
-    viewport.scale * dpr, 0,
-    0, viewport.scale * dpr,
-    viewport.panX * dpr, viewport.panY * dpr,
-  );
-  for (const fn of overlayCallbacks) {
-    fgCtx.save();
-    fn(fgCtx, viewport);
-    fgCtx.restore();
+  // 5. Draw foreground (annotation) layer on the canvas that sits above pages.
+  //
+  //    In pan-optimisation mode: if only pan changed (not scale), skip the
+  //    expensive canvas redraw and CSS-translate the element instead.
+  //    The GPU composites it at zero CPU cost, keeping annotations visually
+  //    locked to the PDF. One full redraw happens when the pan settles.
+  if (USE_CSS_PAN_OPTIMIZATION && _panMode && viewport.scale === _fgRenderedScale) {
+    const dx = viewport.panX - _fgRenderedPanX;
+    const dy = viewport.panY - _fgRenderedPanY;
+    fgCanvas.style.transform = `translate(${dx}px, ${dy}px)`;
+  } else {
+    // Full redraw — reset CSS transform so canvas sits at its natural position
+    _panMode = false;
+    fgCanvas.style.transform = '';
+    _fgRenderedPanX  = viewport.panX;
+    _fgRenderedPanY  = viewport.panY;
+    _fgRenderedScale = viewport.scale;
+
+    fgCtx.clearRect(0, 0, W, H);
+    fgCtx.setTransform(
+      viewport.scale * dpr, 0,
+      0, viewport.scale * dpr,
+      viewport.panX * dpr, viewport.panY * dpr,
+    );
+    for (const fn of overlayCallbacks) {
+      fgCtx.save();
+      fn(fgCtx, viewport);
+      fgCtx.restore();
+    }
+    fgCtx.setTransform(1, 0, 0, 1, 0, 0);
   }
-  fgCtx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
 /**
@@ -302,7 +341,32 @@ function getCanvas() {
 }
 
 // ---------------------------------------------------------------------------
+// CSS-pan optimisation API
+// ---------------------------------------------------------------------------
+
+/**
+ * Called by input.js when a pan gesture begins.
+ * Switches the foreground canvas into CSS-translate mode.
+ */
+function enterPanMode() {
+  if (!USE_CSS_PAN_OPTIMIZATION) return;
+  _panMode = true;
+}
+
+/**
+ * Called by input.js when a pan gesture (including momentum) fully settles,
+ * and by annotation modules when content changes during a pan.
+ * Resets the CSS transform and triggers one full canvas redraw.
+ */
+function exitPanMode() {
+  if (!_panMode) return;
+  _panMode = false;
+  if (fgCanvas) fgCanvas.style.transform = '';
+  requestRender();
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init, requestRender, register, registerOverlay, getCanvas };
+export { init, requestRender, register, registerOverlay, getCanvas, enterPanMode, exitPanMode };

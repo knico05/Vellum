@@ -43,7 +43,7 @@
 'use strict';
 
 import { applyZoom, applyPan, reset, ZOOM_FACTOR, state as viewportState } from './viewport.js';
-import { requestRender } from './renderer.js';
+import { requestRender, enterPanMode, exitPanMode } from './renderer.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -251,6 +251,7 @@ function onPointerMove(e) {
       velY = velY * VELOCITY_SMOOTHING + dy * (1 - VELOCITY_SMOOTHING);
 
       applyPan(dx, dy);
+      enterPanMode();
       emitAndRender();
     }
 
@@ -323,6 +324,7 @@ function onWheel(e) {
     velY = velY * VELOCITY_SMOOTHING + dy * (1 - VELOCITY_SMOOTHING);
 
     applyPan(dx, dy);
+    enterPanMode();
 
     // Momentum: wait for scrolling to stop, then coast
     clearTimeout(wheelEndTimer);
@@ -448,6 +450,7 @@ function startMomentum() {
   if (Math.abs(velX) < MIN_VELOCITY && Math.abs(velY) < MIN_VELOCITY) {
     velX = 0;
     velY = 0;
+    exitPanMode(); // No momentum — pan is done, rebuild annotation canvas now
     return;
   }
 
@@ -462,6 +465,7 @@ function startMomentum() {
     if (Math.abs(velX) < MIN_VELOCITY && Math.abs(velY) < MIN_VELOCITY) {
       velX = 0;
       velY = 0;
+      exitPanMode(); // Momentum fully coasted out — rebuild annotation canvas
       return;
     }
 

@@ -20,7 +20,7 @@
 'use strict';
 
 import { toCanvas, state as viewport }    from '../canvas/viewport.js';
-import { registerOverlay, requestRender } from '../canvas/renderer.js';
+import { registerOverlay, requestRender, exitPanMode } from '../canvas/renderer.js';
 import { add, getAll }                    from './manager.js';
 import { resolvePageId }                  from '../pages/pageManager.js';
 import { getDragOffset }                  from './select.js';
@@ -145,7 +145,7 @@ function init() {
   container.addEventListener('pointerup',     onUp);
   container.addEventListener('pointercancel', onCancel);
 
-  document.addEventListener('annotations-changed', () => { _invalidateCache(); requestRender(); });
+  document.addEventListener('annotations-changed', () => { exitPanMode(); _invalidateCache(); requestRender(); });
 
   registerOverlay(drawExisting);
   registerOverlay(drawLivePreview);
