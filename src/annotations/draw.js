@@ -64,77 +64,125 @@ let container     = null;
 let livePoints = [];
 
 // ---------------------------------------------------------------------------
-// Committed-stroke cache (oversized)
+// Path2D cache + viewport culling
 //
 // Re-drawing every bezier curve on every frame is O(strokes × points) and
-// tanks frame rate when there are many annotations. We pre-render all strokes
-// into an OffscreenCanvas and blit it each frame instead (one drawImage call).
+// tanks frame rate when there are many annotations. The bottleneck is path
+// CONSTRUCTION — thousands of moveTo/quadraticCurveTo JS→GPU calls per frame.
 //
-// The cache is built LARGER than the viewport — one full viewport of buffer on
-// each side (3× total). Panning within that buffer only shifts the blit offset;
-// no rebuild is needed. This eliminates blank-area artifacts while keeping
-// full redraws fast across typical pan distances.
+// Fix: pre-build a Path2D object for each committed stroke once, reuse every
+// frame with a single ctx.stroke(path2d) call. Path2D stores the path
+// description in C++ so there is no per-frame JS→GPU construction overhead.
 //
-// Invalidated when: strokes added/removed, scale changes, pan exceeds buffer.
+// Additionally, strokes whose canvas-space bounding box is entirely outside
+// the current viewport are skipped (viewport culling). This helps when
+// multiple pages are loaded but only one is visible.
+//
+// Cache cleared when: annotations added/removed (lazily rebuilt on next draw).
+// No invalidation needed for pan or zoom — Path2D is in canvas space and the
+// viewport transform on fgCtx handles both automatically.
 // ---------------------------------------------------------------------------
 
-/** How much extra space to add around the viewport on each side (fraction). */
-const CACHE_BUFFER = 1.0; // 1.0 = one full viewport of padding on each side
+/** Lazily built Path2D objects, keyed by annotation ID. */
+const _path2DMap   = new Map();
+/** Lazily computed canvas-space bounding boxes, keyed by annotation ID. */
+const _bboxMap     = new Map();
+/** Lazily computed average pressure per stroke, keyed by annotation ID. */
+const _pressureMap = new Map();
 
-/** The oversized OffscreenCanvas, or null when stale. */
-let _strokeCache = null;
-
-/** Viewport state and buffer offsets at cache build time. */
-let _cacheVpScale = null;
-let _cacheVpPanX  = null;
-let _cacheVpPanY  = null;
-let _cacheBufX    = 0;   // physical-pixel buffer on left/right
-let _cacheBufY    = 0;   // physical-pixel buffer on top/bottom
-
-function _invalidateCache() { _strokeCache = null; }
-
-function _isCacheValid(W, H) {
-  if (!_strokeCache || _cacheVpScale !== viewport.scale) return false;
-  const dpr  = window.devicePixelRatio || 1;
-  const panDx = (viewport.panX - _cacheVpPanX) * dpr;
-  const panDy = (viewport.panY - _cacheVpPanY) * dpr;
-  // Valid while pan delta stays within the pre-rendered buffer
-  return Math.abs(panDx) <= _cacheBufX && Math.abs(panDy) <= _cacheBufY;
+function _clearCaches() {
+  _path2DMap.clear();
+  _bboxMap.clear();
+  _pressureMap.clear();
 }
 
-function _buildCache(W, H, dpr) {
-  const bufX = Math.round(W * CACHE_BUFFER);
-  const bufY = Math.round(H * CACHE_BUFFER);
-  const BW   = W + 2 * bufX;
-  const BH   = H + 2 * bufY;
+/** Returns (or builds) the Path2D for a draw annotation, or null if too short. */
+function _getPath2D(anno) {
+  if (_path2DMap.has(anno.id)) return _path2DMap.get(anno.id);
 
-  // Reuse the existing buffer when possible — avoids a costly GPU reallocation
-  if (!_strokeCache || _strokeCache.width !== BW || _strokeCache.height !== BH) {
-    _strokeCache = new OffscreenCanvas(BW, BH);
+  const p = new Path2D();
+  switch (anno.shapeType) {
+    case 'circle':
+      p.arc(anno.cx, anno.cy, anno.r, 0, 2 * Math.PI);
+      break;
+    case 'ellipse':
+      p.ellipse(anno.cx, anno.cy, anno.rx, anno.ry, 0, 0, 2 * Math.PI);
+      break;
+    case 'rect': {
+      const pts = anno.points;
+      if (!pts || pts.length < 3) { _path2DMap.set(anno.id, null); return null; }
+      p.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) p.lineTo(pts[i].x, pts[i].y);
+      p.closePath();
+      break;
+    }
+    case 'line':
+    case 'corner': {
+      const pts = anno.points;
+      if (!pts || pts.length < 2) { _path2DMap.set(anno.id, null); return null; }
+      p.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) p.lineTo(pts[i].x, pts[i].y);
+      break;
+    }
+    default: {
+      // Freehand — smooth quadratic bezier through midpoints
+      const pts = anno.points;
+      if (!pts || pts.length < 2) { _path2DMap.set(anno.id, null); return null; }
+      p.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const mx = (pts[i].x + pts[i + 1].x) / 2;
+        const my = (pts[i].y + pts[i + 1].y) / 2;
+        p.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+      }
+      p.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+    }
   }
-  const cacheCtx = _strokeCache.getContext('2d');
-  cacheCtx.clearRect(0, 0, BW, BH);
+  _path2DMap.set(anno.id, p);
+  return p;
+}
 
-  // The current viewport is centred inside the oversized buffer.
-  // bufX / bufY shift the viewport origin so strokes in both directions are covered.
-  cacheCtx.setTransform(
-    viewport.scale * dpr, 0,
-    0, viewport.scale * dpr,
-    viewport.panX * dpr + bufX,
-    viewport.panY * dpr + bufY,
-  );
-  for (const anno of getAll()) {
-    if (anno.type !== 'draw') continue;
-    cacheCtx.save();
-    _renderAnnotation(cacheCtx, anno);
-    cacheCtx.restore();
+/** Returns the canvas-space bounding box for a draw annotation. */
+function _getBbox(anno) {
+  if (_bboxMap.has(anno.id)) return _bboxMap.get(anno.id);
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  if (anno.shapeType === 'circle') {
+    x1 = anno.cx - anno.r;  x2 = anno.cx + anno.r;
+    y1 = anno.cy - anno.r;  y2 = anno.cy + anno.r;
+  } else if (anno.shapeType === 'ellipse') {
+    x1 = anno.cx - anno.rx; x2 = anno.cx + anno.rx;
+    y1 = anno.cy - anno.ry; y2 = anno.cy + anno.ry;
+  } else {
+    for (const pt of (anno.points || [])) {
+      if (pt.x < x1) x1 = pt.x;  if (pt.x > x2) x2 = pt.x;
+      if (pt.y < y1) y1 = pt.y;  if (pt.y > y2) y2 = pt.y;
+    }
   }
+  const bbox = { x1, y1, x2, y2 };
+  _bboxMap.set(anno.id, bbox);
+  return bbox;
+}
 
-  _cacheVpScale = viewport.scale;
-  _cacheVpPanX  = viewport.panX;
-  _cacheVpPanY  = viewport.panY;
-  _cacheBufX    = bufX;
-  _cacheBufY    = bufY;
+/** Returns true if the annotation's bounding box overlaps the current viewport. */
+function _inViewport(anno, cssW, cssH) {
+  const { x1, y1, x2, y2 } = _getBbox(anno);
+  const margin = 20; // CSS px — slack for thick strokes near the edge
+  const sx1 = x1 * viewport.scale + viewport.panX;
+  const sy1 = y1 * viewport.scale + viewport.panY;
+  const sx2 = x2 * viewport.scale + viewport.panX;
+  const sy2 = y2 * viewport.scale + viewport.panY;
+  return sx2 >= -margin && sx1 <= cssW + margin &&
+         sy2 >= -margin && sy1 <= cssH + margin;
+}
+
+/** Returns (or computes) the average pressure for a freehand stroke. */
+function _getAvgPressure(anno) {
+  if (_pressureMap.has(anno.id)) return _pressureMap.get(anno.id);
+  const pts = anno.points;
+  const avg = pts && pts.length
+    ? pts.reduce((s, p) => s + (p.pressure || 0.5), 0) / pts.length
+    : 0.5;
+  _pressureMap.set(anno.id, avg);
+  return avg;
 }
 
 /** True while a pointer is held down */
@@ -168,7 +216,7 @@ function init() {
   container.addEventListener('pointerup',     onUp);
   container.addEventListener('pointercancel', onCancel);
 
-  document.addEventListener('annotations-changed', () => { exitDeferredMode(); _invalidateCache(); requestRender(); });
+  document.addEventListener('annotations-changed', () => { exitDeferredMode(); _clearCaches(); requestRender(); });
 
   registerOverlay(drawExisting);
   registerOverlay(drawLivePreview);
@@ -409,41 +457,45 @@ function commitStroke() {
 
 /** Draws all committed draw annotations. */
 function drawExisting(ctx) {
-  const hasDragged = getAll().some(a => a.type === 'draw' && getDragOffset(a.id));
+  const dpr  = window.devicePixelRatio || 1;
+  const cssW = ctx.canvas.width  / dpr;
+  const cssH = ctx.canvas.height / dpr;
 
-  if (hasDragged) {
-    // During a drag fall back to per-stroke redraw so the offset applies correctly
-    for (const anno of getAll()) {
-      if (anno.type !== 'draw') continue;
-      const offset = getDragOffset(anno.id);
-      if (offset) {
-        ctx.save();
-        ctx.translate(offset.dx, offset.dy);
-        _renderAnnotation(ctx, anno);
-        ctx.restore();
-      } else {
-        _renderAnnotation(ctx, anno);
-      }
+  for (const anno of getAll()) {
+    if (anno.type !== 'draw') continue;
+
+    const offset = getDragOffset(anno.id);
+
+    // Viewport culling — skip strokes fully outside the screen
+    if (!offset && !_inViewport(anno, cssW, cssH)) continue;
+
+    const path2d = _getPath2D(anno);
+    if (!path2d) continue;
+
+    // Stroke width: shape annotations use a fixed width; freehand uses pressure
+    let width;
+    if (anno.shapeType) {
+      width = _shapeWidth(anno.strokeWidth);
+    } else {
+      const avgP = _getAvgPressure(anno);
+      const pw   = anno.strokeWidth * Math.pow(Math.min(avgP * 2, 1), PRESSURE_EXPONENT);
+      width = Math.max(pw, 1.5 / (viewport.scale * dpr));
     }
-    return;
+
+    ctx.strokeStyle = anno.colour;
+    ctx.lineWidth   = width;
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = anno.shapeType === 'rect' ? 'miter' : 'round';
+
+    if (offset) {
+      ctx.save();
+      ctx.translate(offset.dx, offset.dy);
+      ctx.stroke(path2d);
+      ctx.restore();
+    } else {
+      ctx.stroke(path2d);
+    }
   }
-
-  const dpr = window.devicePixelRatio || 1;
-  const W   = ctx.canvas.width;
-  const H   = ctx.canvas.height;
-
-  if (!_isCacheValid(W, H)) _buildCache(W, H, dpr);
-
-  // Shift the blit by the pan delta since the cache was built.
-  // The oversized buffer means this stays fully correct for pan distances
-  // up to one full viewport width/height without any rebuild.
-  const panDx = (viewport.panX - _cacheVpPanX) * dpr;
-  const panDy = (viewport.panY - _cacheVpPanY) * dpr;
-
-  ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.drawImage(_strokeCache, panDx - _cacheBufX, panDy - _cacheBufY);
-  ctx.restore();
 }
 
 /** Draws the stroke in progress while the pointer is still held. */
