@@ -560,9 +560,9 @@ function init() {
   // ── Text box toolbar options ───────────────────────────────────────────────
   _buildTextBoxOptions();
 
-  // When a text box is focused for editing, switch any active tool to cursor
-  document.addEventListener('request-cursor-tool', () => {
-    if (activeTool !== null) setActiveTool(null);
+  // When a text box is focused, switch to the note tool so toolbar controls appear.
+  document.addEventListener('request-note-tool', () => {
+    if (activeTool !== 'note') setActiveTool('note');
   });
 
   // Sync toolbar controls when a text box gains/loses focus
