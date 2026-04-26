@@ -103,11 +103,8 @@ function init() {
     if (editingBody) editingBody.blur();
   });
 
-  // Two ways to create a text box:
-  //   1. N tool active → single click/tap
-  //   2. Double-click/double-tap (touch or mouse, never pen) on empty canvas
-  container.addEventListener('click',   onSingleClick);
-  container.addEventListener('dblclick', onDoubleClick);
+  // Text box created by single click/tap when the N tool is active.
+  container.addEventListener('click', onSingleClick);
 
   document.addEventListener('annotations-changed', (e) => syncElements(e?.detail?.fromLoad ?? false));
   register(updatePositions);
@@ -133,17 +130,6 @@ function deactivate() {
 // ---------------------------------------------------------------------------
 // Box creation
 // ---------------------------------------------------------------------------
-
-/**
- * Double-click handler — mouse only. Touch users use the N tool instead.
- * Does not fire when the N tool is active (single-click already handles that).
- */
-function onDoubleClick(e) {
-  if (toolActive) return;             // single-click path already handles this
-  if (lastPointerType !== 'mouse') return;
-  if (e.target.closest('.text-box')) return;
-  placeBox(e);
-}
 
 /**
  * Click handler — places a text box only when the N tool is active.
@@ -365,7 +351,11 @@ function createBoxElement(anno) {
   });
   body.addEventListener('blur',  () => {
     setTimeout(() => {
-      if (!el.contains(document.activeElement)) {
+      const ae = document.activeElement;
+      // Keep focused state alive when focus moved to the toolbar's textbox options
+      // (e.g. clicking the font-size select) so toolbar controls can still apply.
+      const inTextBoxOptions = document.getElementById('textbox-options')?.contains(ae);
+      if (!el.contains(ae) && !inTextBoxOptions) {
         _focusedAnnoId = null;
         el.classList.remove('editing');
         document.dispatchEvent(new CustomEvent('textbox-focus-changed', { detail: null }));

@@ -50,11 +50,12 @@ import {
 } from '../annotations/select.js';
 
 import {
-  activate       as activateNote,
-  deactivate     as deactivateNote,
+  activate         as activateNote,
+  deactivate       as deactivateNote,
   setNoteDefaults,
   applyFocusedStyle,
-  FONT_SIZES     as NOTE_FONT_SIZES,
+  getFocusedAnnoId,
+  FONT_SIZES       as NOTE_FONT_SIZES,
 } from '../annotations/note.js';
 
 
@@ -1458,6 +1459,11 @@ function _applyTextBoxSetting(key, value) {
   applyFocusedStyle({ [key]: value });
   _syncTextBoxToolbar({ ..._textBoxSettings });
   _saveTextBoxSettings();
+  // Return focus to the text box body so typing resumes seamlessly.
+  // Needed when a control like the font-size <select> steals focus.
+  if (getFocusedAnnoId()) {
+    document.querySelector('.text-box.editing .text-box-body')?.focus();
+  }
 }
 
 /**
