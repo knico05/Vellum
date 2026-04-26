@@ -43,7 +43,7 @@
 'use strict';
 
 import { applyZoom, applyPan, reset, ZOOM_FACTOR, state as viewportState } from './viewport.js';
-import { requestRender, enterDeferredMode, exitDeferredMode } from './renderer.js';
+import { requestRender } from './renderer.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -251,7 +251,6 @@ function onPointerMove(e) {
       velY = velY * VELOCITY_SMOOTHING + dy * (1 - VELOCITY_SMOOTHING);
 
       applyPan(dx, dy);
-      enterDeferredMode();
       emitAndRender();
     }
 
@@ -264,7 +263,6 @@ function onPointerMove(e) {
       const zoomFactor = newDistance / lastPinchDistance - 1;
       const mid = getPinchMidpoint();
       applyZoom(zoomFactor, mid.x, mid.y);
-      enterDeferredMode();
     }
 
     lastPinchDistance = newDistance;
@@ -314,7 +312,6 @@ function onWheel(e) {
     const sens      = isPinch ? PINCH_ZOOM_SENSITIVITY : WHEEL_ZOOM_SENSITIVITY;
     const delta     = -e.deltaY * ZOOM_FACTOR * sens;
     applyZoom(delta, originX, originY);
-    enterDeferredMode();
     clearTimeout(wheelEndTimer);
     wheelEndTimer = setTimeout(startMomentum, WHEEL_END_DELAY_MS);
   } else {
@@ -328,7 +325,6 @@ function onWheel(e) {
     velY = velY * VELOCITY_SMOOTHING + dy * (1 - VELOCITY_SMOOTHING);
 
     applyPan(dx, dy);
-    enterDeferredMode();
 
     // Momentum: wait for scrolling to stop, then coast
     clearTimeout(wheelEndTimer);
@@ -454,7 +450,6 @@ function startMomentum() {
   if (Math.abs(velX) < MIN_VELOCITY && Math.abs(velY) < MIN_VELOCITY) {
     velX = 0;
     velY = 0;
-    exitDeferredMode(); // No momentum — pan is done, rebuild annotation canvas now
     return;
   }
 
@@ -469,7 +464,6 @@ function startMomentum() {
     if (Math.abs(velX) < MIN_VELOCITY && Math.abs(velY) < MIN_VELOCITY) {
       velX = 0;
       velY = 0;
-      exitDeferredMode(); // Momentum fully coasted out — rebuild annotation canvas
       return;
     }
 

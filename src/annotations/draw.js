@@ -20,7 +20,7 @@
 'use strict';
 
 import { toCanvas, state as viewport }    from '../canvas/viewport.js';
-import { registerOverlay, requestRender, exitDeferredMode } from '../canvas/renderer.js';
+import { registerOverlay, requestRender } from '../canvas/renderer.js';
 import { add, getAll }                    from './manager.js';
 import { resolvePageId }                  from '../pages/pageManager.js';
 import { getDragOffset }                  from './select.js';
@@ -216,7 +216,7 @@ function init() {
   container.addEventListener('pointerup',     onUp);
   container.addEventListener('pointercancel', onCancel);
 
-  document.addEventListener('annotations-changed', () => { exitDeferredMode(); _clearCaches(); requestRender(); });
+  document.addEventListener('annotations-changed', () => { _clearCaches(); requestRender(); });
 
   registerOverlay(drawExisting);
   registerOverlay(drawLivePreview);

@@ -25,15 +25,6 @@ import { state as viewport, toCanvas } from './viewport.js';
 // Constants
 // ---------------------------------------------------------------------------
 
-/**
- * When true, panning skips redrawing the annotation canvas entirely and
- * instead CSS-translates it — the GPU composites it for free.
- * The canvas is rebuilt once when the pan gesture settles (~150 ms of stillness).
- *
- * Set to false to revert to the original full-redraw-every-frame behaviour.
- */
-const USE_CSS_PAN_OPTIMIZATION = false;
-
 /** Spacing between grid dots in canvas units */
 const GRID_SIZE = 24;
 
@@ -76,18 +67,6 @@ const overlayCallbacks = [];
 
 /** Cached dot colour — read once from CSS, avoids getComputedStyle every frame */
 let dotColour = null;
-
-// ---------------------------------------------------------------------------
-// CSS viewport-deferred optimisation state
-// ---------------------------------------------------------------------------
-
-/** True while a gesture (pan OR zoom) is in progress */
-let _deferred = false;
-
-/** Viewport state at which fgCanvas content was last fully rendered */
-let _fgRenderedPanX  = 0;
-let _fgRenderedPanY  = 0;
-let _fgRenderedScale = 1;
 
 // ---------------------------------------------------------------------------
 // Initialisation
@@ -233,45 +212,18 @@ function render() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
   // 5. Draw foreground (annotation) layer on the canvas that sits above pages.
-  //
-  //    During a gesture (pan OR zoom) skip the expensive canvas redraw and
-  //    CSS-transform the element instead — the GPU composites it for free.
-  //    The transform math handles both pan and zoom correctly so annotations
-  //    stay locked to the PDF at all times. One full redraw happens when the
-  //    gesture fully settles (momentum dies out).
-  //
-  //    For zoom: content appears slightly blurry mid-gesture (we're scaling
-  //    a raster), but that's imperceptible during a fast pinch and far better
-  //    than the twitching caused by rebuilding every frame.
-  if (USE_CSS_PAN_OPTIMIZATION && _deferred) {
-    // r = zoom ratio since last full render; stays 1 during pure pan
-    const r  = viewport.scale / _fgRenderedScale;
-    const tx = viewport.panX - _fgRenderedPanX * r;
-    const ty = viewport.panY - _fgRenderedPanY * r;
-    fgCanvas.style.transformOrigin = '0 0';
-    fgCanvas.style.transform = `translate(${tx}px, ${ty}px) scale(${r})`;
-  } else {
-    // Full redraw — reset CSS transform so canvas sits at its natural position
-    _deferred = false;
-    fgCanvas.style.transformOrigin = '';
-    fgCanvas.style.transform = '';
-    _fgRenderedPanX  = viewport.panX;
-    _fgRenderedPanY  = viewport.panY;
-    _fgRenderedScale = viewport.scale;
-
-    fgCtx.clearRect(0, 0, W, H);
-    fgCtx.setTransform(
-      viewport.scale * dpr, 0,
-      0, viewport.scale * dpr,
-      viewport.panX * dpr, viewport.panY * dpr,
-    );
-    for (const fn of overlayCallbacks) {
-      fgCtx.save();
-      fn(fgCtx, viewport);
-      fgCtx.restore();
-    }
-    fgCtx.setTransform(1, 0, 0, 1, 0, 0);
+  fgCtx.clearRect(0, 0, W, H);
+  fgCtx.setTransform(
+    viewport.scale * dpr, 0,
+    0, viewport.scale * dpr,
+    viewport.panX * dpr, viewport.panY * dpr,
+  );
+  for (const fn of overlayCallbacks) {
+    fgCtx.save();
+    fn(fgCtx, viewport);
+    fgCtx.restore();
   }
+  fgCtx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
 /**
@@ -350,34 +302,7 @@ function getCanvas() {
 }
 
 // ---------------------------------------------------------------------------
-// CSS-pan optimisation API
-// ---------------------------------------------------------------------------
-
-/**
- * Called by input.js when any gesture (pan or zoom) begins.
- * Switches the foreground canvas into CSS-transform mode.
- */
-function enterDeferredMode() {
-  if (!USE_CSS_PAN_OPTIMIZATION) return;
-  _deferred = true;
-}
-
-/**
- * Called by input.js when all gesture activity (including momentum) fully
- * settles, and by annotation modules when content changes mid-gesture.
- * Resets the CSS transform and triggers one full canvas redraw.
- */
-function exitDeferredMode() {
-  if (!_deferred) return;
-  _deferred = false;
-  // Do NOT touch the CSS transform here — render() resets it in the same frame
-  // as the full redraw, so there is no frame where old content shows at the
-  // wrong position (which is what caused the visible jump).
-  requestRender();
-}
-
-// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init, requestRender, register, registerOverlay, getCanvas, enterDeferredMode, exitDeferredMode };
+export { init, requestRender, register, registerOverlay, getCanvas };
