@@ -149,16 +149,17 @@ function placeBox(e) {
   const rect     = container.getBoundingClientRect();
   const { x, y } = toCanvas(e.clientX - rect.left, e.clientY - rect.top);
   add({
-    type:      'textBox',
-    pageId:    resolvePageId(x, y),
-    canvasX:   x,
-    canvasY:   y,
-    width:     BOX_WIDTH,
-    height:    BOX_HEIGHT,
-    text:      '',
-    colour:    _defaults.colour,
-    fontSize:  _defaults.fontSize,
-    align:     _defaults.align,
+    type:     'textBox',
+    pageId:   resolvePageId(x, y),
+    canvasX:  x,
+    canvasY:  y,
+    width:    BOX_WIDTH,
+    height:   BOX_HEIGHT,
+    text:     '',
+    richText: '',
+    colour:   _defaults.colour,
+    fontSize: _defaults.fontSize,
+    align:    _defaults.align,
   });
 }
 
@@ -194,7 +195,7 @@ function syncElements(fromLoad = false) {
       const el   = boxElements.get(anno.id);
       const body = el.querySelector('.text-box-body');
       if (body && document.activeElement !== body) {
-        body.innerHTML = deserializeText(anno.text);
+        body.innerHTML = _displayHtml(anno);
       }
       applyBodyStyle(el, anno);
       el.style.width  = `${anno.width}px`;
@@ -277,7 +278,7 @@ function createBoxElement(anno) {
   body.className       = 'text-box-body';
   body.contentEditable = 'true';
   body.spellcheck      = false;
-  body.innerHTML       = deserializeText(anno.text);
+  body.innerHTML       = _displayHtml(anno);
   applyBodyStyle(el, anno);
 
   // ── Resize handle ─────────────────────────────────────────────────────────
@@ -369,7 +370,7 @@ function createBoxElement(anno) {
 
         // Auto-delete empty text boxes so accidental placements don't litter
         // the canvas as invisible annotations.
-        if (serializeText(body).trim() === '') remove(anno.id);
+        if (!body.textContent.trim()) remove(anno.id);
       }
     }, 80);
   });
@@ -437,7 +438,13 @@ function applyFocusedStyle(style) {
   const body = el?.querySelector('.text-box-body');
   if (!body) return;
 
-  if (style.colour   !== undefined) { body.style.color     = style.colour;           update(_focusedAnnoId, { colour:   style.colour   }); }
+  if (style.colour !== undefined) {
+    // Apply colour to current selection (or insertion point for future typing).
+    // execCommand targets the selection, not the whole box — same as Word/Docs.
+    document.execCommand('styleWithCSS', false, true);
+    document.execCommand('foreColor', false, style.colour);
+    update(_focusedAnnoId, { colour: style.colour });
+  }
   if (style.fontSize !== undefined) { body.style.fontSize  = `${style.fontSize}px`;  update(_focusedAnnoId, { fontSize: style.fontSize }); }
   if (style.align    !== undefined) { body.style.textAlign = style.align;             update(_focusedAnnoId, { align:    style.align    }); }
 }
@@ -587,6 +594,20 @@ function syncHeight(annotationId, containerEl, bodyEl) {
 }
 
 /**
+ * Returns the HTML to set as body.innerHTML for the given annotation.
+ * Prefers anno.richText (new format — raw innerHTML with inline spans for colour,
+ * bold, etc.). Falls back to deserializeText(anno.text) for annotations saved
+ * before richText was introduced (plain-text format).
+ *
+ * @param {object} anno
+ * @returns {string}
+ */
+function _displayHtml(anno) {
+  if (anno.richText !== undefined && anno.richText !== null) return anno.richText;
+  return deserializeText(anno.text);
+}
+
+/**
  * Converts a contenteditable element's innerHTML to plain text preserving
  * newlines. Handles <br>, <div>, and <li> tags produced by Chromium's editor.
  * Bullet lists (<ul>/<li>) are serialised as "• item" lines.
@@ -671,7 +692,10 @@ function deserializeText(text) {
 function scheduleTextSave(annotationId, bodyEl) {
   clearTimeout(saveTimers.get(annotationId));
   const timer = setTimeout(() => {
-    update(annotationId, { text: serializeText(bodyEl) });
+    update(annotationId, {
+      richText: bodyEl.innerHTML,           // HTML — preserves inline colours, bold, etc.
+      text:     bodyEl.textContent.trim(),  // plain text — used for search and empty-check
+    });
     saveTimers.delete(annotationId);
   }, SAVE_DEBOUNCE_MS);
   saveTimers.set(annotationId, timer);
