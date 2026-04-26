@@ -850,6 +850,43 @@ button:focus-visible {
   color: var(--text-primary);
 }
 
+/* Font size picker popup */
+.tbo-size-picker-popup {
+  position: fixed;
+  z-index: 9999;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow-y: auto;
+  max-height: 220px;
+  min-width: 52px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  padding: 2px 0;
+}
+
+.tbo-size-picker-item {
+  display: block;
+  width: 100%;
+  padding: 4px 10px;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tbo-size-picker-item:hover {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+
+.tbo-size-picker-item.active {
+  color: var(--accent);
+}
+
 /* Bullet and ordered lists inside text boxes */
 .text-box-body ul,
 .text-box-body ol {

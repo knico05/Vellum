@@ -303,6 +303,14 @@ const strokeSizeButtons = new Map();
 /** The #textbox-options container element */
 let textboxOptionsEl = null;
 
+/**
+ * Live style of the currently focused text box — used only for toolbar display.
+ * Reset to {} when no box is focused. Never written to localStorage.
+ * Kept separate from _textBoxSettings so focusing an existing box does not
+ * corrupt the defaults for new boxes.
+ */
+let _currentBoxStyle = {};
+
 /** The #eraser-mode-picker container element */
 let eraserModePickerEl = null;
 
@@ -566,14 +574,23 @@ function init() {
   });
 
   // Sync toolbar controls when a text box gains/loses focus.
-  // Also mirror the focused box's settings into _textBoxSettings so that
-  // subsequent _syncTextBoxToolbar({ ..._textBoxSettings }) calls (triggered
-  // by any toolbar action) always show the correct values for the current box.
+  // _currentBoxStyle tracks the focused box's live style for display only —
+  // it is never persisted. _textBoxSettings holds new-box defaults only.
   document.addEventListener('textbox-focus-changed', (e) => {
     if (e.detail) {
-      Object.assign(_textBoxSettings, e.detail.style);
-      _syncTextBoxToolbar(e.detail.style);
+      Object.assign(_currentBoxStyle, e.detail.style);
+      _syncTextBoxToolbar(_currentBoxStyle);
+      _syncFormatButtons();
+    } else {
+      _currentBoxStyle = {};
+      _syncTextBoxToolbar({ ..._textBoxSettings });
+      _syncFormatButtons();
     }
+  });
+
+  // Update B/I/U active states whenever the selection moves inside a text box.
+  document.addEventListener('selectionchange', () => {
+    if (getFocusedAnnoId()) requestAnimationFrame(_syncFormatButtons);
   });
 
   // ── Viewport scale tracking — drives the dynamic pen cursor size ──────────
@@ -1346,9 +1363,51 @@ function closeSizePopover() {
 
 /** References to textbox toolbar controls for sync */
 const _tbSwatches   = new Map(); // hex → button
-let   _tbSizeSelect = null;
+let   _tbSizeBtn    = null;      // custom size picker button element
+let   _tbSizePicker = null;      // open size picker popup, or null
 const _tbAlignBtns  = new Map(); // align → button
 const _tbFormatBtns = new Map(); // cmd → button
+
+/** Opens the font-size picker popup anchored below btn. */
+function _openSizePicker(btn) {
+  const popup = document.createElement('div');
+  popup.className = 'tbo-size-picker-popup';
+
+  for (const sz of NOTE_FONT_SIZES) {
+    const item = document.createElement('button');
+    item.className   = 'tbo-size-picker-item';
+    item.textContent = String(sz);
+    if (sz === Number(_tbSizeBtn?.textContent)) item.classList.add('active');
+    item.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      _closeSizePicker();
+      _applyTextBoxSetting('fontSize', sz);
+    });
+    popup.appendChild(item);
+  }
+
+  document.body.appendChild(popup);
+  const rect = btn.getBoundingClientRect();
+  popup.style.left = `${Math.max(4, rect.left)}px`;
+  popup.style.top  = `${rect.bottom + 2}px`;
+  _tbSizePicker = popup;
+
+  setTimeout(() => {
+    document.addEventListener('pointerdown', _onSizePickerOutside);
+  }, 0);
+}
+
+function _closeSizePicker() {
+  _tbSizePicker?.remove();
+  _tbSizePicker = null;
+  document.removeEventListener('pointerdown', _onSizePickerOutside);
+}
+
+function _onSizePickerOutside(e) {
+  if (_tbSizePicker && !_tbSizePicker.contains(e.target) && e.target !== _tbSizeBtn) {
+    _closeSizePicker();
+  }
+}
 
 /**
  * Builds colour swatches, font-size select, bold/italic/underline toggles,
@@ -1382,22 +1441,19 @@ function _buildTextBoxOptions() {
   sep1.className = 'tbo-sep';
   textboxOptionsEl.appendChild(sep1);
 
-  // Font size select
-  const sizeSelect = document.createElement('select');
-  sizeSelect.className = 'tbo-size-select';
-  sizeSelect.title     = 'Font size';
-  for (const sz of NOTE_FONT_SIZES) {
-    const opt = document.createElement('option');
-    opt.value       = sz;
-    opt.textContent = sz;
-    if (sz === curFontSize) opt.selected = true;
-    sizeSelect.appendChild(opt);
-  }
-  sizeSelect.addEventListener('change', () => {
-    _applyTextBoxSetting('fontSize', Number(sizeSelect.value));
+  // Font size picker — custom dropdown so mousedown+preventDefault keeps
+  // focus inside the contenteditable (native <select> steals focus).
+  const sizeBtn = document.createElement('button');
+  sizeBtn.className   = 'tbo-size-select';
+  sizeBtn.title       = 'Font size';
+  sizeBtn.textContent = String(curFontSize);
+  sizeBtn.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    if (_tbSizePicker) { _closeSizePicker(); return; }
+    _openSizePicker(sizeBtn);
   });
-  textboxOptionsEl.appendChild(sizeSelect);
-  _tbSizeSelect = sizeSelect;
+  textboxOptionsEl.appendChild(sizeBtn);
+  _tbSizeBtn = sizeBtn;
 
   // Separator
   const sep2 = document.createElement('div');
@@ -1419,6 +1475,8 @@ function _buildTextBoxOptions() {
     btn.addEventListener('mousedown', (e) => {
       e.preventDefault();
       document.execCommand(f.cmd);
+      // queryCommandState updates on next tick after execCommand
+      requestAnimationFrame(_syncFormatButtons);
     });
     textboxOptionsEl.appendChild(btn);
     _tbFormatBtns.set(f.cmd, btn);
@@ -1459,9 +1517,16 @@ function _buildTextBoxOptions() {
  */
 function _applyTextBoxSetting(key, value) {
   _textBoxSettings[key] = value;
+  // When a box is focused, also update _currentBoxStyle so the toolbar
+  // reflects the live value rather than the new-box default.
+  if (getFocusedAnnoId()) {
+    _currentBoxStyle[key] = value;
+    _syncTextBoxToolbar({ ..._currentBoxStyle });
+  } else {
+    _syncTextBoxToolbar({ ..._textBoxSettings });
+  }
   setNoteDefaults({ [key]: value });
   applyFocusedStyle({ [key]: value });
-  _syncTextBoxToolbar({ ..._textBoxSettings });
   _saveTextBoxSettings();
   // Return focus to the text box body only if it lost focus (e.g. font-size
   // select stole it). Swatch and format buttons use mousedown+preventDefault
@@ -1480,11 +1545,27 @@ function _syncTextBoxToolbar(style) {
   for (const [hex, btn] of _tbSwatches) {
     btn.classList.toggle('active', hex === (style.colour ?? '#000000'));
   }
-  if (_tbSizeSelect && style.fontSize != null) {
-    _tbSizeSelect.value = String(style.fontSize);
+  if (_tbSizeBtn && style.fontSize != null) {
+    _tbSizeBtn.textContent = String(style.fontSize);
   }
   for (const [align, btn] of _tbAlignBtns) {
     btn.classList.toggle('active', align === (style.align ?? 'left'));
+  }
+}
+
+/**
+ * Reads the browser's current queryCommandState for bold/italic/underline and
+ * toggles the active class on the corresponding toolbar buttons.
+ * Safe to call any time — does nothing when no text box is focused.
+ */
+function _syncFormatButtons() {
+  const cmds = ['bold', 'italic', 'underline', 'insertUnorderedList'];
+  for (const cmd of cmds) {
+    const btn = _tbFormatBtns.get(cmd);
+    if (!btn) continue;
+    try {
+      btn.classList.toggle('active', document.queryCommandState(cmd));
+    } catch { /* ignore in environments where queryCommandState throws */ }
   }
 }
 
