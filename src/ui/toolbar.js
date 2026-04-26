@@ -1459,10 +1459,12 @@ function _applyTextBoxSetting(key, value) {
   applyFocusedStyle({ [key]: value });
   _syncTextBoxToolbar({ ..._textBoxSettings });
   _saveTextBoxSettings();
-  // Return focus to the text box body so typing resumes seamlessly.
-  // Needed when a control like the font-size <select> steals focus.
+  // Return focus to the text box body only if it lost focus (e.g. font-size
+  // select stole it). Swatch and format buttons use mousedown+preventDefault
+  // so focus never leaves — calling .focus() there would disturb the selection.
   if (getFocusedAnnoId()) {
-    document.querySelector('.text-box.editing .text-box-body')?.focus();
+    const body = document.querySelector('.text-box.editing .text-box-body');
+    if (body && document.activeElement !== body) body.focus();
   }
 }
 

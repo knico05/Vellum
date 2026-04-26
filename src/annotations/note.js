@@ -439,11 +439,13 @@ function applyFocusedStyle(style) {
   if (!body) return;
 
   if (style.colour !== undefined) {
-    // Apply colour to current selection (or insertion point for future typing).
-    // execCommand targets the selection, not the whole box — same as Word/Docs.
+    // Apply to current selection or insertion point — NOT to the whole box.
+    // We do NOT call update({ colour }) here because that would trigger
+    // syncElements → applyBodyStyle → body.style.color, changing the whole box.
+    // Instead we use execCommand and save the resulting HTML via richText.
     document.execCommand('styleWithCSS', false, true);
     document.execCommand('foreColor', false, style.colour);
-    update(_focusedAnnoId, { colour: style.colour });
+    scheduleTextSave(_focusedAnnoId, body);
   }
   if (style.fontSize !== undefined) { body.style.fontSize  = `${style.fontSize}px`;  update(_focusedAnnoId, { fontSize: style.fontSize }); }
   if (style.align    !== undefined) { body.style.textAlign = style.align;             update(_focusedAnnoId, { align:    style.align    }); }
