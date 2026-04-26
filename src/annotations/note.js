@@ -139,6 +139,9 @@ function onSingleClick(e) {
   if (!toolActive) return;
   if (lastPointerType === 'pen') return;
   if (e.target.closest('.text-box')) return;
+  // If a box is currently focused, this click is exiting it — don't create a new one.
+  // _focusedAnnoId is still set here because the blur's 80ms timeout hasn't fired yet.
+  if (_focusedAnnoId !== null) return;
   placeBox(e);
 }
 
