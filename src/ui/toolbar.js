@@ -559,11 +559,6 @@ function init() {
   // ── Text box toolbar options ───────────────────────────────────────────────
   _buildTextBoxOptions();
 
-  // When a text box is placed, the note tool self-deactivates — switch to cursor
-  document.addEventListener('note-placed', () => {
-    setActiveTool(null);
-  });
-
   // When a text box is focused for editing, switch any active tool to cursor
   document.addEventListener('request-cursor-tool', () => {
     if (activeTool !== null) setActiveTool(null);

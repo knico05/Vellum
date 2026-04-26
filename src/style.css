@@ -1904,18 +1904,20 @@ button:focus-visible {
   padding-right: 2px;
 }
 
-.template-size-btn {
-  font-size: var(--text-xs);
-  padding: 3px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-3);
-  border: 1px solid transparent;
-  color: var(--text-secondary);
+.template-size-slider {
+  flex: 1;
+  min-width: 80px;
+  accent-color: var(--accent);
   cursor: pointer;
-  transition: background 100ms ease;
 }
-.template-size-btn:hover   { background: var(--surface-3); border-color: var(--border-subtle); }
-.template-size-btn.active  { background: var(--accent-dim); border-color: var(--accent); color: var(--text-primary); }
+
+.template-size-value {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  min-width: 28px;
+  text-align: right;
+  white-space: nowrap;
+}
 
 .template-picker-btn {
   display: flex;

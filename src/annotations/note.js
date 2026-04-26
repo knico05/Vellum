@@ -147,15 +147,13 @@ function onDoubleClick(e) {
 
 /**
  * Click handler — places a text box only when the N tool is active.
- * Immediately returns to cursor after placing.
+ * Keeps the tool active so the user can keep placing boxes.
  */
 function onSingleClick(e) {
   if (!toolActive) return;
   if (lastPointerType === 'pen') return;
   if (e.target.closest('.text-box')) return;
   placeBox(e);
-  deactivate();
-  document.dispatchEvent(new CustomEvent('note-placed'));
 }
 
 /**

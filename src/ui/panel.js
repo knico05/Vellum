@@ -591,14 +591,11 @@ const TEMPLATES = [
   { id: 'cornell', label: 'Cornell' },
 ];
 
-const GRID_SIZES = [
-  { value: 16, label: 'S' },
-  { value: 24, label: 'M' },
-  { value: 40, label: 'L' },
-];
+/** Converts a mm value (2–10) to canvas units (72 DPI, same as PDF.js) */
+const _mmToCanvas = mm => Math.round(mm * 72 / 25.4);
 
-/** Last chosen grid size, persisted across picker opens */
-let _pickerGridSize = 24;
+/** Last chosen grid size in mm (2–10), persisted across picker opens */
+let _pickerGridMm = 5;
 
 /**
  * Shows a template-picker popup anchored below (or above) anchorEl.
@@ -632,7 +629,7 @@ function showTemplatePickerAt(anchorEl, onSelect) {
     btn.appendChild(label);
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      onSelect(tpl.id, _pickerGridSize);
+      onSelect(tpl.id, _mmToCanvas(_pickerGridMm));
       _closeTemplatePicker();
     });
 
@@ -641,7 +638,7 @@ function showTemplatePickerAt(anchorEl, onSelect) {
 
   templatePickerEl.appendChild(templateRow);
 
-  // Grid size row (only relevant for lined / dotted / graph)
+  // Grid size row — slider from 2 mm to 10 mm in 1 mm steps
   const sizeRow = document.createElement('div');
   sizeRow.className = 'template-picker-size-row';
 
@@ -650,21 +647,26 @@ function showTemplatePickerAt(anchorEl, onSelect) {
   sizeLabel.textContent = 'Grid size:';
   sizeRow.appendChild(sizeLabel);
 
-  for (const gs of GRID_SIZES) {
-    const btn = document.createElement('button');
-    btn.className = 'template-size-btn';
-    btn.textContent = gs.label;
-    btn.title = `Grid spacing ${gs.value} units`;
-    btn.classList.toggle('active', gs.value === _pickerGridSize);
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      _pickerGridSize = gs.value;
-      for (const b of sizeRow.querySelectorAll('.template-size-btn')) {
-        b.classList.toggle('active', b.textContent === gs.label);
-      }
-    });
-    sizeRow.appendChild(btn);
-  }
+  const slider = document.createElement('input');
+  slider.type  = 'range';
+  slider.min   = '2';
+  slider.max   = '10';
+  slider.step  = '1';
+  slider.value = String(_pickerGridMm);
+  slider.className = 'template-size-slider';
+
+  const valLabel = document.createElement('span');
+  valLabel.className   = 'template-size-value';
+  valLabel.textContent = `${_pickerGridMm} mm`;
+
+  slider.addEventListener('input', (e) => {
+    e.stopPropagation();
+    _pickerGridMm = Number(slider.value);
+    valLabel.textContent = `${_pickerGridMm} mm`;
+  });
+
+  sizeRow.appendChild(slider);
+  sizeRow.appendChild(valLabel);
 
   templatePickerEl.appendChild(sizeRow);
 
