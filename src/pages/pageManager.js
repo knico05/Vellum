@@ -371,9 +371,9 @@ function loadPageList(savedPages) {
  *
  * @param {string} [template='plain'] — 'plain' | 'lined' | 'dotted' | 'graph' | 'cornell'
  */
-function addBlankPage(template = 'plain') {
+function addBlankPage(template = 'plain', gridSize = 24) {
   if (pages.length === 0) {
-    _insertBlankPageAt(0, template, BLANK_WIDTH, BLANK_HEIGHT);
+    _insertBlankPageAt(0, template, BLANK_WIDTH, BLANK_HEIGHT, gridSize);
     return;
   }
 
@@ -390,7 +390,7 @@ function addBlankPage(template = 'plain') {
 
   // Match the nearest page's dimensions so blank pages align with PDF pages
   const nearest = pages[bestIdx];
-  _insertBlankPageAt(bestIdx + 1, template, nearest.width, nearest.height);
+  _insertBlankPageAt(bestIdx + 1, template, nearest.width, nearest.height, gridSize);
 }
 
 /**
@@ -436,12 +436,13 @@ function removePage(id) {
  * @param {number} [width]   — Page width in canvas units (defaults to nearest page or A4)
  * @param {number} [height]  — Page height in canvas units
  */
-function _insertBlankPageAt(listIndex, template = 'plain', width = BLANK_WIDTH, height = BLANK_HEIGHT) {
+function _insertBlankPageAt(listIndex, template = 'plain', width = BLANK_WIDTH, height = BLANK_HEIGHT, gridSize = 24) {
   const id   = `blank-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const page = {
     id,
     kind:     'blank',
     template,
+    gridSize,
     width,
     height,
     canvasX:  0,
@@ -453,7 +454,7 @@ function _insertBlankPageAt(listIndex, template = 'plain', width = BLANK_WIDTH, 
     recomputeLayout(); // sets page.canvasX/canvasY
   });
 
-  const inst = new BlankPage(page.width, page.height, template);
+  const inst = new BlankPage(page.width, page.height, template, gridSize);
   inst.canvasX = page.canvasX;
   inst.canvasY = page.canvasY;
   inst.mount(container);
@@ -474,7 +475,7 @@ function _mountAllPages() {
     if (page.kind === 'pdf') {
       inst = new PDFPage(page.pdfPageIndex, page.canvasX, page.canvasY, page.width, page.height);
     } else {
-      inst = new BlankPage(page.width, page.height, page.template ?? 'plain');
+      inst = new BlankPage(page.width, page.height, page.template ?? 'plain', page.gridSize ?? 24);
       inst.canvasX = page.canvasX;
       inst.canvasY = page.canvasY;
     }

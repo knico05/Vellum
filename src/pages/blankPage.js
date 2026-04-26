@@ -23,11 +23,13 @@ class BlankPage {
    * @param {number} width    — Page width in canvas units
    * @param {number} height   — Page height in canvas units
    * @param {string} template — 'plain' | 'lined' | 'dotted' | 'graph' | 'cornell'
+   * @param {number} gridSize — Spacing between lines/dots in canvas units (default 24)
    */
-  constructor(width, height, template = 'plain') {
+  constructor(width, height, template = 'plain', gridSize = 24) {
     this.width    = width;
     this.height   = height;
     this.template = template;
+    this.gridSize = gridSize;
     this.canvasX  = 0;   // set by pageManager.recomputeLayout() before mount
     this.canvasY  = 0;
     this.element  = null;
@@ -130,8 +132,7 @@ class BlankPage {
    * @param {number} dpr — Device pixel ratio used to scale line widths / dot radii
    */
   _drawTemplate(ctx, w, h, dpr) {
-    // Grid step: 24 canvas-units × dpr gives one ruled line / dot per 24 CSS px
-    const STEP = 24 * dpr;
+    const STEP = (this.gridSize ?? 24) * dpr;
 
     switch (this.template) {
 

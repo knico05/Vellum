@@ -1779,14 +1779,48 @@ button:focus-visible {
   position: fixed;
   z-index: 300;
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px 12px;
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
+
+.template-picker-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.template-picker-size-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 2px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.template-picker-size-label {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  padding-right: 2px;
+}
+
+.template-size-btn {
+  font-size: var(--text-xs);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 100ms ease;
+}
+.template-size-btn:hover   { background: var(--surface-3); border-color: var(--border-subtle); }
+.template-size-btn.active  { background: var(--accent-dim); border-color: var(--accent); color: var(--text-primary); }
 
 .template-picker-btn {
   display: flex;

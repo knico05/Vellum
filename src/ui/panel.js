@@ -537,18 +537,31 @@ const TEMPLATES = [
   { id: 'cornell', label: 'Cornell' },
 ];
 
+const GRID_SIZES = [
+  { value: 16, label: 'S' },
+  { value: 24, label: 'M' },
+  { value: 40, label: 'L' },
+];
+
+/** Last chosen grid size, persisted across picker opens */
+let _pickerGridSize = 24;
+
 /**
  * Shows a template-picker popup anchored below (or above) anchorEl.
- * Calls onSelect(templateId) when the user taps an option, then closes.
+ * Calls onSelect(templateId, gridSize) when the user taps an option, then closes.
  *
  * @param {HTMLElement} anchorEl
- * @param {function(string): void} onSelect
+ * @param {function(string, number): void} onSelect
  */
 function showTemplatePickerAt(anchorEl, onSelect) {
   _closeTemplatePicker();
 
   templatePickerEl = document.createElement('div');
   templatePickerEl.className = 'template-picker';
+
+  // Template row
+  const templateRow = document.createElement('div');
+  templateRow.className = 'template-picker-row';
 
   for (const tpl of TEMPLATES) {
     const btn = document.createElement('button');
@@ -565,19 +578,48 @@ function showTemplatePickerAt(anchorEl, onSelect) {
     btn.appendChild(label);
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      onSelect(tpl.id);
+      onSelect(tpl.id, _pickerGridSize);
       _closeTemplatePicker();
     });
 
-    templatePickerEl.appendChild(btn);
+    templateRow.appendChild(btn);
   }
+
+  templatePickerEl.appendChild(templateRow);
+
+  // Grid size row (only relevant for lined / dotted / graph)
+  const sizeRow = document.createElement('div');
+  sizeRow.className = 'template-picker-size-row';
+
+  const sizeLabel = document.createElement('span');
+  sizeLabel.className   = 'template-picker-size-label';
+  sizeLabel.textContent = 'Grid size:';
+  sizeRow.appendChild(sizeLabel);
+
+  for (const gs of GRID_SIZES) {
+    const btn = document.createElement('button');
+    btn.className = 'template-size-btn';
+    btn.textContent = gs.label;
+    btn.title = `Grid spacing ${gs.value} units`;
+    btn.classList.toggle('active', gs.value === _pickerGridSize);
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _pickerGridSize = gs.value;
+      for (const b of sizeRow.querySelectorAll('.template-size-btn')) {
+        b.classList.toggle('active', b.textContent === gs.label);
+      }
+    });
+    sizeRow.appendChild(btn);
+  }
+
+  templatePickerEl.appendChild(sizeRow);
 
   document.body.appendChild(templatePickerEl);
 
   // Position: below the anchor by default, above if there's not enough space
   const rect    = anchorEl.getBoundingClientRect();
   const pickerW = templatePickerEl.offsetWidth  || 340;
-  const pickerH = templatePickerEl.offsetHeight || 90;
+  const pickerH = templatePickerEl.offsetHeight || 110;
 
   let left = rect.left;
   let top  = rect.bottom + 6;
