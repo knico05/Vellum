@@ -801,6 +801,55 @@ button:focus-visible {
   color: var(--text-primary);
 }
 
+/* Format toggle buttons: Bold, Italic, Underline, alignment, etc. */
+.tbo-fmt-btn {
+  height: 22px;
+  min-width: 22px;
+  padding: 0 5px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  line-height: 1;
+  transition: background 100ms ease, color 100ms ease;
+}
+
+.tbo-fmt-btn:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.tbo-fmt-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Font size dropdown in the text box toolbar section */
+.tbo-size-select {
+  height: 22px;
+  padding: 0 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+.tbo-size-select:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.tbo-size-select:focus {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
 /* Bullet and ordered lists inside text boxes */
 .text-box-body ul,
 .text-box-body ol {

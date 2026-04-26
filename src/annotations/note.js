@@ -45,29 +45,8 @@ const SAVE_DEBOUNCE_MS = 500;
 const DEFAULT_COLOUR    = '#000000';
 const DEFAULT_FONT_SIZE = 14;
 
-/**
- * Colour options shown in the inline options bar.
- * Each entry is a CSS colour string.
- */
-const COLOURS = [
-  { value: '#000000', label: 'Black'      },
-  { value: '#444444', label: 'Dark grey'  },
-  { value: '#ffffff', label: 'White'      },
-  { value: '#e53e3e', label: 'Red'        },
-  { value: '#f0b429', label: 'Amber'      },
-  { value: '#3b82f6', label: 'Blue'       },
-  { value: '#10b981', label: 'Green'      },
-];
-
-/**
- * Font size presets shown in the inline options bar.
- */
-const FONT_SIZES = [
-  { label: 'S',  value: 11 },
-  { label: 'M',  value: 14 },
-  { label: 'L',  value: 18 },
-  { label: 'XL', value: 24 },
-];
+/** All available font sizes for the text box tool */
+const FONT_SIZES = [8, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48];
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -89,6 +68,19 @@ let dragState = null;
 
 /** Active resize state for the bottom-right corner, or null */
 let resizeState = null;
+
+/** ID of the annotation whose body currently has focus, or null */
+let _focusedAnnoId = null;
+
+/**
+ * Default settings for new text boxes. Set by toolbar.js via setNoteDefaults().
+ * Persisted to localStorage by toolbar.js.
+ */
+let _defaults = {
+  colour:   DEFAULT_COLOUR,
+  fontSize: DEFAULT_FONT_SIZE,
+  align:    'left',
+};
 
 // ---------------------------------------------------------------------------
 // Initialisation
@@ -180,8 +172,9 @@ function placeBox(e) {
     width:     BOX_WIDTH,
     height:    BOX_HEIGHT,
     text:      '',
-    colour:    DEFAULT_COLOUR,
-    fontSize:  DEFAULT_FONT_SIZE,
+    colour:    _defaults.colour,
+    fontSize:  _defaults.fontSize,
+    align:     _defaults.align,
   });
 }
 
@@ -266,9 +259,6 @@ function updatePositions() {
  * Structure:
  *   <div class="text-box">
  *     <div class="text-box-drag"></div>
- *     <div class="text-box-options">   ← visible only when .editing
- *       colour swatches + size buttons
- *     </div>
  *     <button class="text-box-delete">×</button>
  *     <div class="text-box-body" contenteditable>…</div>
  *     <div class="text-box-resize"></div>
@@ -292,9 +282,6 @@ function createBoxElement(anno) {
   const dragStrip = document.createElement('div');
   dragStrip.className = 'text-box-drag';
 
-  // ── Inline options bar (colour + size) ───────────────────────────────────
-  const optionsBar = buildOptionsBar(anno);
-
   // ── Delete button ─────────────────────────────────────────────────────────
   const deleteBtn = document.createElement('button');
   deleteBtn.className   = 'text-box-delete';
@@ -307,14 +294,13 @@ function createBoxElement(anno) {
   body.contentEditable = 'true';
   body.spellcheck      = false;
   body.innerHTML       = deserializeText(anno.text);
-  applyBodyStyle(el, anno); // set initial colour + font size
+  applyBodyStyle(el, anno);
 
   // ── Resize handle ─────────────────────────────────────────────────────────
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'text-box-resize';
 
   el.appendChild(dragStrip);
-  el.appendChild(optionsBar);
   el.appendChild(deleteBtn);
   el.appendChild(body);
   el.appendChild(resizeHandle);
@@ -366,18 +352,22 @@ function createBoxElement(anno) {
   });
 
   body.addEventListener('focus', () => {
+    _focusedAnnoId = anno.id;
     el.classList.add('editing');
     // Switch to cursor so the active drawing/highlight tool can't fire
     // while the user is typing inside a text box.
     document.dispatchEvent(new CustomEvent('request-cursor-tool'));
+    // Notify toolbar so it can sync its controls to this box's style
+    document.dispatchEvent(new CustomEvent('textbox-focus-changed', {
+      detail: { annoId: anno.id, style: _getAnnoStyle(anno) },
+    }));
   });
   body.addEventListener('blur',  () => {
-    // Short delay: allows options-bar mousedown (which uses preventDefault to
-    // keep focus) to fire before we remove .editing. Without it, tapping a
-    // colour swatch closes the bar before the tap registers.
     setTimeout(() => {
       if (!el.contains(document.activeElement)) {
+        _focusedAnnoId = null;
         el.classList.remove('editing');
+        document.dispatchEvent(new CustomEvent('textbox-focus-changed', { detail: null }));
 
         // Clear any remaining text selection inside this box — without this,
         // the highlighted text stays visible after the user clicks elsewhere.
@@ -431,125 +421,39 @@ function createBoxElement(anno) {
 }
 
 // ---------------------------------------------------------------------------
-// Inline options bar
+// External API — called by toolbar.js
 // ---------------------------------------------------------------------------
 
 /**
- * Builds the colour + size options bar for one text box.
- * Wires click handlers that update the annotation immediately.
+ * Sets the default settings applied to newly created text boxes.
+ * Called by toolbar.js when the user changes a text tool option.
  *
- * @param {object} anno
- * @returns {HTMLElement}
+ * @param {{ colour?: string, fontSize?: number, align?: string }} opts
  */
-function buildOptionsBar(anno) {
-  const bar = document.createElement('div');
-  bar.className = 'text-box-options';
-
-  // Colour swatches
-  for (const colour of COLOURS) {
-    const swatch = document.createElement('button');
-    swatch.className        = 'tbo-swatch';
-    swatch.title            = colour.label;
-    swatch.style.background = colour.value;
-    // White swatch needs a border so it's visible on a light background
-    if (colour.value === '#ffffff') {
-      swatch.style.outline = '1px solid #ccc';
-      swatch.style.outlineOffset = '-1px';
-    }
-
-    swatch.addEventListener('mousedown', (e) => {
-      // mousedown instead of click so we can preventDefault and keep focus
-      e.preventDefault();
-      e.stopPropagation();
-      update(anno.id, { colour: colour.value });
-      // Refresh the body style immediately via the DOM (don't wait for
-      // annotations-changed which would blur/deblur the contenteditable)
-      const el   = boxElements.get(anno.id);
-      const body = el?.querySelector('.text-box-body');
-      if (body) body.style.color = colour.value;
-      syncSwatchState(bar, colour.value);
-      // Restore focus to the body
-      body?.focus();
-    });
-
-    bar.appendChild(swatch);
-  }
-
-  // Separator
-  const sep = document.createElement('div');
-  sep.className = 'tbo-sep';
-  bar.appendChild(sep);
-
-  // Font size presets
-  for (const size of FONT_SIZES) {
-    const btn = document.createElement('button');
-    btn.className   = 'tbo-size';
-    btn.textContent = size.label;
-    btn.title       = `${size.value}px`;
-    btn.dataset.size = size.value;
-
-    btn.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      update(anno.id, { fontSize: size.value });
-      const el   = boxElements.get(anno.id);
-      const body = el?.querySelector('.text-box-body');
-      if (body) body.style.fontSize = `${size.value}px`;
-      syncSizeState(bar, size.value);
-      body?.focus();
-    });
-
-    bar.appendChild(btn);
-  }
-
-  // Separator before bullet button
-  const sep2 = document.createElement('div');
-  sep2.className = 'tbo-sep';
-  bar.appendChild(sep2);
-
-  // Bullet list toggle
-  const bulletBtn = document.createElement('button');
-  bulletBtn.className   = 'tbo-bullet';
-  bulletBtn.textContent = '•≡';
-  bulletBtn.title       = 'Bullet list';
-
-  bulletBtn.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    document.execCommand('insertUnorderedList');
-    const el   = boxElements.get(anno.id);
-    const body = el?.querySelector('.text-box-body');
-    body?.focus();
-    if (body) scheduleTextSave(anno.id, body);
-  });
-
-  bar.appendChild(bulletBtn);
-
-  // Set initial active states
-  syncSwatchState(bar, anno.colour   ?? DEFAULT_COLOUR);
-  syncSizeState(bar,   anno.fontSize ?? DEFAULT_FONT_SIZE);
-
-  return bar;
+function setNoteDefaults(opts) {
+  Object.assign(_defaults, opts);
 }
 
 /**
- * Marks the currently selected colour swatch as active.
+ * Applies style changes to the currently focused text box annotation.
+ * Also updates the DOM immediately for live feedback.
+ *
+ * @param {{ colour?: string, fontSize?: number, align?: string }} style
  */
-function syncSwatchState(bar, activeColour) {
-  for (const swatch of bar.querySelectorAll('.tbo-swatch')) {
-    const isActive = swatch.style.background === activeColour ||
-                     swatch.style.backgroundColor === activeColour;
-    swatch.classList.toggle('active', isActive);
-  }
+function applyFocusedStyle(style) {
+  if (!_focusedAnnoId) return;
+  const el   = boxElements.get(_focusedAnnoId);
+  const body = el?.querySelector('.text-box-body');
+  if (!body) return;
+
+  if (style.colour   !== undefined) { body.style.color     = style.colour;           update(_focusedAnnoId, { colour:   style.colour   }); }
+  if (style.fontSize !== undefined) { body.style.fontSize  = `${style.fontSize}px`;  update(_focusedAnnoId, { fontSize: style.fontSize }); }
+  if (style.align    !== undefined) { body.style.textAlign = style.align;             update(_focusedAnnoId, { align:    style.align    }); }
 }
 
-/**
- * Marks the currently selected size button as active.
- */
-function syncSizeState(bar, activeSize) {
-  for (const btn of bar.querySelectorAll('.tbo-size')) {
-    btn.classList.toggle('active', Number(btn.dataset.size) === activeSize);
-  }
+/** Returns the ID of the annotation whose body is currently focused, or null. */
+function getFocusedAnnoId() {
+  return _focusedAnnoId;
 }
 
 // ---------------------------------------------------------------------------
@@ -566,8 +470,18 @@ function syncSizeState(bar, activeSize) {
 function applyBodyStyle(boxEl, anno) {
   const body = boxEl.querySelector('.text-box-body');
   if (!body) return;
-  body.style.color    = anno.colour   ?? DEFAULT_COLOUR;
-  body.style.fontSize = `${anno.fontSize ?? DEFAULT_FONT_SIZE}px`;
+  body.style.color     = anno.colour    ?? DEFAULT_COLOUR;
+  body.style.fontSize  = `${anno.fontSize ?? DEFAULT_FONT_SIZE}px`;
+  body.style.textAlign = anno.align     ?? 'left';
+}
+
+/** Returns the style properties of an annotation for toolbar sync. */
+function _getAnnoStyle(anno) {
+  return {
+    colour:   anno.colour   ?? DEFAULT_COLOUR,
+    fontSize: anno.fontSize ?? DEFAULT_FONT_SIZE,
+    align:    anno.align    ?? 'left',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -780,4 +694,4 @@ function scheduleTextSave(annotationId, bodyEl) {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init as initNotes, activate, deactivate };
+export { init as initNotes, activate, deactivate, setNoteDefaults, applyFocusedStyle, getFocusedAnnoId, FONT_SIZES };

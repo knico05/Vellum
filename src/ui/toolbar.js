@@ -50,8 +50,11 @@ import {
 } from '../annotations/select.js';
 
 import {
-  activate   as activateNote,
-  deactivate as deactivateNote,
+  activate       as activateNote,
+  deactivate     as deactivateNote,
+  setNoteDefaults,
+  applyFocusedStyle,
+  FONT_SIZES     as NOTE_FONT_SIZES,
 } from '../annotations/note.js';
 
 
@@ -272,8 +275,33 @@ let toolSettings = (() => {
   } catch { return {}; }
 })();
 
+/**
+ * Text box tool default settings — persisted in toolSettings.textBox.
+ * Applied to newly placed text boxes and reflected in the toolbar controls.
+ */
+let _textBoxSettings = (() => {
+  try {
+    const raw = localStorage.getItem(LS_TOOL_SETTINGS);
+    return JSON.parse(raw)?.textBox ?? {};
+  } catch { return {}; }
+})();
+
+/** Colour options for the text box tool */
+const TEXTBOX_COLOURS = [
+  { value: '#000000', label: 'Black'     },
+  { value: '#444444', label: 'Dark grey' },
+  { value: '#ffffff', label: 'White'     },
+  { value: '#e53e3e', label: 'Red'       },
+  { value: '#f0b429', label: 'Amber'     },
+  { value: '#3b82f6', label: 'Blue'      },
+  { value: '#10b981', label: 'Green'     },
+];
+
 /** Map of size id → button element, populated during init() */
 const strokeSizeButtons = new Map();
+
+/** The #textbox-options container element */
+let textboxOptionsEl = null;
 
 /** The #eraser-mode-picker container element */
 let eraserModePickerEl = null;
@@ -325,6 +353,7 @@ function init() {
   eraserModePickerEl = document.getElementById('eraser-mode-picker');
   pressureToggleEl   = document.getElementById('pressure-toggle');
   shapeSnapToggleEl  = document.getElementById('shape-snap-toggle');
+  textboxOptionsEl   = document.getElementById('textbox-options');
   lblPageEl          = document.getElementById('lbl-page');
   lblZoomEl          = document.getElementById('lbl-zoom');
 
@@ -539,15 +568,24 @@ function init() {
     });
   }
 
+  // ── Text box toolbar options ───────────────────────────────────────────────
+  _buildTextBoxOptions();
+
   // When a text box is placed, the note tool self-deactivates — switch to cursor
   document.addEventListener('note-placed', () => {
     setActiveTool(null);
   });
 
-
   // When a text box is focused for editing, switch any active tool to cursor
   document.addEventListener('request-cursor-tool', () => {
     if (activeTool !== null) setActiveTool(null);
+  });
+
+  // Sync toolbar controls when a text box gains/loses focus
+  document.addEventListener('textbox-focus-changed', (e) => {
+    if (e.detail) {
+      _syncTextBoxToolbar(e.detail.style);
+    }
   });
 
   // ── Viewport scale tracking — drives the dynamic pen cursor size ──────────
@@ -1010,8 +1048,10 @@ function updateColourPickerVisibility() {
   const eraserModeVisible  = activeTool === 'eraser';
   const pressureVisible    = activeTool === 'draw';
   const shapeSnapVisible   = activeTool === 'draw' || activeTool === 'highlight';
+  const textboxVisible     = activeTool === 'note';
 
   const show = (el, visible, displayVal = 'flex') => {
+    if (!el) return;
     el.style.display       = visible ? displayVal : 'none';
     el.style.pointerEvents = visible ? '' : 'none';
   };
@@ -1022,6 +1062,7 @@ function updateColourPickerVisibility() {
   show(eraserModePickerEl, eraserModeVisible);
   show(pressureToggleEl,   pressureVisible);
   show(shapeSnapToggleEl,  shapeSnapVisible);
+  show(textboxOptionsEl,   textboxVisible);
   pressureToggleEl.classList.remove('toolbar-btn-invisible');
 
   if (colourVisible || strokeVisible || eraserModeVisible || pressureVisible) {
@@ -1309,6 +1350,157 @@ function closeSizePopover() {
   activeSizePopover?.remove();
   activeSizePopover = null;
   document.removeEventListener('pointerdown', _onOutsidePointerDown);
+}
+
+// ---------------------------------------------------------------------------
+// Text box toolbar options
+// ---------------------------------------------------------------------------
+
+/** References to textbox toolbar controls for sync */
+const _tbSwatches   = new Map(); // hex → button
+let   _tbSizeSelect = null;
+const _tbAlignBtns  = new Map(); // align → button
+const _tbFormatBtns = new Map(); // cmd → button
+
+/**
+ * Builds colour swatches, font-size select, bold/italic/underline toggles,
+ * and alignment buttons inside #textbox-options.
+ */
+function _buildTextBoxOptions() {
+  if (!textboxOptionsEl) return;
+
+  const curColour   = _textBoxSettings.colour   ?? '#000000';
+  const curFontSize = _textBoxSettings.fontSize  ?? 14;
+  const curAlign    = _textBoxSettings.align     ?? 'left';
+
+  // Colour swatches
+  for (const c of TEXTBOX_COLOURS) {
+    const btn = document.createElement('button');
+    btn.className        = 'tbo-swatch';
+    btn.title            = c.label;
+    btn.style.background = c.value;
+    if (c.value === '#ffffff') { btn.style.outline = '1px solid #888'; btn.style.outlineOffset = '-1px'; }
+    btn.classList.toggle('active', c.value === curColour);
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      _applyTextBoxSetting('colour', c.value);
+    });
+    textboxOptionsEl.appendChild(btn);
+    _tbSwatches.set(c.value, btn);
+  }
+
+  // Separator
+  const sep1 = document.createElement('div');
+  sep1.className = 'tbo-sep';
+  textboxOptionsEl.appendChild(sep1);
+
+  // Font size select
+  const sizeSelect = document.createElement('select');
+  sizeSelect.className = 'tbo-size-select';
+  sizeSelect.title     = 'Font size';
+  for (const sz of NOTE_FONT_SIZES) {
+    const opt = document.createElement('option');
+    opt.value       = sz;
+    opt.textContent = sz;
+    if (sz === curFontSize) opt.selected = true;
+    sizeSelect.appendChild(opt);
+  }
+  sizeSelect.addEventListener('change', () => {
+    _applyTextBoxSetting('fontSize', Number(sizeSelect.value));
+  });
+  textboxOptionsEl.appendChild(sizeSelect);
+  _tbSizeSelect = sizeSelect;
+
+  // Separator
+  const sep2 = document.createElement('div');
+  sep2.className = 'tbo-sep';
+  textboxOptionsEl.appendChild(sep2);
+
+  // Format buttons (bold, italic, underline) via execCommand
+  const fmtBtns = [
+    { cmd: 'bold',      label: 'B', title: 'Bold (Ctrl+B)',       style: 'font-weight:700' },
+    { cmd: 'italic',    label: 'I', title: 'Italic (Ctrl+I)',     style: 'font-style:italic' },
+    { cmd: 'underline', label: 'U', title: 'Underline (Ctrl+U)',  style: 'text-decoration:underline' },
+    { cmd: 'insertUnorderedList', label: '•', title: 'Bullet list', style: '' },
+  ];
+  for (const f of fmtBtns) {
+    const btn = document.createElement('button');
+    btn.className        = 'tbo-fmt-btn';
+    btn.title            = f.title;
+    btn.innerHTML        = `<span style="${f.style}">${f.label}</span>`;
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      document.execCommand(f.cmd);
+    });
+    textboxOptionsEl.appendChild(btn);
+    _tbFormatBtns.set(f.cmd, btn);
+  }
+
+  // Separator
+  const sep3 = document.createElement('div');
+  sep3.className = 'tbo-sep';
+  textboxOptionsEl.appendChild(sep3);
+
+  // Alignment buttons
+  const alignOpts = [
+    { align: 'left',   title: 'Align left',   svg: `<svg width="14" height="14" viewBox="0 0 14 14"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.4"/><line x1="1" y1="7" x2="9" y2="7" stroke="currentColor" stroke-width="1.4"/><line x1="1" y1="11" x2="11" y2="11" stroke="currentColor" stroke-width="1.4"/></svg>` },
+    { align: 'center', title: 'Centre',        svg: `<svg width="14" height="14" viewBox="0 0 14 14"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.4"/><line x1="3" y1="7" x2="11" y2="7" stroke="currentColor" stroke-width="1.4"/><line x1="2" y1="11" x2="12" y2="11" stroke="currentColor" stroke-width="1.4"/></svg>` },
+    { align: 'right',  title: 'Align right',   svg: `<svg width="14" height="14" viewBox="0 0 14 14"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.4"/><line x1="5" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.4"/><line x1="3" y1="11" x2="13" y2="11" stroke="currentColor" stroke-width="1.4"/></svg>` },
+  ];
+  for (const a of alignOpts) {
+    const btn = document.createElement('button');
+    btn.className  = 'tbo-fmt-btn';
+    btn.title      = a.title;
+    btn.innerHTML  = a.svg;
+    btn.classList.toggle('active', a.align === curAlign);
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      _applyTextBoxSetting('align', a.align);
+    });
+    textboxOptionsEl.appendChild(btn);
+    _tbAlignBtns.set(a.align, btn);
+  }
+
+  // Push defaults to note.js
+  setNoteDefaults({ colour: curColour, fontSize: curFontSize, align: curAlign });
+}
+
+/**
+ * Applies one text box setting — updates toolbar state, note defaults,
+ * the focused annotation (if any), and persists.
+ */
+function _applyTextBoxSetting(key, value) {
+  _textBoxSettings[key] = value;
+  setNoteDefaults({ [key]: value });
+  applyFocusedStyle({ [key]: value });
+  _syncTextBoxToolbar({ ..._textBoxSettings });
+  _saveTextBoxSettings();
+}
+
+/**
+ * Syncs toolbar control states to the given style (from focused annotation
+ * or current defaults).
+ */
+function _syncTextBoxToolbar(style) {
+  for (const [hex, btn] of _tbSwatches) {
+    btn.classList.toggle('active', hex === (style.colour ?? '#000000'));
+  }
+  if (_tbSizeSelect && style.fontSize != null) {
+    _tbSizeSelect.value = String(style.fontSize);
+  }
+  for (const [align, btn] of _tbAlignBtns) {
+    btn.classList.toggle('active', align === (style.align ?? 'left'));
+  }
+}
+
+/** Persists textbox settings to the existing tool settings localStorage key. */
+function _saveTextBoxSettings() {
+  try {
+    const raw = localStorage.getItem(LS_TOOL_SETTINGS);
+    const all = raw ? JSON.parse(raw) : {};
+    all.textBox = _textBoxSettings;
+    localStorage.setItem(LS_TOOL_SETTINGS, JSON.stringify(all));
+  } catch { /* ignore */ }
 }
 
 // ---------------------------------------------------------------------------
