@@ -58,8 +58,7 @@ import {
 } from '../annotations/note.js';
 
 
-import { state as viewportState }        from '../canvas/viewport.js';
-import { setTwoPageMode, getTwoPageMode } from '../pages/pageManager.js';
+import { state as viewportState } from '../canvas/viewport.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -556,17 +555,6 @@ function init() {
     saveToolSettings();
   });
   shapeSnapToggleEl.appendChild(shapeSnapBtn);
-
-  // ── Two-page layout toggle ─────────────────────────────────────────────────
-  const twoPageBtn = document.getElementById('btn-two-page');
-  if (twoPageBtn) {
-    twoPageBtn.classList.toggle('active', getTwoPageMode());
-    twoPageBtn.addEventListener('click', () => {
-      const next = !getTwoPageMode();
-      setTwoPageMode(next);
-      twoPageBtn.classList.toggle('active', next);
-    });
-  }
 
   // ── Text box toolbar options ───────────────────────────────────────────────
   _buildTextBoxOptions();

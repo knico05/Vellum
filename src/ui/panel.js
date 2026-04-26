@@ -22,7 +22,7 @@
 'use strict';
 
 import { getPageList, addBlankPage, removePage, movePage, getCurrentPageId, goToPage,
-         goToPageIndex, getPageCount, getPdfDoc }
+         goToPageIndex, getPageCount, getPdfDoc, pairPages, unpairPages, getPairedPartner }
   from '../pages/pageManager.js';
 import { requestRender } from '../canvas/renderer.js';
 import { showSearch, showSearchWithQuery } from './search.js';
@@ -67,6 +67,12 @@ let dragPointerY = 0;
 
 /** Template picker popup element (one at a time) */
 let templatePickerEl = null;
+
+/**
+ * ID of the page whose link button was clicked first in a pairing gesture.
+ * While set, the next link-button click pairs that page with the clicked one.
+ */
+let _pairingSourceId = null;
 
 // ---------------------------------------------------------------------------
 // Initialisation
@@ -217,6 +223,8 @@ function init() {
 
   // Structural page changes (add/remove blank pages) → full list rebuild
   document.addEventListener('pages-changed', rebuildList);
+  // Pairing changes: page IDs don't change so force a full DOM rebuild
+  document.addEventListener('paired-pages-changed', () => { lastPageListKey = ''; rebuildList(); });
 
   // Annotation/viewport changes → only update active-card highlighting
   document.addEventListener('annotations-changed', updateActiveCard);
@@ -334,6 +342,52 @@ function rebuildList() {
       });
       card.appendChild(delBtn);
     }
+
+    // Pair link button — all pages
+    const isPaired   = getPairedPartner(page.id) !== null;
+    const linkBtn    = document.createElement('button');
+    linkBtn.className = `page-card-link${isPaired ? ' paired' : ''}`;
+    linkBtn.title     = isPaired ? 'Unpair pages' : 'Pair with another page (side-by-side)';
+    linkBtn.innerHTML = isPaired
+      ? `<svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+           <path d="M6 8a2.5 2.5 0 0 0 3.5.5l2-2a2.5 2.5 0 0 0-3.5-3.5l-1 1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+           <path d="M10 8a2.5 2.5 0 0 0-3.5-.5l-2 2a2.5 2.5 0 0 0 3.5 3.5l1-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+           <line x1="2" y1="14" x2="14" y2="2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+         </svg>`
+      : `<svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+           <path d="M6 8a2.5 2.5 0 0 0 3.5.5l2-2a2.5 2.5 0 0 0-3.5-3.5l-1 1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+           <path d="M10 8a2.5 2.5 0 0 0-3.5-.5l-2 2a2.5 2.5 0 0 0 3.5 3.5l1-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+         </svg>`;
+
+    linkBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (isPaired) {
+        // Already paired — clicking unpairs
+        unpairPages(page.id);
+        _pairingSourceId = null;
+      } else if (_pairingSourceId === null) {
+        // First click — enter pairing mode; highlight this card
+        _pairingSourceId = page.id;
+        lastPageListKey = ''; // force full DOM rebuild to show highlight
+        rebuildList();
+      } else if (_pairingSourceId === page.id) {
+        // Clicked same card again — cancel pairing mode
+        _pairingSourceId = null;
+        lastPageListKey = '';
+        rebuildList();
+      } else {
+        // Second click — pair the two pages
+        pairPages(_pairingSourceId, page.id);
+        _pairingSourceId = null;
+        // pairPages() dispatches paired-pages-changed which triggers rebuildList()
+      }
+    });
+
+    if (_pairingSourceId === page.id) {
+      card.classList.add('pairing-source');
+    }
+
+    card.appendChild(linkBtn);
 
     // Navigate to page on click
     card.addEventListener('click', () => {

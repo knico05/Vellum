@@ -91,6 +91,17 @@ let twoPageMode = (() => {
   try { return localStorage.getItem('twoPageMode') === 'true'; } catch { return false; }
 })();
 
+/**
+ * Per-page pairing map: pageId → partnerId (always stored as two-way entries).
+ * Persisted to localStorage as a flat JSON object.
+ */
+const pairedPages = (() => {
+  try {
+    const raw = localStorage.getItem('qn-paired-pages');
+    return raw ? new Map(Object.entries(JSON.parse(raw))) : new Map();
+  } catch { return new Map(); }
+})();
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
@@ -183,18 +194,39 @@ function recomputeLayout() {
       }
     }
   } else {
+    const placed = new Set();
+
     for (const page of pages) {
-      page.canvasX = -page.width / 2;
-      page.canvasY = y;
+      if (placed.has(page.id)) continue;
 
-      const inst = pageInstances.get(page.id);
-      if (inst) {
-        inst.canvasX = page.canvasX;
-        inst.canvasY = page.canvasY;
-        inst.updatePosition();
+      const partnerId = pairedPages.get(page.id);
+      const partner   = partnerId ? pages.find(p => p.id === partnerId) : null;
+
+      if (partner && !placed.has(partner.id)) {
+        // Place this page and its partner side-by-side
+        const totalW    = page.width + PAGE_PAIR_GAP + partner.width;
+        page.canvasX    = -totalW / 2;
+        partner.canvasX = -totalW / 2 + page.width + PAGE_PAIR_GAP;
+        page.canvasY    = y;
+        partner.canvasY = y;
+
+        for (const p of [page, partner]) {
+          const inst = pageInstances.get(p.id);
+          if (inst) { inst.canvasX = p.canvasX; inst.canvasY = p.canvasY; inst.updatePosition(); }
+          placed.add(p.id);
+        }
+
+        y += Math.max(page.height, partner.height) + PAGE_GAP;
+      } else {
+        page.canvasX = -page.width / 2;
+        page.canvasY = y;
+
+        const inst = pageInstances.get(page.id);
+        if (inst) { inst.canvasX = page.canvasX; inst.canvasY = page.canvasY; inst.updatePosition(); }
+        placed.add(page.id);
+
+        y += page.height + PAGE_GAP;
       }
-
-      y += page.height + PAGE_GAP;
     }
   }
 
@@ -209,6 +241,65 @@ function setTwoPageMode(enabled) {
 }
 
 function getTwoPageMode() { return twoPageMode; }
+
+/** Persists the pairedPages map to localStorage. */
+function _savePairedPages() {
+  try {
+    const obj = Object.fromEntries(pairedPages);
+    localStorage.setItem('qn-paired-pages', JSON.stringify(obj));
+  } catch { /* ignore */ }
+}
+
+/**
+ * Pairs two pages by ID so they display side-by-side.
+ * Any existing partner of either page is unpaired first.
+ * Dispatches 'paired-pages-changed' and triggers layout.
+ *
+ * @param {string} idA
+ * @param {string} idB
+ */
+function pairPages(idA, idB) {
+  if (idA === idB) return;
+  // Unpair any existing partners first
+  _unpairOne(idA);
+  _unpairOne(idB);
+
+  pairedPages.set(idA, idB);
+  pairedPages.set(idB, idA);
+  _savePairedPages();
+
+  _recomputeAndShift(() => recomputeLayout());
+  document.dispatchEvent(new CustomEvent('paired-pages-changed'));
+  requestRender();
+}
+
+/**
+ * Removes the pairing for a page (and its partner).
+ * @param {string} id
+ */
+function unpairPages(id) {
+  _unpairOne(id);
+  _savePairedPages();
+  _recomputeAndShift(() => recomputeLayout());
+  document.dispatchEvent(new CustomEvent('paired-pages-changed'));
+  requestRender();
+}
+
+/** Removes both directions of a pair without persisting or triggering layout. */
+function _unpairOne(id) {
+  const partnerId = pairedPages.get(id);
+  if (partnerId) pairedPages.delete(partnerId);
+  pairedPages.delete(id);
+}
+
+/**
+ * Returns the partner ID of a page, or null if unpaired.
+ * @param {string} id
+ * @returns {string|null}
+ */
+function getPairedPartner(id) {
+  return pairedPages.get(id) ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // PDF loading
@@ -413,6 +504,12 @@ function removePage(id) {
 
   // Delete all annotations that belong to this page before removing it
   for (const anno of getByPage(id)) removeAnnotation(anno.id);
+
+  // Remove any pairing for this page
+  if (pairedPages.has(id)) {
+    _unpairOne(id);
+    _savePairedPages();
+  }
 
   _recomputeAndShift(() => {
     pages.splice(idx, 1);
@@ -808,6 +905,9 @@ export {
   recomputeLayout,
   setTwoPageMode,
   getTwoPageMode,
+  pairPages,
+  unpairPages,
+  getPairedPartner,
   getCurrentPageId,
   getCurrentPageListIndex,
   goToPage,
