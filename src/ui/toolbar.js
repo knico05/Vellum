@@ -565,9 +565,13 @@ function init() {
     if (activeTool !== 'note') setActiveTool('note');
   });
 
-  // Sync toolbar controls when a text box gains/loses focus
+  // Sync toolbar controls when a text box gains/loses focus.
+  // Also mirror the focused box's settings into _textBoxSettings so that
+  // subsequent _syncTextBoxToolbar({ ..._textBoxSettings }) calls (triggered
+  // by any toolbar action) always show the correct values for the current box.
   document.addEventListener('textbox-focus-changed', (e) => {
     if (e.detail) {
+      Object.assign(_textBoxSettings, e.detail.style);
       _syncTextBoxToolbar(e.detail.style);
     }
   });
