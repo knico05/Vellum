@@ -352,9 +352,12 @@ function createBoxElement(anno) {
   body.addEventListener('focus', () => {
     _focusedAnnoId = anno.id;
     el.classList.add('editing');
-    // Switch to cursor so the active drawing/highlight tool can't fire
-    // while the user is typing inside a text box.
-    document.dispatchEvent(new CustomEvent('request-cursor-tool'));
+    // Switch to cursor only if a non-note tool (draw, highlight, eraser, etc.)
+    // is active — we never want drawing to fire while typing, but the note tool
+    // itself should remain selected so the toolbar controls stay visible.
+    if (!toolActive) {
+      document.dispatchEvent(new CustomEvent('request-cursor-tool'));
+    }
     // Notify toolbar so it can sync its controls to this box's style
     document.dispatchEvent(new CustomEvent('textbox-focus-changed', {
       detail: { annoId: anno.id, style: _getAnnoStyle(anno) },
