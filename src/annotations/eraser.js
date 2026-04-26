@@ -177,6 +177,9 @@ function eraseAt(screenX, screenY) {
   const { x: cx, y: cy } = toCanvas(screenX - rect.left, screenY - rect.top);
 
   for (const anno of getAll()) {
+    // Text boxes and images are never erased — use the select tool to delete them
+    if (anno.type === 'textBox' || anno.type === 'image') continue;
+
     // Path-based strokes: partial or full erase depending on mode
     if ((anno.type === 'draw' || (anno.type === 'highlight' && anno.points)) &&
         strokeHitsEraser(anno.points, cx, cy)) {
@@ -198,15 +201,6 @@ function eraseAt(screenX, screenY) {
         requestRender();
         return;
       }
-    }
-
-    // Text boxes: whole-annotation removal on bounding-box hit
-    if (anno.type === 'textBox' &&
-        cx >= anno.canvasX && cx <= anno.canvasX + anno.width &&
-        cy >= anno.canvasY && cy <= anno.canvasY + anno.height) {
-      remove(anno.id);
-      requestRender();
-      return;
     }
 
     // Circle shapes (shapeType: 'circle', stored as cx/cy/r — no points array):

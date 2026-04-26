@@ -25,15 +25,14 @@
 
 'use strict';
 
+import { state as viewport } from '../canvas/viewport.js';
+
 // ---------------------------------------------------------------------------
 // Thresholds
 // ---------------------------------------------------------------------------
 
 /** Minimum number of recorded points required for detection */
 const MIN_POINTS = 5;
-
-/** Minimum bounding-box extent (max of W, H) required — filters out tiny taps */
-const MIN_EXTENT = 20;
 
 /** Line: max ratio of mean perpendicular distance to line length */
 const LINE_THRESHOLD = 0.15;
@@ -82,8 +81,8 @@ const CORNER_ANGLE_THRESHOLD_DEG = 40;
  */
 const CIRCLE_MAX_CORNERS = 2;
 
-/** Circle: minimum mean radius in canvas units */
-const CIRCLE_MIN_RADIUS = 15;
+/** Circle: minimum mean radius in screen pixels (canvas units × scale) */
+const CIRCLE_MIN_RADIUS_PX = 12;
 
 /**
  * Circle: points must span at least this many degrees of arc.
@@ -116,8 +115,9 @@ function detectShape(points) {
   if (points.length < MIN_POINTS) return null;
 
   const { minX, minY, maxX, maxY } = _bounds(points);
-  const extent = Math.max(maxX - minX, maxY - minY);
-  if (extent < MIN_EXTENT) return null;
+  // Minimum size guard in screen pixels so small shapes at high zoom still snap
+  const screenExtent = Math.max(maxX - minX, maxY - minY) * viewport.scale;
+  if (screenExtent < 20) return null;
 
   // Order matters: circle/ellipse before rect, because both pass the rect
   // nearest-edge test (points lie close to all 4 edges of the bounding box).
@@ -154,7 +154,7 @@ function _detectLine(points) {
   const dx = p1.x - p0.x;
   const dy = p1.y - p0.y;
   const len = Math.sqrt(dx * dx + dy * dy);
-  if (len < MIN_EXTENT) return null;
+  if (len * viewport.scale < 20) return null;  // 20 screen pixels minimum
 
   // Unit normal to the line
   const nx = -dy / len;
@@ -330,7 +330,7 @@ function _detectCircle(points, minX, minY, maxX, maxY) {
   const dists = points.map(p => Math.sqrt((p.x - cx) ** 2 + (p.y - cy) ** 2));
   const r     = dists.reduce((s, d) => s + d, 0) / dists.length;
 
-  if (r < CIRCLE_MIN_RADIUS) return null;
+  if (r * viewport.scale < CIRCLE_MIN_RADIUS_PX) return null;
 
   // Roundness check
   const variance = dists.reduce((s, d) => s + (d - r) ** 2, 0) / dists.length;
@@ -511,7 +511,7 @@ function _detectCorner(points) {
     const dx  = b.x - a.x;
     const dy  = b.y - a.y;
     const len = Math.sqrt(dx * dx + dy * dy);
-    if (len < MIN_EXTENT * 0.4) return false;
+    if (len * viewport.scale < 8) return false;  // 8 screen pixels minimum per segment
     const nx = -dy / len;
     const ny =  dx / len;
     let sum = 0;

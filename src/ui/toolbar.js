@@ -65,8 +65,10 @@ import { setTwoPageMode, getTwoPageMode } from '../pages/pageManager.js';
 /** localStorage key for the saved custom colour palette */
 const LS_CUSTOM_PALETTE = 'qn-custom-palette';
 
-/** localStorage key for user-customised stroke size widths */
-const LS_CUSTOM_SIZES = 'qn-custom-sizes';
+/** localStorage keys for per-tool custom size presets */
+const LS_CUSTOM_SIZES_DRAW      = 'qn-custom-sizes-draw';
+const LS_CUSTOM_SIZES_HIGHLIGHT = 'qn-custom-sizes-highlight';
+const LS_CUSTOM_SIZES_ERASER    = 'qn-custom-sizes-eraser';
 
 /**
  * localStorage key for per-tool colour + size memory.
@@ -84,41 +86,56 @@ const COLOUR_TOOLS = new Set(['highlight', 'draw']);
 const STROKE_TOOLS = new Set(['draw', 'highlight', 'eraser']);
 
 /**
- * Default stroke size presets (used when no custom sizes are stored).
- * width:       canvas-unit stroke width for draw/highlight
- * eraseRadius: canvas-unit erase radius for the eraser tool
- * dot:         visual dot diameter in px shown on the button
+ * Per-tool size preset definitions and their localStorage-persisted overrides.
+ * Each tool has its own independent 4-slot array so customising pen size
+ * does not affect eraser or highlighter sizes.
+ *
+ * width:       canvas-unit stroke width (draw / highlight)
+ * eraseRadius: canvas-unit erase radius (eraser only)
+ * dot:         visual dot diameter in px on the button
  */
-const DEFAULT_STROKE_SIZES = [
-  { id: 'fine',   label: 'Fine',   width: 0.5, eraseRadius: 4,  dot: 2  },
-  { id: 'normal', label: 'Normal', width: 2,   eraseRadius: 12, dot: 5  },
-  { id: 'thick',  label: 'Thick',  width: 4,   eraseRadius: 24, dot: 8  },
-  { id: 'brush',  label: 'Brush',  width: 8,   eraseRadius: 48, dot: 12 },
-];
-
-/**
- * Runtime stroke sizes — same structure as above, but user-editable.
- * Loaded from localStorage on startup; mutated in place when the user
- * adjusts a size via the long-press slider.
- */
-const STROKE_SIZES = (() => {
+function _loadSizes(defaults, lsKey) {
   try {
-    const stored = localStorage.getItem(LS_CUSTOM_SIZES);
+    const stored = localStorage.getItem(lsKey);
     if (stored) {
       const parsed = JSON.parse(stored);
       if (Array.isArray(parsed) && parsed.length === 4) {
-        // Merge stored widths back onto the default structure
-        return DEFAULT_STROKE_SIZES.map((def, i) => ({
-          ...def,
-          width:       parsed[i].width       ?? def.width,
-          eraseRadius: parsed[i].eraseRadius ?? def.eraseRadius,
-          dot:         parsed[i].dot         ?? def.dot,
-        }));
+        return defaults.map((def, i) => ({ ...def, ...parsed[i], id: def.id, label: def.label }));
       }
     }
   } catch { /* ignore corrupt data */ }
-  return DEFAULT_STROKE_SIZES.map(d => ({ ...d }));
-})();
+  return defaults.map(d => ({ ...d }));
+}
+
+const _DEFAULT_DRAW_SIZES = [
+  { id: 'fine',   label: 'Fine',   width: 0.5, dot: 2  },
+  { id: 'normal', label: 'Normal', width: 2,   dot: 5  },
+  { id: 'thick',  label: 'Thick',  width: 4,   dot: 8  },
+  { id: 'brush',  label: 'Brush',  width: 8,   dot: 12 },
+];
+const _DEFAULT_HIGHLIGHT_SIZES = [
+  { id: 'fine',   label: 'Fine',   width: 3,  dot: 4  },
+  { id: 'normal', label: 'Normal', width: 6,  dot: 7  },
+  { id: 'thick',  label: 'Thick',  width: 12, dot: 10 },
+  { id: 'brush',  label: 'Broad',  width: 20, dot: 14 },
+];
+const _DEFAULT_ERASER_SIZES = [
+  { id: 'fine',   label: 'Precise', eraseRadius: 2,  dot: 2  },
+  { id: 'normal', label: 'Normal',  eraseRadius: 12, dot: 5  },
+  { id: 'thick',  label: 'Wide',    eraseRadius: 24, dot: 8  },
+  { id: 'brush',  label: 'Max',     eraseRadius: 48, dot: 12 },
+];
+
+const DRAW_SIZES      = _loadSizes(_DEFAULT_DRAW_SIZES,      LS_CUSTOM_SIZES_DRAW);
+const HIGHLIGHT_SIZES = _loadSizes(_DEFAULT_HIGHLIGHT_SIZES, LS_CUSTOM_SIZES_HIGHLIGHT);
+const ERASER_SIZES    = _loadSizes(_DEFAULT_ERASER_SIZES,    LS_CUSTOM_SIZES_ERASER);
+
+/** Returns the size array for the currently active tool. */
+function _getCurrentSizes() {
+  if (activeTool === 'eraser')    return ERASER_SIZES;
+  if (activeTool === 'highlight') return HIGHLIGHT_SIZES;
+  return DRAW_SIZES; // draw and fallback
+}
 
 /**
  * Colour definitions.
@@ -398,12 +415,15 @@ function init() {
     colourPickerEl.appendChild(eyeBtn);
   }
 
-  // Build stroke size buttons inside the stroke picker
-  for (const size of STROKE_SIZES) {
+  // Build stroke size buttons inside the stroke picker.
+  // Buttons are built once using the draw-size slot ids; dot visuals refresh
+  // via _refreshSizeDots() whenever the active tool changes.
+  for (const size of DRAW_SIZES) {
+    const sizeId = size.id;
     const btn = document.createElement('button');
-    btn.className  = 'stroke-size-btn';
-    btn.title      = `${size.label} — long-press to customise`;
-    btn.dataset.size = size.id;
+    btn.className    = 'stroke-size-btn';
+    btn.title        = `${size.label} — long-press to customise`;
+    btn.dataset.size = sizeId;
 
     // Visual dot — a filled circle whose diameter indicates the stroke weight
     const dot = document.createElement('span');
@@ -412,10 +432,10 @@ function init() {
     dot.style.height = `${size.dot}px`;
     btn.appendChild(dot);
 
-    btn.addEventListener('click', () => handleStrokeSizeClick(size.id));
+    btn.addEventListener('click', () => handleStrokeSizeClick(sizeId));
 
     // Right-click (mouse) or long-press (touch/pen, 600 ms with 8px cancel threshold)
-    // opens a slider to customise that slot's width value.
+    // opens a slider to customise that slot's width value for the current tool.
     const LONG_PRESS_CANCEL_PX = 8;
     let longPressTimer  = null;
     let longPressStartX = 0;
@@ -424,13 +444,13 @@ function init() {
     btn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       clearTimeout(longPressTimer);
-      showSizePopover(size, btn);
+      showSizePopover(sizeId, btn);
     });
     btn.addEventListener('pointerdown', (e) => {
-      if (e.button === 2) return; // right-click handled by contextmenu
+      if (e.button === 2) return;
       longPressStartX = e.clientX;
       longPressStartY = e.clientY;
-      longPressTimer  = setTimeout(() => showSizePopover(size, btn), 600);
+      longPressTimer  = setTimeout(() => showSizePopover(sizeId, btn), 600);
     });
     btn.addEventListener('pointermove', (e) => {
       const d = Math.hypot(e.clientX - longPressStartX, e.clientY - longPressStartY);
@@ -440,7 +460,7 @@ function init() {
     btn.addEventListener('pointercancel', () => clearTimeout(longPressTimer));
 
     strokePickerEl.appendChild(btn);
-    strokeSizeButtons.set(size.id, btn);
+    strokeSizeButtons.set(sizeId, btn);
   }
 
   // Apply initial stroke size active state
@@ -907,10 +927,10 @@ function handleStrokeSizeClick(sizeId) {
 }
 
 /**
- * Sends the currently selected stroke width to the draw tool.
+ * Sends the currently selected stroke width/radius to the active tool.
  */
 function applyStrokeSizeToActiveTool() {
-  const sizeDef = STROKE_SIZES.find(s => s.id === activeStrokeSize);
+  const sizeDef = _getCurrentSizes().find(s => s.id === activeStrokeSize);
   if (!sizeDef) return;
   if (activeTool === 'draw')      setDrawStrokeWidth(sizeDef.width);
   if (activeTool === 'highlight') setHighlightStrokeWidth(sizeDef.width);
@@ -1011,6 +1031,7 @@ function updateColourPickerVisibility() {
       applyColourToActiveTool();
     }
     if (strokeVisible) {
+      _refreshSizeDots();
       updateStrokeSizeState();
       applyStrokeSizeToActiveTool();
     }
@@ -1126,7 +1147,7 @@ function updateToolCursor() {
   const container = document.getElementById('canvas-container');
   if (!container) return;
 
-  const sizeDef = STROKE_SIZES.find(s => s.id === activeStrokeSize);
+  const sizeDef = _getCurrentSizes().find(s => s.id === activeStrokeSize);
   const scale   = cachedViewportScale;
 
   if (activeTool === 'draw' || activeTool === 'highlight') {
@@ -1145,49 +1166,79 @@ function updateToolCursor() {
 // ---------------------------------------------------------------------------
 
 /**
- * Saves the current STROKE_SIZES widths to localStorage so they persist
- * across app restarts.
- */
-function saveCustomSizes() {
-  const data = STROKE_SIZES.map(s => ({
-    width: s.width, eraseRadius: s.eraseRadius, dot: s.dot,
-  }));
-  localStorage.setItem(LS_CUSTOM_SIZES, JSON.stringify(data));
-}
-
-/**
- * Shows a slider popover above the given size button that lets the user
- * customise the width for that slot.
+ * Saves the custom sizes for the given tool to localStorage.
  *
- * @param {object}      sizeDef — entry from STROKE_SIZES
- * @param {HTMLElement} btn
+ * @param {'draw'|'highlight'|'eraser'} tool
  */
+function _saveCustomSizes(tool) {
+  if (tool === 'draw') {
+    localStorage.setItem(LS_CUSTOM_SIZES_DRAW, JSON.stringify(
+      DRAW_SIZES.map(s => ({ width: s.width, dot: s.dot }))
+    ));
+  } else if (tool === 'highlight') {
+    localStorage.setItem(LS_CUSTOM_SIZES_HIGHLIGHT, JSON.stringify(
+      HIGHLIGHT_SIZES.map(s => ({ width: s.width, dot: s.dot }))
+    ));
+  } else if (tool === 'eraser') {
+    localStorage.setItem(LS_CUSTOM_SIZES_ERASER, JSON.stringify(
+      ERASER_SIZES.map(s => ({ eraseRadius: s.eraseRadius, dot: s.dot }))
+    ));
+  }
+}
 
 /**
  * Exponential mapping between slider integer positions (1–20) and actual stroke
- * widths (0.3–20). Fine widths get many positions for precision; large widths get
- * fewer because small differences don't matter visually at that scale.
+ * widths (0.3–20) or erase radii (0.5–60).
  *
- * pos=1→0.3, pos=5→0.7, pos=10→1.8, pos=15→4.6, pos=20→20.0
- *
- * The minimum of 0.3 lets users annotate dense PowerPoint slides where even
- * width-1 lines are too thick for precise margin notes.
+ * pos=1→min, pos=20→max
  */
+function _sliderToValue(pos, min, max) {
+  const ratio = Math.pow(max / min, (pos - 1) / 19);
+  return Math.round(ratio * min * 10) / 10;
+}
+function _valueToSlider(val, min, max) {
+  const clamped = Math.max(min, Math.min(max, val));
+  return Math.round(1 + 19 * Math.log(clamped / min) / Math.log(max / min));
+}
+
+// Kept for backwards compatibility (cursor sizing still calls this)
 const _SLIDER_MIN_WIDTH = 0.3;
 const _SLIDER_MAX_WIDTH = 20;
+function _sliderToWidth(pos)   { return _sliderToValue(pos, _SLIDER_MIN_WIDTH, _SLIDER_MAX_WIDTH); }
+function _widthToSlider(width) { return _valueToSlider(width, _SLIDER_MIN_WIDTH, _SLIDER_MAX_WIDTH); }
 
-function _sliderToWidth(pos) {
-  const ratio = Math.pow(_SLIDER_MAX_WIDTH / _SLIDER_MIN_WIDTH, (pos - 1) / 19);
-  return Math.round(ratio * _SLIDER_MIN_WIDTH * 10) / 10;
-}
-function _widthToSlider(width) {
-  const clamped = Math.max(_SLIDER_MIN_WIDTH, Math.min(_SLIDER_MAX_WIDTH, width));
-  return Math.round(1 + 19 * Math.log(clamped / _SLIDER_MIN_WIDTH) / Math.log(_SLIDER_MAX_WIDTH / _SLIDER_MIN_WIDTH));
+/**
+ * Updates the dot visuals on all size buttons to match the current tool's array.
+ * Called each time the active tool changes.
+ */
+function _refreshSizeDots() {
+  const sizes = _getCurrentSizes();
+  for (const sizeDef of sizes) {
+    const btn = strokeSizeButtons.get(sizeDef.id);
+    if (!btn) continue;
+    const dot = btn.querySelector('.stroke-size-dot');
+    if (dot) { dot.style.width = `${sizeDef.dot}px`; dot.style.height = `${sizeDef.dot}px`; }
+    btn.title = `${sizeDef.label} — long-press to customise`;
+  }
 }
 
-function showSizePopover(sizeDef, btn) {
-  // Close any existing popover first
+/**
+ * Shows a slider popover above the given size button for the current tool's
+ * size entry at sizeId. Customises draw width or erase radius independently.
+ *
+ * @param {string}      sizeId — slot id ('fine', 'normal', 'thick', 'brush')
+ * @param {HTMLElement} btn
+ */
+function showSizePopover(sizeId, btn) {
   closeSizePopover();
+
+  const isEraser = activeTool === 'eraser';
+  const sizeDef  = _getCurrentSizes().find(s => s.id === sizeId);
+  if (!sizeDef) return;
+
+  const sliderMin = isEraser ? 0.5 : _SLIDER_MIN_WIDTH;
+  const sliderMax = isEraser ? 60  : _SLIDER_MAX_WIDTH;
+  const curVal    = isEraser ? sizeDef.eraseRadius : sizeDef.width;
 
   const popover = document.createElement('div');
   popover.className = 'size-popover';
@@ -1202,35 +1253,32 @@ function showSizePopover(sizeDef, btn) {
   slider.min   = '1';
   slider.max   = '20';
   slider.step  = '1';
-  slider.value = String(_widthToSlider(sizeDef.width));
+  slider.value = String(_valueToSlider(curVal, sliderMin, sliderMax));
   slider.className = 'size-popover-slider';
   popover.appendChild(slider);
 
   const valueDisplay = document.createElement('span');
   valueDisplay.className   = 'size-popover-value';
-  valueDisplay.textContent = sizeDef.width;
+  valueDisplay.textContent = curVal;
   popover.appendChild(valueDisplay);
 
   slider.addEventListener('input', () => {
-    const newWidth = _sliderToWidth(parseInt(slider.value, 10));
-    valueDisplay.textContent = newWidth;
+    const newVal = _sliderToValue(parseInt(slider.value, 10), sliderMin, sliderMax);
+    valueDisplay.textContent = newVal;
 
-    // Update the STROKE_SIZES entry in place
-    sizeDef.width       = newWidth;
-    sizeDef.eraseRadius = Math.round(newWidth * 6);
-    sizeDef.dot         = Math.round(2 + newWidth * 1.2);
-
-    // Refresh the visual dot on the button
-    const dot = btn.querySelector('.stroke-size-dot');
-    if (dot) {
-      dot.style.width  = `${sizeDef.dot}px`;
-      dot.style.height = `${sizeDef.dot}px`;
+    if (isEraser) {
+      sizeDef.eraseRadius = newVal;
+      sizeDef.dot = Math.round(2 + newVal * 0.25);
+    } else {
+      sizeDef.width = newVal;
+      sizeDef.dot   = Math.round(2 + newVal * 1.2);
     }
 
-    // Apply immediately if this slot is active
-    if (activeStrokeSize === sizeDef.id) applyStrokeSizeToActiveTool();
+    const dot = btn.querySelector('.stroke-size-dot');
+    if (dot) { dot.style.width = `${sizeDef.dot}px`; dot.style.height = `${sizeDef.dot}px`; }
 
-    saveCustomSizes();
+    if (activeStrokeSize === sizeId) applyStrokeSizeToActiveTool();
+    _saveCustomSizes(activeTool);
   });
 
   // Use fixed positioning so the popover is never clipped by overflow:hidden
