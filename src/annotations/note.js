@@ -197,7 +197,10 @@ function syncElements(fromLoad = false) {
     } else {
       const el   = boxElements.get(anno.id);
       const body = el.querySelector('.text-box-body');
-      if (body && document.activeElement !== body) {
+      // Never reset innerHTML for the annotation currently being edited —
+      // it has unsaved changes and focus may have temporarily moved to the
+      // toolbar (e.g. the font-size select). Only reset for other boxes.
+      if (body && document.activeElement !== body && anno.id !== _focusedAnnoId) {
         body.innerHTML = _displayHtml(anno);
       }
       applyBodyStyle(el, anno);
@@ -447,7 +450,12 @@ function applyFocusedStyle(style) {
     document.execCommand('foreColor', false, style.colour);
     scheduleTextSave(_focusedAnnoId, body);
   }
-  if (style.fontSize !== undefined) { body.style.fontSize  = `${style.fontSize}px`;  update(_focusedAnnoId, { fontSize: style.fontSize }); }
+  if (style.fontSize !== undefined) {
+    body.style.fontSize = `${style.fontSize}px`;
+    // Flush current HTML alongside fontSize so richText is never stale when
+    // syncElements runs (triggered by annotations-changed from update()).
+    update(_focusedAnnoId, { fontSize: style.fontSize, richText: body.innerHTML, text: body.textContent.trim() });
+  }
   if (style.align    !== undefined) { body.style.textAlign = style.align;             update(_focusedAnnoId, { align:    style.align    }); }
 }
 
