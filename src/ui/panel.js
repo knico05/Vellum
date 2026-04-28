@@ -863,7 +863,7 @@ function getCurrentPageListIndexFromPanel() {
 // Panel visibility toggle
 // ---------------------------------------------------------------------------
 
-const PANEL_STORAGE_KEY = 'quicknotes-panel-open';
+const PANEL_STORAGE_KEY = 'vellum-panel-open';
 
 /**
  * Toggles the right panel open/closed.

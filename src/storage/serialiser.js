@@ -7,7 +7,7 @@
  * File schema (version 2):
  * {
  *   "version": 2,
- *   "format": "quicknotes",
+ *   "format": "vellum",
  *   "pdfPath": "/abs/path/lecture.pdf",
  *   "pdfFingerprint": "abc123...",
  *   "updatedAt": "2025-01-15T14:32:00Z",
@@ -70,7 +70,7 @@ function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, 
 
   return JSON.stringify({
     version:           CURRENT_VERSION,
-    format:            'quicknotes',
+    format:            'vellum',
     pdfPath,
     pdfFingerprint:    fingerprint,
     updatedAt:         new Date().toISOString(),
