@@ -306,7 +306,7 @@ When Nico says "prepare for shipment" or "release", do the following in order:
 
 ## 10. Current Status
 
-**Last updated:** 2026-04-28  
-**Version:** 1.4.1 (next will be 1.4.2)  
-**State:** Stable. Sprint 3 in progress.  
-**Notes:** This session: PDF page removal + undo, page reorder undo, pairing anchor fix, ghost-page bug fix, in-app auto-update via electron-updater. Update flow: badge → click → download progress → restart button. `latest.yml` must be uploaded to GitHub releases alongside the installer or updates silently fail.
+**Last updated:** 2026-04-29  
+**Version:** 1.4.2  
+**State:** Stable. Released.  
+**Notes:** v1.4.2 shipped: PDF page removal + undo, page reorder undo, two-page anchor fix, ghost-page bug fix, in-app auto-update (electron-updater), Lukas' Extra eraser mode (zoom-independent, independent toggle from partial/full), size picker second-tap UX + smooth slider + auto-close on draw start, eraser size preview ring below slider, pen/highlight size preview dot below slider (logarithmic scale), min size 0.1 for pen and eraser. `latest.yml` must be uploaded to GitHub releases alongside the installer or updates silently fail.
