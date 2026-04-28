@@ -1,6 +1,6 @@
 {
   "name": "vellum",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "A personal desktop app for annotating PDFs and taking notes",
   "main": "main.js",
   "scripts": {
@@ -22,6 +22,11 @@
     "directories": {
       "output": "dist"
     },
+    "publish": {
+      "provider": "github",
+      "owner": "knico05",
+      "repo": "Vellum"
+    },
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico"
@@ -42,6 +47,7 @@
   },
   "dependencies": {
     "adm-zip": "^0.5.17",
+    "electron-updater": "^6.8.3",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38"
   }

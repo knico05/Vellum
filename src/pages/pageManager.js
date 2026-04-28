@@ -32,7 +32,7 @@ import { PDFPage, PAGE_GAP }                                   from '../pdf/page
 import { BlankPage }                                           from './blankPage.js';
 import { centreOn, toCanvas, toScreen, state as viewportState } from '../canvas/viewport.js';
 import { register, requestRender }                             from '../canvas/renderer.js';
-import { shiftAnnotationsByPageDelta, getByPage, remove as removeAnnotation } from '../annotations/manager.js';
+import { shiftAnnotationsByPageDelta, getByPage, remove as removeAnnotation, pushPageUndo, removeAnnotationsSilent, restoreAnnotationsSilent } from '../annotations/manager.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -203,10 +203,9 @@ function recomputeLayout() {
       const partner   = partnerId ? pages.find(p => p.id === partnerId) : null;
 
       if (partner && !placed.has(partner.id)) {
-        // Place this page and its partner side-by-side
-        const totalW    = page.width + PAGE_PAIR_GAP + partner.width;
-        page.canvasX    = -totalW / 2;
-        partner.canvasX = -totalW / 2 + page.width + PAGE_PAIR_GAP;
+        // Anchor page stays at its normal solo position; partner appears to its right
+        page.canvasX    = -page.width / 2;
+        partner.canvasX = page.canvasX + page.width + PAGE_PAIR_GAP;
         page.canvasY    = y;
         partner.canvasY = y;
 
@@ -491,10 +490,14 @@ function addBlankPage(template = 'plain', gridSize = 24) {
  *
  * @param {string} id — Page ID to remove
  */
-function removePage(id) {
+function removePage(id, _skipHistory = false) {
   const idx = pages.findIndex(p => p.id === id);
   if (idx === -1) return;
-  if (pages[idx].kind === 'pdf') return; // PDF pages cannot be removed
+
+  // Snapshot page data and its annotations before removing so undo can restore them
+  const pageSnapshot  = { ...pages[idx] };
+  const annoSnapshot  = removeAnnotationsSilent(id);
+  const partnerIdSnap = pairedPages.get(id) ?? null;
 
   const inst = pageInstances.get(id);
   if (inst) {
@@ -502,10 +505,6 @@ function removePage(id) {
     pageInstances.delete(id);
   }
 
-  // Delete all annotations that belong to this page before removing it
-  for (const anno of getByPage(id)) removeAnnotation(anno.id);
-
-  // Remove any pairing for this page
   if (pairedPages.has(id)) {
     _unpairOne(id);
     _savePairedPages();
@@ -518,6 +517,44 @@ function removePage(id) {
 
   document.dispatchEvent(new CustomEvent('pages-changed'));
   requestRender();
+
+  if (!_skipHistory) {
+    pushPageUndo(
+      // undo: restore the page at its original index with its annotations and pairing
+      () => {
+        _recomputeAndShift(() => {
+          const insertIdx = Math.min(idx, pages.length);
+          pages.splice(insertIdx, 0, { ...pageSnapshot, canvasX: 0, canvasY: 0 });
+          recomputeLayout();
+        });
+        // Mount only the restored page — _mountAllPages() would duplicate all existing instances
+        const restored = pages.find(p => p.id === id);
+        if (restored && !pageInstances.has(id)) {
+          let inst;
+          if (restored.kind === 'pdf') {
+            inst = new PDFPage(restored.pdfPageIndex, restored.canvasX, restored.canvasY, restored.width, restored.height);
+          } else {
+            inst = new BlankPage(restored.width, restored.height, restored.template ?? 'plain', restored.gridSize ?? 24);
+            inst.canvasX = restored.canvasX;
+            inst.canvasY = restored.canvasY;
+          }
+          inst.mount(container);
+          pageInstances.set(id, inst);
+        }
+        if (partnerIdSnap && pages.find(p => p.id === partnerIdSnap)) {
+          pairedPages.set(id, partnerIdSnap);
+          pairedPages.set(partnerIdSnap, id);
+          _savePairedPages();
+        }
+        restoreAnnotationsSilent(annoSnapshot);
+        triggerLazyRender();
+        document.dispatchEvent(new CustomEvent('pages-changed'));
+        requestRender();
+      },
+      // redo: remove the page again (skip history to avoid double-pushing)
+      () => removePage(id, true),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -699,7 +736,7 @@ function fitPage() {
  * @param {number} fromIdx — Current 0-based index of the page
  * @param {number} toIdx   — Target 0-based index (after the move)
  */
-function movePage(fromIdx, toIdx) {
+function movePage(fromIdx, toIdx, _skipHistory = false) {
   if (fromIdx === toIdx) return;
   if (fromIdx < 0 || fromIdx >= pages.length) return;
   if (toIdx   < 0 || toIdx   >= pages.length) return;
@@ -712,6 +749,13 @@ function movePage(fromIdx, toIdx) {
 
   document.dispatchEvent(new CustomEvent('pages-changed'));
   requestRender();
+
+  if (!_skipHistory) {
+    pushPageUndo(
+      () => movePage(toIdx, fromIdx, true),
+      () => movePage(fromIdx, toIdx, true),
+    );
+  }
 }
 
 /**

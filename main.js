@@ -20,41 +20,13 @@
 'use strict';
 
 const { app, BrowserWindow, ipcMain, dialog, Menu, shell, protocol } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const https = require('https');
 const { spawn } = require('child_process');
 const AdmZip = require('adm-zip');
 
-// ---------------------------------------------------------------------------
-// Update check config — fill in YOUR GitHub username/repo before publishing
-// ---------------------------------------------------------------------------
-
-/**
- * The GitHub repo to check for new releases.
- * Format: 'username/repo-name'
- * Tag format expected: 'v1.2.3'
- */
-const GITHUB_REPO = 'knico05/Vellum';
-
-/**
- * Returns true if `latest` is a strictly newer semver than `current`.
- * Both strings should be in 'major.minor.patch' format (no 'v' prefix).
- *
- * @param {string} latest
- * @param {string} current
- * @returns {boolean}
- */
-function _isNewerVersion(latest, current) {
-  if (!latest || !current) return false;
-  const parse = v => v.split('.').map(n => parseInt(n, 10) || 0);
-  const [lMaj, lMin, lPatch] = parse(latest);
-  const [cMaj, cMin, cPatch] = parse(current);
-  if (lMaj !== cMaj) return lMaj > cMaj;
-  if (lMin !== cMin) return lMin > cMin;
-  return lPatch > cPatch;
-}
 
 // Prevent Windows Xbox Game Bar from injecting its overlay into the Electron
 // window. Without this, Chromium fires an ms-gamingoverlay:// protocol call
@@ -611,54 +583,60 @@ function setupIPC(win) {
     }
   });
 
-  /**
-   * check-for-updates — fetches the latest GitHub release and compares it
-   * against the current app version.
-   *
-   * Returns:
-   *   { currentVersion, latestVersion, releaseUrl, hasUpdate }
-   *
-   * On network error or timeout, resolves with hasUpdate: false so the app
-   * starts cleanly even when offline.
-   */
-  ipcMain.handle('check-for-updates', () => {
-    const currentVersion = app.getVersion();
+  // ---------------------------------------------------------------------------
+  // Auto-updater (electron-updater + GitHub Releases)
+  // ---------------------------------------------------------------------------
 
-    return new Promise((resolve) => {
-      const options = {
-        hostname: 'api.github.com',
-        path:     `/repos/${GITHUB_REPO}/releases/latest`,
-        headers:  { 'User-Agent': 'PDF-Annotator-UpdateCheck' },
-      };
+  // Disable auto-download — we show a badge first, user clicks to download.
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
 
-      const req = https.get(options, (res) => {
-        let raw = '';
-        res.on('data', chunk => { raw += chunk; });
-        res.on('end', () => {
-          try {
-            const release      = JSON.parse(raw);
-            const tag          = release.tag_name  ?? '';
-            const latestVersion = tag.replace(/^v/, '');
-            const releaseUrl   = release.html_url  ?? '';
-            const hasUpdate    = _isNewerVersion(latestVersion, currentVersion);
-            resolve({ currentVersion, latestVersion, releaseUrl, hasUpdate });
-          } catch {
-            resolve({ currentVersion, latestVersion: null, releaseUrl: null, hasUpdate: false });
-          }
-        });
-      });
+  const _sendUpdateStatus = (status) => {
+    const w = BrowserWindow.getAllWindows()[0];
+    if (w) w.webContents.send('update-status', status);
+  };
 
-      // Network error (offline, DNS fail, etc.) — fail gracefully
-      req.on('error', () => {
-        resolve({ currentVersion, latestVersion: null, releaseUrl: null, hasUpdate: false });
-      });
+  autoUpdater.on('update-available', (info) => {
+    _sendUpdateStatus({ type: 'available', version: info.version });
+  });
 
-      // 8-second timeout — avoids hanging on a slow connection at startup
-      req.setTimeout(8000, () => {
-        req.destroy();
-        resolve({ currentVersion, latestVersion: null, releaseUrl: null, hasUpdate: false });
-      });
-    });
+  autoUpdater.on('update-not-available', () => {
+    _sendUpdateStatus({ type: 'not-available' });
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    _sendUpdateStatus({ type: 'progress', percent: Math.round(progress.percent) });
+  });
+
+  autoUpdater.on('update-downloaded', () => {
+    _sendUpdateStatus({ type: 'downloaded' });
+  });
+
+  autoUpdater.on('error', () => {
+    _sendUpdateStatus({ type: 'error' });
+  });
+
+  // check-for-updates — called by renderer on startup (delayed 4s).
+  ipcMain.handle('check-for-updates', async () => {
+    try {
+      await autoUpdater.checkForUpdates();
+    } catch {
+      // Offline or GitHub unreachable — fail silently
+    }
+  });
+
+  // start-update-download — called when user clicks the update badge.
+  ipcMain.handle('start-update-download', async () => {
+    try {
+      await autoUpdater.downloadUpdate();
+    } catch {
+      _sendUpdateStatus({ type: 'error' });
+    }
+  });
+
+  // install-update — called when user clicks "Restart to update".
+  ipcMain.handle('install-update', () => {
+    autoUpdater.quitAndInstall();
   });
 
   /**
@@ -1468,6 +1446,12 @@ app.whenReady().then(() => {
   protocol.handle('ms-gamingoverlay', () => new Response(''));
 
   createWindow();
+
+  // Initialise auto-updater after window exists so update-status events have a target.
+  // Only active in packaged builds — dev mode has no update feed.
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+  }
 
   // If the app was launched by opening a file (e.g. double-click in Explorer),
   // forward the path to the renderer once it has finished loading.

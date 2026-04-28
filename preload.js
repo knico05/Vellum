@@ -245,12 +245,36 @@ contextBridge.exposeInMainWorld('api', {
 
   /**
    * Checks GitHub for a newer release.
-   * Resolves to { currentVersion, latestVersion, releaseUrl, hasUpdate }.
-   * Always resolves (never rejects) — returns hasUpdate: false when offline.
-   * @returns {Promise<{currentVersion:string, latestVersion:string|null, releaseUrl:string|null, hasUpdate:boolean}>}
+   * Triggers an update check against GitHub Releases via electron-updater.
+   * Result is delivered asynchronously via onUpdateStatus callback.
+   * @returns {Promise<void>}
    */
   checkForUpdates: () =>
     ipcRenderer.invoke('check-for-updates'),
+
+  /**
+   * Starts downloading the available update in the background.
+   * Progress delivered via onUpdateStatus callback.
+   * @returns {Promise<void>}
+   */
+  startUpdateDownload: () =>
+    ipcRenderer.invoke('start-update-download'),
+
+  /**
+   * Quits the app and installs the downloaded update.
+   * Only call after onUpdateStatus type === 'downloaded'.
+   * @returns {Promise<void>}
+   */
+  installUpdate: () =>
+    ipcRenderer.invoke('install-update'),
+
+  /**
+   * Registers a callback for update status events pushed from the main process.
+   * Status object: { type: 'available'|'progress'|'downloaded'|'error'|'not-available', version?, percent? }
+   * @param {Function} callback
+   */
+  onUpdateStatus: (callback) =>
+    ipcRenderer.on('update-status', (_event, status) => callback(status)),
 
   /**
    * Opens a URL in the user's default browser.

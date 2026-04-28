@@ -48,8 +48,14 @@ let container = null;
 /** 'partial' — splits strokes; 'full' — removes whole annotations */
 let eraseMode = 'partial';
 
+/** When true, the erase radius is fixed in screen pixels regardless of zoom level */
+let lukasExtra = false;
+
 /** The on-canvas ring overlay element that visualises the erase radius */
 let ringEl = null;
+
+/** When true the ring is shown as a size preview below the slider popover, not following cursor */
+let previewMode = false;
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -71,10 +77,10 @@ function init() {
   ringEl.id = 'eraser-ring';
   document.body.appendChild(ringEl);
 
-  // Re-size the ring when the user zooms (scale changes affect ring diameter)
+  // Re-size the ring when zoom changes — lukasExtra stays fixed in screen pixels
   container.addEventListener('viewport-changed', () => {
     if (!active || !ringEl) return;
-    const diameterPx = ERASE_RADIUS * 2 * viewportState.scale;
+    const diameterPx = _ringDiameter();
     ringEl.style.width  = `${diameterPx}px`;
     ringEl.style.height = `${diameterPx}px`;
   });
@@ -96,14 +102,63 @@ function deactivate() {
   if (ringEl) ringEl.classList.remove('visible');
 }
 
+/**
+ * Ring diameter in screen pixels.
+ * lukasExtra: fixed screen-pixel size (no scale).
+ * partial/full: canvas radius scaled to screen pixels.
+ */
+/**
+ * Ring diameter in screen pixels.
+ * lukasExtra: fixed screen-pixel size (no scale).
+ * normal: canvas radius scaled to screen pixels.
+ */
+function _ringDiameter() {
+  return lukasExtra
+    ? ERASE_RADIUS * 2
+    : ERASE_RADIUS * 2 * viewportState.scale;
+}
+
+/**
+ * Effective erase radius in canvas units used for hit detection.
+ * lukasExtra: converts fixed screen-pixel radius to canvas units at current zoom.
+ * normal: ERASE_RADIUS is already in canvas units.
+ */
+function _effectiveCanvasRadius() {
+  return lukasExtra
+    ? ERASE_RADIUS / viewportState.scale
+    : ERASE_RADIUS;
+}
+
 /** Moves and sizes the ring overlay to match the current pointer position. */
 function _updateRing(clientX, clientY) {
-  if (!ringEl) return;
-  const diameterPx = ERASE_RADIUS * 2 * viewportState.scale;
+  if (!ringEl || previewMode) return;
+  const diameterPx = _ringDiameter();
   ringEl.style.width  = `${diameterPx}px`;
   ringEl.style.height = `${diameterPx}px`;
   ringEl.style.left   = `${clientX}px`;
   ringEl.style.top    = `${clientY}px`;
+}
+
+/**
+ * Shows the ring at a fixed screen position as a size preview (e.g. below the
+ * size slider popover). Does not require the eraser tool to be active.
+ * Call hideSizePreview() to dismiss.
+ */
+function showSizePreview(screenX, screenY) {
+  if (!ringEl) return;
+  previewMode = true;
+  const diameterPx = _ringDiameter();
+  ringEl.style.width  = `${diameterPx}px`;
+  ringEl.style.height = `${diameterPx}px`;
+  ringEl.style.left   = `${screenX}px`;
+  ringEl.style.top    = `${screenY}px`;
+  ringEl.classList.add('visible');
+}
+
+/** Hides the preview ring. If the eraser tool is active it stays visible (cursor-following). */
+function hideSizePreview() {
+  previewMode = false;
+  if (!active && ringEl) ringEl.classList.remove('visible');
 }
 
 /**
@@ -113,9 +168,9 @@ function _updateRing(clientX, clientY) {
  */
 function setEraseRadius(radius) {
   ERASE_RADIUS = radius;
-  // Re-size the ring if it's currently visible (tool is active)
-  if (active && ringEl) {
-    const diameterPx = ERASE_RADIUS * 2 * viewportState.scale;
+  if (!ringEl) return;
+  if (active || previewMode) {
+    const diameterPx = _ringDiameter();
     ringEl.style.width  = `${diameterPx}px`;
     ringEl.style.height = `${diameterPx}px`;
   }
@@ -128,6 +183,21 @@ function setEraseRadius(radius) {
  */
 function setEraseMode(mode) {
   eraseMode = mode;
+}
+
+/**
+ * Toggles Lukas' Extra — when true, the erase radius is fixed in screen pixels
+ * regardless of zoom level. Works alongside partial and full modes.
+ * @param {boolean} enabled
+ */
+function setLukasExtra(enabled) {
+  lukasExtra = enabled;
+  if (!ringEl) return;
+  if (active || previewMode) {
+    const diameterPx = _ringDiameter();
+    ringEl.style.width  = `${diameterPx}px`;
+    ringEl.style.height = `${diameterPx}px`;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -175,16 +245,15 @@ function onPointerUp() {
 function eraseAt(screenX, screenY) {
   const rect = container.getBoundingClientRect();
   const { x: cx, y: cy } = toCanvas(screenX - rect.left, screenY - rect.top);
+  const r = _effectiveCanvasRadius();
 
   for (const anno of getAll()) {
-    // Text boxes and images are never erased — use the select tool to delete them
     if (anno.type === 'textBox' || anno.type === 'image') continue;
 
-    // Path-based strokes: partial or full erase depending on mode
     if ((anno.type === 'draw' || (anno.type === 'highlight' && anno.points)) &&
-        strokeHitsEraser(anno.points, cx, cy)) {
+        strokeHitsEraser(anno.points, cx, cy, r)) {
       if (eraseMode === 'partial') {
-        splitAndReplace(anno, cx, cy);
+        splitAndReplace(anno, cx, cy, r);
       } else {
         remove(anno.id);
       }
@@ -192,7 +261,6 @@ function eraseAt(screenX, screenY) {
       return;
     }
 
-    // Legacy rect-based highlight: whole-annotation removal
     if (anno.type === 'highlight' && !anno.points) {
       const pad = 4;
       if (cx >= anno.canvasX - pad && cx <= anno.canvasX + anno.width  + pad &&
@@ -203,35 +271,26 @@ function eraseAt(screenX, screenY) {
       }
     }
 
-    // Circle shapes (shapeType: 'circle', stored as cx/cy/r — no points array):
-    // Remove whole annotation when the eraser touches the circle outline.
     if (anno.type === 'draw' && anno.shapeType === 'circle') {
       const dist = Math.sqrt((cx - anno.cx) ** 2 + (cy - anno.cy) ** 2);
-      if (Math.abs(dist - anno.r) <= ERASE_RADIUS) {
+      if (Math.abs(dist - anno.r) <= r) {
         remove(anno.id);
         requestRender();
         return;
       }
     }
 
-    // Ellipse shapes (shapeType: 'ellipse', stored as cx/cy/rx/ry — no points array):
-    // Remove whole annotation when the eraser touches the ellipse outline.
-    // Normalised distance: on the ellipse perimeter this equals 1.0.
     if (anno.type === 'draw' && anno.shapeType === 'ellipse') {
       const nx   = (cx - anno.cx) / anno.rx;
       const ny   = (cy - anno.cy) / anno.ry;
       const norm = Math.sqrt(nx * nx + ny * ny);
-      // Approximate outline thickness check using the smaller semi-axis for scaling
       const minAxis = Math.min(anno.rx, anno.ry);
-      if (Math.abs(norm - 1.0) <= ERASE_RADIUS / minAxis) {
+      if (Math.abs(norm - 1.0) <= r / minAxis) {
         remove(anno.id);
         requestRender();
         return;
       }
     }
-
-    // Images: not erasable (use select tool → delete button)
-    // Blank pages: not erasable (canvas structure)
   }
 }
 
@@ -250,15 +309,14 @@ function eraseAt(screenX, screenY) {
  * @param {number} cy
  * @returns {boolean}
  */
-function strokeHitsEraser(points, cx, cy) {
+function strokeHitsEraser(points, cx, cy, r) {
   if (points.length === 0) return false;
 
-  // Check first point in isolation (covers single-point degenerate strokes)
   const fp = points[0];
-  if ((fp.x - cx) ** 2 + (fp.y - cy) ** 2 <= ERASE_RADIUS ** 2) return true;
+  if ((fp.x - cx) ** 2 + (fp.y - cy) ** 2 <= r ** 2) return true;
 
   for (let i = 0; i < points.length - 1; i++) {
-    if (distToSegment(points[i], points[i + 1], cx, cy) <= ERASE_RADIUS) return true;
+    if (distToSegment(points[i], points[i + 1], cx, cy) <= r) return true;
   }
   return false;
 }
@@ -314,8 +372,8 @@ function distToSegment(p1, p2, cx, cy) {
  * @param {number} cx    — Eraser centre in canvas space
  * @param {number} cy
  */
-function splitAndReplace(anno, cx, cy) {
-  const r2  = ERASE_RADIUS * ERASE_RADIUS;
+function splitAndReplace(anno, cx, cy, r) {
+  const r2  = r * r;
   const pts = anno.points;
 
   // ── Step 1: collect segments by filtering out points inside the eraser ──
@@ -338,7 +396,7 @@ function splitAndReplace(anno, cx, cy) {
   //    a segment. Find the first such segment and split at its boundary. ──
   if (segments.length === 1 && segments[0].length === pts.length) {
     for (let i = 0; i < pts.length - 1; i++) {
-      if (distToSegment(pts[i], pts[i + 1], cx, cy) <= ERASE_RADIUS) {
+      if (distToSegment(pts[i], pts[i + 1], cx, cy) <= r) {
         const left  = pts.slice(0, i + 1);
         const right = pts.slice(i + 1);
         remove(anno.id);
@@ -373,4 +431,4 @@ function stripMeta(anno, newPoints) {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init as initEraser, activate, deactivate, setEraseRadius, setEraseMode };
+export { init as initEraser, activate, deactivate, setEraseRadius, setEraseMode, setLukasExtra, showSizePreview, hideSizePreview };

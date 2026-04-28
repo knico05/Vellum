@@ -328,20 +328,18 @@ function rebuildList() {
     card.appendChild(thumb);
     card.appendChild(info);
 
-    // Delete button — blank pages only
-    if (page.kind === 'blank') {
-      const delBtn = document.createElement('button');
-      delBtn.className = 'page-card-delete';
-      delBtn.title     = 'Delete page';
-      delBtn.innerHTML = `<svg width="9" height="9" viewBox="0 0 9 9" fill="none">
-        <path d="M1 1l7 7M8 1L1 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-      </svg>`;
-      delBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        removePage(page.id);
-      });
-      card.appendChild(delBtn);
-    }
+    // Delete button — all page types
+    const delBtn = document.createElement('button');
+    delBtn.className = 'page-card-delete';
+    delBtn.title     = 'Delete page';
+    delBtn.innerHTML = `<svg width="9" height="9" viewBox="0 0 9 9" fill="none">
+      <path d="M1 1l7 7M8 1L1 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>`;
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removePage(page.id);
+    });
+    card.appendChild(delBtn);
 
     // Pair link button — all pages
     const isPaired   = getPairedPartner(page.id) !== null;

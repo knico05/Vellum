@@ -58,10 +58,11 @@ const _dirtyInkPages = new Set();
 
 /**
  * Stack of reversible actions. Each entry is one of:
- *   { action: 'add',    id, annotation }          — undo removes; redo re-adds
- *   { action: 'remove', annotation }              — undo re-inserts; redo removes
- *   { action: 'move',   undo: patches, redo: patches } — undo/redo apply position patches
- *   { action: 'group',  entries: [...] }          — compound action (e.g. one eraser stroke)
+ *   { action: 'add',      id, annotation }          — undo removes; redo re-adds
+ *   { action: 'remove',   annotation }              — undo re-inserts; redo removes
+ *   { action: 'move',     undo: patches, redo: patches } — undo/redo apply position patches
+ *   { action: 'group',    entries: [...] }          — compound action (e.g. one eraser stroke)
+ *   { action: 'page-op',  undoFn, redoFn }          — page-level operation (remove/reorder page)
  *
  * Maximum 50 entries. When full, the oldest entry is dropped.
  * Any new user action (add/remove/move) clears the redo stack.
@@ -290,6 +291,46 @@ function clear() {
 }
 
 /**
+ * Pushes a page-level operation onto the undo stack.
+ * Called by pageManager for remove-page and reorder-page actions.
+ * undoFn/redoFn are responsible for mutating page state and dispatching events.
+ *
+ * @param {Function} undoFn — restores the state before the action
+ * @param {Function} redoFn — re-applies the action
+ */
+function pushPageUndo(undoFn, redoFn) {
+  undoStack.push({ action: 'page-op', undoFn, redoFn });
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  redoStack = [];
+}
+
+/**
+ * Removes all annotations for a page without pushing to the undo stack.
+ * Used by pageManager when removing a page as part of an atomic undo entry.
+ *
+ * @param {string} pageId
+ * @returns {object[]} The removed annotations (snapshot for undo restore)
+ */
+function removeAnnotationsSilent(pageId) {
+  const removed = annotations.filter(a => a.pageId === pageId);
+  annotations   = annotations.filter(a => a.pageId !== pageId);
+  if (removed.length > 0) emit();
+  return removed;
+}
+
+/**
+ * Re-inserts a set of annotations without pushing to the undo stack.
+ * Used by pageManager when restoring a removed page via undo.
+ *
+ * @param {object[]} annos — snapshot previously returned by removeAnnotationsSilent
+ */
+function restoreAnnotationsSilent(annos) {
+  if (!annos.length) return;
+  annotations = [...annotations, ...annos];
+  emit();
+}
+
+/**
  * Reverses the most recent add, remove, or move action, and pushes the
  * inverse onto the redo stack so the action can be reapplied.
  *
@@ -332,6 +373,9 @@ function undo() {
     }
     redoStack.push({ action: 'group', entries: redoEntries });
     emit();
+  } else if (entry.action === 'page-op') {
+    entry.undoFn();
+    redoStack.push({ action: 'page-op', undoFn: entry.undoFn, redoFn: entry.redoFn });
   }
 }
 
@@ -377,6 +421,10 @@ function redo() {
     undoStack.push({ action: 'group', entries: undoEntries });
     if (undoStack.length > MAX_UNDO) undoStack.shift();
     emit();
+  } else if (entry.action === 'page-op') {
+    entry.redoFn();
+    undoStack.push({ action: 'page-op', undoFn: entry.undoFn, redoFn: entry.redoFn });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
   }
 }
 
@@ -603,4 +651,4 @@ function shiftAnnotationsByPageDelta(pageDeltas) {
   if (changed) emit();
 }
 
-export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo, beginUndoGroup, endUndoGroup, getPageInkText, loadPageInkText, setPageInkText, isPageInkDirty, clearPageInkDirty, getPageInkSegments, loadPageInkSegments, setPageInkSegments, shiftAnnotationsByPageDelta };
+export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo, beginUndoGroup, endUndoGroup, getPageInkText, loadPageInkText, setPageInkText, isPageInkDirty, clearPageInkDirty, getPageInkSegments, loadPageInkSegments, setPageInkSegments, shiftAnnotationsByPageDelta, pushPageUndo, removeAnnotationsSilent, restoreAnnotationsSilent };

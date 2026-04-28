@@ -42,6 +42,9 @@ import {
   deactivate      as deactivateEraser,
   setEraseRadius,
   setEraseMode,
+  setLukasExtra,
+  showSizePreview as showEraserSizePreview,
+  hideSizePreview as hideEraserSizePreview,
 } from '../annotations/eraser.js';
 
 import {
@@ -320,6 +323,9 @@ const eraserModeBtns = new Map();
 /** Currently selected eraser mode */
 let activeEraseMode = 'partial';
 
+/** Whether Lukas' Extra (zoom-independent size) is active */
+let lukasExtraOn = false;
+
 /** The #pressure-toggle container element */
 let pressureToggleEl = null;
 
@@ -341,6 +347,9 @@ let lblZoomEl = null;
 
 /** Currently visible size-edit slider popover, or null */
 let activeSizePopover = null;
+
+/** Dot preview shown below the size popover for pen/highlight tools */
+let strokePreviewEl = null;
 
 /** Cached viewport scale — updated on viewport-changed to drive cursor sizing */
 let cachedViewportScale = 1.0;
@@ -459,7 +468,7 @@ function init() {
     const sizeId = size.id;
     const btn = document.createElement('button');
     btn.className    = 'stroke-size-btn';
-    btn.title        = `${size.label} — long-press to customise`;
+    btn.title        = `${size.label} — tap again to customise`;
     btn.dataset.size = sizeId;
 
     // Visual dot — a filled circle whose diameter indicates the stroke weight
@@ -469,32 +478,19 @@ function init() {
     dot.style.height = `${size.dot}px`;
     btn.appendChild(dot);
 
-    btn.addEventListener('click', () => handleStrokeSizeClick(sizeId));
-
-    // Right-click (mouse) or long-press (touch/pen, 600 ms with 8px cancel threshold)
-    // opens a slider to customise that slot's width value for the current tool.
-    const LONG_PRESS_CANCEL_PX = 8;
-    let longPressTimer  = null;
-    let longPressStartX = 0;
-    let longPressStartY = 0;
-
+    // First tap selects the size; tapping the already-active size opens the popover.
+    // Right-click also opens it.
+    btn.addEventListener('click', () => {
+      if (activeStrokeSize === sizeId) {
+        showSizePopover(sizeId, btn);
+      } else {
+        handleStrokeSizeClick(sizeId);
+      }
+    });
     btn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      clearTimeout(longPressTimer);
       showSizePopover(sizeId, btn);
     });
-    btn.addEventListener('pointerdown', (e) => {
-      if (e.button === 2) return;
-      longPressStartX = e.clientX;
-      longPressStartY = e.clientY;
-      longPressTimer  = setTimeout(() => showSizePopover(sizeId, btn), 600);
-    });
-    btn.addEventListener('pointermove', (e) => {
-      const d = Math.hypot(e.clientX - longPressStartX, e.clientY - longPressStartY);
-      if (d > LONG_PRESS_CANCEL_PX) clearTimeout(longPressTimer);
-    });
-    btn.addEventListener('pointerup',     () => clearTimeout(longPressTimer));
-    btn.addEventListener('pointercancel', () => clearTimeout(longPressTimer));
 
     strokePickerEl.appendChild(btn);
     strokeSizeButtons.set(sizeId, btn);
@@ -505,17 +501,15 @@ function init() {
 
   // ── Eraser mode toggle (partial / full) ────────────────────────────────
   const ERASE_MODES = [
-    { id: 'partial', label: 'Partial' },
-    { id: 'full',    label: 'Full'    },
+    { id: 'partial', label: 'Partial', title: 'Partial erase — splits strokes at the eraser circle' },
+    { id: 'full',    label: 'Full',    title: 'Full erase — removes whole annotations'              },
   ];
   for (const mode of ERASE_MODES) {
     const btn = document.createElement('button');
     btn.className    = 'eraser-mode-btn';
     btn.dataset.mode = mode.id;
     btn.textContent  = mode.label;
-    btn.title        = mode.id === 'partial'
-      ? 'Partial erase — splits strokes at the eraser circle'
-      : 'Full erase — removes whole annotations';
+    btn.title        = mode.title;
     btn.addEventListener('click', () => {
       activeEraseMode = mode.id;
       updateEraserModeState();
@@ -526,6 +520,20 @@ function init() {
     eraserModeBtns.set(mode.id, btn);
   }
   updateEraserModeState();
+
+  // Lukas' Extra toggle — independent of partial/full, controls zoom-fixed size
+  const lukasBtn = document.createElement('button');
+  lukasBtn.id        = 'btn-lukas-extra';
+  lukasBtn.className = 'eraser-mode-btn';
+  lukasBtn.textContent = "Lukas' Extra";
+  lukasBtn.title     = "Lukas' Extra — fixed screen-pixel eraser size regardless of zoom";
+  lukasBtn.addEventListener('click', () => {
+    lukasExtraOn = !lukasExtraOn;
+    lukasBtn.classList.toggle('active', lukasExtraOn);
+    setLukasExtra(lukasExtraOn);
+    saveToolSettings();
+  });
+  eraserModePickerEl.appendChild(lukasBtn);
 
   // ── Pressure sensitivity toggle (draw tool only) ────────────────────────
   const pressureBtn = document.createElement('button');
@@ -613,9 +621,13 @@ function init() {
     document.addEventListener('keyup', (e) => { if (e.key === ' ') updateToolCursor(); });
   }
 
-  // Check for updates in the background — delayed so it doesn't compete with
-  // startup rendering. Shows a badge in the toolbar if a newer release exists.
-  setTimeout(_checkForUpdates, 4000);
+  // Build stroke size preview dot (shown below size popover for pen/highlight)
+  strokePreviewEl = document.createElement('div');
+  strokePreviewEl.id = 'stroke-size-preview';
+  document.body.appendChild(strokePreviewEl);
+
+  // Wire up in-app update flow — delayed so it doesn't compete with startup rendering.
+  setTimeout(_initUpdateFlow, 4000);
 
   // Restore the previous tool when the lasso selection catches nothing
   document.addEventListener('select-deselected', () => {
@@ -627,27 +639,38 @@ function init() {
 }
 
 /**
- * Fetches the latest GitHub release and shows the update badge if a newer
- * version is available. Fails silently — offline users see nothing.
+ * Wires up in-app update flow via electron-updater.
+ * States: idle → available → downloading → downloaded → (restart)
+ * The update button in the toolbar reflects the current state.
  */
-async function _checkForUpdates() {
-  try {
-    const result = await window.api.checkForUpdates();
-    if (!result?.hasUpdate) return;
+function _initUpdateFlow() {
+  const btn = document.getElementById('btn-update');
+  if (!btn) return;
 
-    const btn = document.getElementById('btn-update');
-    if (!btn) return;
+  window.api.onUpdateStatus((status) => {
+    if (status.type === 'available') {
+      btn.textContent = `⬆ v${status.version}`;
+      btn.title       = `Update available — click to download`;
+      btn.classList.remove('hidden');
+      btn.onclick = () => {
+        btn.textContent = '⬇ 0%';
+        btn.title       = 'Downloading update…';
+        btn.onclick     = null;
+        window.api.startUpdateDownload();
+      };
+    } else if (status.type === 'progress') {
+      btn.textContent = `⬇ ${status.percent}%`;
+    } else if (status.type === 'downloaded') {
+      btn.textContent = '↻ Restart';
+      btn.title       = 'Update ready — click to restart and install';
+      btn.onclick     = () => window.api.installUpdate();
+    } else if (status.type === 'error') {
+      btn.classList.add('hidden');
+    }
+  });
 
-    btn.textContent = `⬆ v${result.latestVersion}`;
-    btn.title       = `Update available: v${result.latestVersion} — click to download`;
-    btn.classList.remove('hidden');
-
-    btn.addEventListener('click', () => {
-      if (result.releaseUrl) window.api.openExternal(result.releaseUrl);
-    });
-  } catch {
-    // Network unavailable or repo not configured — silently do nothing
-  }
+  // Trigger the check — result arrives via onUpdateStatus
+  window.api.checkForUpdates();
 }
 
 // ---------------------------------------------------------------------------
@@ -996,6 +1019,7 @@ function saveToolSettings() {
   if (COLOUR_TOOLS.has(activeTool)) entry.colour    = activeColour;
   if (STROKE_TOOLS.has(activeTool)) entry.sizeId    = activeStrokeSize;
   if (activeTool === 'eraser')      entry.eraseMode  = activeEraseMode;
+  if (activeTool === 'eraser')      entry.lukasExtra = lukasExtraOn;
   if (activeTool === 'draw')        entry.pressure   = pressureOn;
   if (activeTool === 'draw')        entry.shapeSnap  = shapeSnapOn;
   if (Object.keys(entry).length === 0) return;
@@ -1020,6 +1044,7 @@ function restoreToolSettings(toolName) {
   }
   if (toolName === 'eraser') {
     activeEraseMode = saved?.eraseMode ?? 'partial';
+    lukasExtraOn    = saved?.lukasExtra ?? false;
   }
   if (toolName === 'draw') {
     pressureOn  = saved?.pressure  ?? true;
@@ -1084,6 +1109,8 @@ function updateColourPickerVisibility() {
     if (eraserModeVisible) {
       updateEraserModeState();
       setEraseMode(activeEraseMode);
+      setLukasExtra(lukasExtraOn);
+      document.getElementById('btn-lukas-extra')?.classList.toggle('active', lukasExtraOn);
     }
     if (pressureVisible) {
       document.getElementById('btn-pressure-toggle')?.classList.toggle('active', pressureOn);
@@ -1247,8 +1274,7 @@ function _valueToSlider(val, min, max) {
   return Math.round(1 + 19 * Math.log(clamped / min) / Math.log(max / min));
 }
 
-// Kept for backwards compatibility (cursor sizing still calls this)
-const _SLIDER_MIN_WIDTH = 0.3;
+const _SLIDER_MIN_WIDTH = 0.1;
 const _SLIDER_MAX_WIDTH = 20;
 function _sliderToWidth(pos)   { return _sliderToValue(pos, _SLIDER_MIN_WIDTH, _SLIDER_MAX_WIDTH); }
 function _widthToSlider(width) { return _valueToSlider(width, _SLIDER_MIN_WIDTH, _SLIDER_MAX_WIDTH); }
@@ -1264,7 +1290,7 @@ function _refreshSizeDots() {
     if (!btn) continue;
     const dot = btn.querySelector('.stroke-size-dot');
     if (dot) { dot.style.width = `${sizeDef.dot}px`; dot.style.height = `${sizeDef.dot}px`; }
-    btn.title = `${sizeDef.label} — long-press to customise`;
+    btn.title = `${sizeDef.label} — tap again to customise`;
   }
 }
 
@@ -1282,7 +1308,7 @@ function showSizePopover(sizeId, btn) {
   const sizeDef  = _getCurrentSizes().find(s => s.id === sizeId);
   if (!sizeDef) return;
 
-  const sliderMin = isEraser ? 0.5 : _SLIDER_MIN_WIDTH;
+  const sliderMin = isEraser ? 0.1 : _SLIDER_MIN_WIDTH;
   const sliderMax = isEraser ? 60  : _SLIDER_MAX_WIDTH;
   const curVal    = isEraser ? sizeDef.eraseRadius : sizeDef.width;
 
@@ -1298,7 +1324,7 @@ function showSizePopover(sizeId, btn) {
   slider.type  = 'range';
   slider.min   = '1';
   slider.max   = '20';
-  slider.step  = '1';
+  slider.step  = 'any';
   slider.value = String(_valueToSlider(curVal, sliderMin, sliderMax));
   slider.className = 'size-popover-slider';
   popover.appendChild(slider);
@@ -1309,7 +1335,7 @@ function showSizePopover(sizeId, btn) {
   popover.appendChild(valueDisplay);
 
   slider.addEventListener('input', () => {
-    const newVal = _sliderToValue(parseInt(slider.value, 10), sliderMin, sliderMax);
+    const newVal = _sliderToValue(parseFloat(slider.value), sliderMin, sliderMax);
     valueDisplay.textContent = newVal;
 
     if (isEraser) {
@@ -1318,6 +1344,7 @@ function showSizePopover(sizeId, btn) {
     } else {
       sizeDef.width = newVal;
       sizeDef.dot   = Math.round(2 + newVal * 1.2);
+      _updateStrokePreviewSize(newVal);
     }
 
     const dot = btn.querySelector('.stroke-size-dot');
@@ -1337,11 +1364,23 @@ function showSizePopover(sizeId, btn) {
 
   activeSizePopover = popover;
 
+  // Show size preview below the popover (next frame so layout is final)
+  requestAnimationFrame(() => {
+    const r = popover.getBoundingClientRect();
+    const previewX = r.left + r.width / 2;
+    const previewY = r.bottom + 48;
+    if (isEraser) {
+      showEraserSizePreview(previewX, previewY);
+    } else {
+      _showStrokePreview(previewX, previewY, curVal);
+    }
+  });
+
   // Close when the user clicks/taps outside the popover.
   // Uses a persistent listener (not once:true) so interacting with the slider
   // doesn't close it — only a click that lands outside does.
   setTimeout(() => {
-    document.addEventListener('pointerdown', _onOutsidePointerDown);
+    document.addEventListener('pointerdown', _onOutsidePointerDown, { capture: true });
   }, 0);
 }
 
@@ -1351,10 +1390,41 @@ function _onOutsidePointerDown(e) {
   }
 }
 
+/**
+ * Maps a stroke width value to a preview dot size in screen pixels using a
+ * logarithmic scale so thin strokes (0.1–1) look visibly different from each
+ * other, not just identical specks. Range: 0.1 → 2px, 20 → 56px.
+ */
+function _widthToPreviewPx(val) {
+  const minW = _SLIDER_MIN_WIDTH, maxW = _SLIDER_MAX_WIDTH;
+  const minPx = 2, maxPx = 56;
+  const t = Math.log(Math.max(minW, val) / minW) / Math.log(maxW / minW);
+  return Math.round(minPx + (maxPx - minPx) * t);
+}
+
+function _showStrokePreview(screenX, screenY, widthVal) {
+  if (!strokePreviewEl) return;
+  const px = _widthToPreviewPx(widthVal);
+  strokePreviewEl.style.width  = `${px}px`;
+  strokePreviewEl.style.height = `${px}px`;
+  strokePreviewEl.style.left   = `${screenX}px`;
+  strokePreviewEl.style.top    = `${screenY}px`;
+  strokePreviewEl.classList.add('visible');
+}
+
+function _updateStrokePreviewSize(widthVal) {
+  if (!strokePreviewEl || !strokePreviewEl.classList.contains('visible')) return;
+  const px = _widthToPreviewPx(widthVal);
+  strokePreviewEl.style.width  = `${px}px`;
+  strokePreviewEl.style.height = `${px}px`;
+}
+
 function closeSizePopover() {
   activeSizePopover?.remove();
   activeSizePopover = null;
-  document.removeEventListener('pointerdown', _onOutsidePointerDown);
+  document.removeEventListener('pointerdown', _onOutsidePointerDown, { capture: true });
+  hideEraserSizePreview();
+  strokePreviewEl?.classList.remove('visible');
 }
 
 // ---------------------------------------------------------------------------

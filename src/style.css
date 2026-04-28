@@ -370,6 +370,24 @@ button:focus-visible {
   display: block;
 }
 
+/* Stroke size preview dot — shown below the size popover for pen/highlight */
+#stroke-size-preview {
+  position: fixed;
+  pointer-events: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9);
+  outline: 1px solid rgba(0, 0, 0, 0.35);
+  box-sizing: border-box;
+  display: none;
+  transform: translate(-50%, -50%);
+  z-index: 9999;
+  min-width: 3px;
+  min-height: 3px;
+}
+#stroke-size-preview.visible {
+  display: block;
+}
+
 /* Text box tool — crosshair to indicate placement mode */
 #canvas-container.tool-note {
   cursor: text;
