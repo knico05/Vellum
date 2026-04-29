@@ -1371,10 +1371,10 @@ function setupIPC(win) {
    * Uses sendSync / ipcMain.on (not handle/invoke) so the renderer can block
    * until the backup write completes before the process exits.
    *
-   * @param {string} pdfPath             — absolute path of the open PDF
-   * @param {string} annotationsJsonPath — absolute path of the annotation JSON
+   * @param {string} pdfPath         — absolute path of the open PDF
+   * @param {string} annotationsJson — serialised annotation JSON string (from memory)
    */
-  ipcMain.on('backup-on-quit', (_event, pdfPath, annotationsJsonPath) => {
+  ipcMain.on('backup-on-quit', (_event, pdfPath, annotationsJson) => {
     try {
       const backupDir = _loadSettings().backupDir;
       if (!backupDir || !pdfPath || !fs.existsSync(pdfPath)) return;
@@ -1398,8 +1398,10 @@ function setupIPC(win) {
 
       const zip = new AdmZip();
       zip.addLocalFile(pdfPath, '', 'document.pdf');
-      if (fs.existsSync(annotationsJsonPath)) {
-        zip.addLocalFile(annotationsJsonPath, '', 'annotations.json');
+      // Use the in-memory JSON passed from the renderer — never read from disk
+      // here, since the disk copy may be mid-write or corrupted.
+      if (annotationsJson) {
+        zip.addFile('annotations.json', Buffer.from(annotationsJson, 'utf8'));
       }
 
       const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));

@@ -37,6 +37,7 @@ const DEBOUNCE_MS = 1000;
 let saveTimer = null;
 let indicator = null;
 let fadeTimer = null;
+let _paused   = false;
 
 // ---------------------------------------------------------------------------
 // Initialisation
@@ -63,8 +64,21 @@ function init() {
  * If called again before the timer fires, resets the clock.
  */
 function scheduleSave() {
+  if (_paused) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(save, DEBOUNCE_MS);
+}
+
+// Call before switching documents to prevent a mid-load overwrite.
+// Call resumeSave() once annotations are fully loaded.
+function pauseSave() {
+  _paused = true;
+  clearTimeout(saveTimer);
+  saveTimer = null;
+}
+
+function resumeSave() {
+  _paused = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,4 +133,4 @@ function showSaved() {
 // Exports
 // ---------------------------------------------------------------------------
 
-export { init as initAutosave, scheduleSave };
+export { init as initAutosave, scheduleSave, pauseSave, resumeSave };

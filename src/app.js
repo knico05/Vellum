@@ -23,8 +23,8 @@ import {
   getCurrentPageListIndex, spliceBlankPagesFromMigration,
   getPdfDoc, getPageList, goToPage, getCurrentPageId, pageExists, flashPage,
 } from './pages/pageManager.js';
-import { clear, loadFromJSON, loadPageInkText, loadPageInkSegments, undo, redo } from './annotations/manager.js';
-import { initAutosave }                           from './storage/autosave.js';
+import { clear, loadFromJSON, toJSON, loadPageInkText, loadPageInkSegments, getPageInkText, getPageInkSegments, undo, redo } from './annotations/manager.js';
+import { initAutosave, pauseSave, resumeSave }     from './storage/autosave.js';
 import { deserialise }                            from './storage/serialiser.js';
 import { initHighlight }                          from './annotations/highlight.js';
 import { initDraw }                               from './annotations/draw.js';
@@ -35,7 +35,7 @@ import { initSelect }                             from './annotations/select.js'
 import { init as initToolbar, setActiveTool, getActiveTool, updateStatus } from './ui/toolbar.js';
 import { init as initShortcuts }                  from './ui/shortcuts.js';
 import { initScreenshot, activateScreenshot }     from './ui/screenshot.js';
-import { init as initPanel, loadPageNotes, getCurrentPageIndex, togglePanel,
+import { init as initPanel, loadPageNotes, getPageNotes, getCurrentPageIndex, togglePanel,
          addBlankPageWithPicker } from './ui/panel.js';
 import { initLibrary, addToLibrary, setCurrentFile } from './ui/library.js';
 import { exportToPdf }                            from './export/pdfExport.js';
@@ -328,8 +328,18 @@ async function backupCurrentNote() {
   const pdfPath = getCurrentPdfPath();
   if (!pdfPath) return;
   try {
-    const annotationsJsonPath = await window.api.getAnnotationsPath(pdfPath);
-    window.api.backupOnQuit(pdfPath, annotationsJsonPath);
+    // Serialize from memory, not from disk — the disk copy may be stale or
+    // mid-write if this is called during a document switch.
+    const json = serialise(
+      pdfPath,
+      getCurrentFingerprint() ?? '',
+      getPageList(),
+      toJSON(),
+      getPageNotes(),
+      getPageInkText(),
+      getPageInkSegments(),
+    );
+    window.api.backupOnQuit(pdfPath, json);
   } catch { /* never block on backup failure */ }
 }
 
@@ -349,6 +359,12 @@ async function loadFile(filePath) {
   document.title = `${filename} — Vellum`;
 
   try {
+    // Block autosave from firing during the load sequence. clear() dispatches
+    // 'annotations-changed' which would schedule a save of empty state to the
+    // new file's path — potentially overwriting saved annotations before
+    // tryLoadAnnotations has a chance to read them back.
+    pauseSave();
+
     // 1. Load the PDF — builds the default page list (PDF pages only)
     await openPDFPages(filePath);
 
@@ -359,6 +375,9 @@ async function loadFile(filePath) {
     // 3. Load saved annotations and page list (if any)
     await tryLoadAnnotations(filePath);
 
+    // Re-enable autosave now that the correct state is in memory.
+    resumeSave();
+
     // 4. Jump to the last-viewed page for this PDF (if one was saved)
     _restoreLastPage();
 
@@ -368,6 +387,7 @@ async function loadFile(filePath) {
 
     updateStatusBar();
   } catch (err) {
+    resumeSave(); // always unblock, even on failure
     console.error('Failed to open PDF:', err);
     alert(`Could not open PDF:\n${err?.message ?? String(err)}`);
   } finally {

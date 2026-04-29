@@ -311,11 +311,11 @@ contextBridge.exposeInMainWorld('api', {
    * current note. Uses sendSync so the write completes before the renderer
    * continues (important when called just before closing or switching documents).
    * Fails silently if no backup folder is configured.
-   * @param {string} pdfPath             — Absolute path of the open PDF
-   * @param {string} annotationsJsonPath — Absolute path of the annotation JSON
+   * @param {string} pdfPath         — Absolute path of the open PDF
+   * @param {string} annotationsJson — Serialised annotation JSON string (from memory)
    */
-  backupOnQuit: (pdfPath, annotationsJsonPath) =>
-    ipcRenderer.send('backup-on-quit', pdfPath, annotationsJsonPath),
+  backupOnQuit: (pdfPath, annotationsJson) =>
+    ipcRenderer.send('backup-on-quit', pdfPath, annotationsJson),
 
   /**
    * Extracts a .vellum archive: shows a folder picker, extracts document.pdf
