@@ -178,6 +178,9 @@ function syncElements(fromLoad = false) {
     if (!currentIds.has(id)) {
       el.remove();
       boxElements.delete(id);
+      // Clear focused id whenever the annotation it points to is removed —
+      // covers × button, Ctrl+Z undo, and auto-delete of empty boxes.
+      if (_focusedAnnoId === id) _focusedAnnoId = null;
     }
   }
 
@@ -285,7 +288,6 @@ function createBoxElement(anno) {
   body.contentEditable = 'true';
   body.spellcheck      = false;
   body.innerHTML       = _displayHtml(anno);
-  applyBodyStyle(el, anno);
 
   // ── Resize handle ─────────────────────────────────────────────────────────
   const resizeHandle = document.createElement('div');
@@ -295,6 +297,8 @@ function createBoxElement(anno) {
   el.appendChild(deleteBtn);
   el.appendChild(body);
   el.appendChild(resizeHandle);
+
+  applyBodyStyle(el, anno);
 
   // ── Event wiring ──────────────────────────────────────────────────────────
 
@@ -354,6 +358,14 @@ function createBoxElement(anno) {
     }));
   });
   body.addEventListener('blur',  () => {
+    // Flush any pending text save immediately — prevents content loss if the
+    // user switches documents within the 500ms debounce window.
+    const pendingTimer = saveTimers.get(anno.id);
+    if (pendingTimer !== undefined) {
+      clearTimeout(pendingTimer);
+      saveTimers.delete(anno.id);
+      update(anno.id, { richText: body.innerHTML, text: body.textContent.trim() });
+    }
     setTimeout(() => {
       const ae = document.activeElement;
       // Keep focused state alive when focus moved to the toolbar's textbox options

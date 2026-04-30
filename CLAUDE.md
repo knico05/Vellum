@@ -306,7 +306,7 @@ When Nico says "prepare for shipment" or "release", do the following in order:
 
 ## 10. Current Status
 
-**Last updated:** 2026-04-29  
-**Version:** 1.4.3  
+**Last updated:** 2026-04-30  
+**Version:** 1.4.4  
 **State:** Stable. Released.  
-**Notes:** v1.4.3 shipped: fixed critical data-loss bug — autosave race condition wiped annotation file on document switch (pauseSave/resumeSave now wraps the full load sequence in loadFile()); fixed backup reading from disk instead of in-memory state (backupCurrentNote now serialises from memory and passes JSON string through IPC). Both bugs together meant crash + reopen silently destroyed all annotations. v1.4.2: PDF page removal + undo, page reorder undo, two-page anchor fix, ghost-page bug fix, in-app auto-update (electron-updater), Lukas' Extra eraser mode, size picker UX improvements, preview dots/rings, min size 0.1. `latest.yml` must be uploaded to GitHub releases alongside the installer or updates silently fail.
+**Notes:** v1.4.4: fixed textbox styles (colour, font size, alignment) not applying on file load — `applyBodyStyle` was called before the body element was appended to its container, so `querySelector` returned null and the style was silently skipped; also fixed `_focusedAnnoId` not being cleared when an annotation is removed (undo/×/empty-box), and flush pending text save on blur to prevent content loss on fast document switch. v1.4.3 shipped: fixed critical data-loss bug — autosave race condition wiped annotation file on document switch. v1.4.2: PDF page removal + undo, page reorder undo, two-page anchor fix, ghost-page bug fix, in-app auto-update (electron-updater), Lukas' Extra eraser mode, size picker UX improvements, preview dots/rings, min size 0.1. `latest.yml` must be uploaded to GitHub releases alongside the installer or updates silently fail.

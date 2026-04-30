@@ -14,7 +14,9 @@
       "Bash(node launch.js)",
       "Bash(node -e \"require\\('./main.js'\\)\")",
       "Bash(node --check main.js)",
-      "Bash(node --check preload.js)"
+      "Bash(node --check preload.js)",
+      "Bash(git tag *)",
+      "PowerShell(Get-WinEvent -LogName System -MaxEvents 3000 | Where-Object { $_.TimeCreated -lt [datetime]\"2026-04-29 15:40:00\" -and $_.TimeCreated -gt [datetime]\"2026-04-29 13:00:00\" } | Select-Object TimeCreated, Id, Level, ProviderName, @{N='Msg';E={$_.Message.Substring\\(0, [Math]::Min\\(150, $_.Message.Length\\)\\)}} | Format-Table -AutoSize)"
     ]
   }
 }
