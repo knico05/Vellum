@@ -50,7 +50,7 @@ const CURRENT_VERSION = 2;
  * @param {object}   pageInkSegments — { [pageId]: Array<{text,bounds}> } per-cluster bounds
  * @returns {string} Pretty-printed JSON
  */
-function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, pageInkText = {}, pageInkSegments = {}) {
+function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, pageInkText = {}, pageInkSegments = {}, twoPageMode = false, pairedPages = {}) {
   // Strip runtime-only fields (canvasX, canvasY, width/height for PDF pages)
   // from the page list before saving — layout is recomputed at load time.
   const savedPages = pageList.map(p => p.kind === 'pdf'
@@ -68,12 +68,20 @@ function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, 
     Object.entries(pageInkSegments).filter(([k, v]) => inkTextToSave[k] && Array.isArray(v) && v.length > 0)
   );
 
+  // Only persist paired-page entries whose both sides are in the current page list
+  const pageIds = new Set(savedPages.map(p => p.id));
+  const pairedPagesToSave = Object.fromEntries(
+    Object.entries(pairedPages).filter(([k, v]) => pageIds.has(k) && pageIds.has(v))
+  );
+
   return JSON.stringify({
     version:           CURRENT_VERSION,
     format:            'vellum',
     pdfPath,
     pdfFingerprint:    fingerprint,
     updatedAt:         new Date().toISOString(),
+    twoPageMode:       twoPageMode,
+    pairedPages:       pairedPagesToSave,
     pages:             savedPages,
     pageNotes,
     pageInkText:       inkTextToSave,
@@ -118,6 +126,8 @@ function deserialise(jsonString) {
   return {
     version:        data.version,
     pdfFingerprint: data.pdfFingerprint ?? '',
+    twoPageMode:    typeof data.twoPageMode === 'boolean' ? data.twoPageMode : null,
+    pairedPages:    (data.pairedPages && typeof data.pairedPages === 'object') ? data.pairedPages : null,
     pages:          Array.isArray(data.pages) ? data.pages : null,
     annotations:    Array.isArray(data.annotations) ? data.annotations : [],
     pageNotes:      (data.pageNotes && typeof data.pageNotes === 'object')

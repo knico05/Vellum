@@ -241,6 +241,35 @@ function setTwoPageMode(enabled) {
 
 function getTwoPageMode() { return twoPageMode; }
 
+/**
+ * Returns the current pairedPages state as a plain object for serialisation.
+ * @returns {object}
+ */
+function getPairedPages() {
+  return Object.fromEntries(pairedPages);
+}
+
+/**
+ * Restores layout state from a saved file without triggering recomputeLayout
+ * or shifting annotations. Must be called BEFORE loadPageList() so that
+ * the recomputeLayout() inside loadPageList() uses the correct state.
+ *
+ * @param {boolean} savedTwoPageMode
+ * @param {object}  savedPairedPagesObj — plain { id: partnerId } object
+ */
+function loadLayoutState(savedTwoPageMode, savedPairedPagesObj) {
+  twoPageMode = typeof savedTwoPageMode === 'boolean' ? savedTwoPageMode : false;
+  try { localStorage.setItem('twoPageMode', String(twoPageMode)); } catch { /* ignore */ }
+
+  pairedPages.clear();
+  if (savedPairedPagesObj && typeof savedPairedPagesObj === 'object') {
+    for (const [k, v] of Object.entries(savedPairedPagesObj)) {
+      pairedPages.set(String(k), String(v));
+    }
+  }
+  _savePairedPages();
+}
+
 /** Persists the pairedPages map to localStorage. */
 function _savePairedPages() {
   try {
@@ -949,6 +978,8 @@ export {
   recomputeLayout,
   setTwoPageMode,
   getTwoPageMode,
+  getPairedPages,
+  loadLayoutState,
   pairPages,
   unpairPages,
   getPairedPartner,

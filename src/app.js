@@ -22,10 +22,11 @@ import {
   getCurrentFingerprint, getCurrentPdfPath, goToPageIndex, fitPage, addBlankPage,
   getCurrentPageListIndex, spliceBlankPagesFromMigration,
   getPdfDoc, getPageList, goToPage, getCurrentPageId, pageExists, flashPage,
+  loadLayoutState, getTwoPageMode, getPairedPages,
 } from './pages/pageManager.js';
 import { clear, loadFromJSON, toJSON, loadPageInkText, loadPageInkSegments, getPageInkText, getPageInkSegments, undo, redo } from './annotations/manager.js';
 import { initAutosave, pauseSave, resumeSave }     from './storage/autosave.js';
-import { deserialise }                            from './storage/serialiser.js';
+import { serialise, deserialise }                 from './storage/serialiser.js';
 import { initHighlight }                          from './annotations/highlight.js';
 import { initDraw }                               from './annotations/draw.js';
 import { initNotes }                              from './annotations/note.js';
@@ -338,6 +339,8 @@ async function backupCurrentNote() {
       getPageNotes(),
       getPageInkText(),
       getPageInkSegments(),
+      getTwoPageMode(),
+      getPairedPages(),
     );
     window.api.backupOnQuit(pdfPath, json);
   } catch { /* never block on backup failure */ }
@@ -452,6 +455,15 @@ async function tryLoadAnnotations(pdfPath) {
         'Annotation fingerprint mismatch — annotations may not align with this PDF version.'
       );
     }
+
+    // Restore per-file layout state before recomputeLayout() runs inside
+    // loadPageList / spliceBlankPagesFromMigration. Without this, the global
+    // pairedPages / twoPageMode (shared across all files in localStorage) would
+    // position pages differently from when the annotations were saved, causing
+    // annotations to appear shifted on files opened after a layout change.
+    // For files with no saved layout state (old files), defaults to single-page
+    // with no pairings — the only layout those files could have been saved in.
+    loadLayoutState(result.twoPageMode ?? false, result.pairedPages ?? {});
 
     if (result._migratedFrom === 1) {
       // v1 migration: page list was built from PDF only in openPDF().
