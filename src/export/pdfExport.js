@@ -129,15 +129,27 @@ async function exportToPdf(onProgress, options = { mode: 'pages' }) {
   const allAnnotations = getAll();
   const output = await PDFDocument.create();
 
+  // Assign each annotation to its page by Y-proximity rather than relying on
+  // the stored pageId. Margin annotations (outside all page bounding boxes)
+  // default to pageId "pdf-0", but they should appear beside the page they
+  // are visually adjacent to.
+  const annosByPage = new Map(pages.map(p => [p.id, []]));
+  for (const anno of allAnnotations) {
+    const p = _nearestPage(anno, pages);
+    annosByPage.get(p.id).push(anno);
+  }
+
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i];
     onProgress?.(i, pages.length);
+
+    const pageAnnos = annosByPage.get(page.id) ?? [];
 
     // In canvas mode, compute the union of the page rect and all annotation
     // bounding boxes, then add padding so nothing touches the edge.
     let exportBounds = null;
     if (options.mode === 'canvas') {
-      const annoBounds = _getAnnotationBounds(allAnnotations, page);
+      const annoBounds = _getAnnotationBounds(pageAnnos, page);
       const rawMinX = Math.min(page.canvasX, annoBounds ? annoBounds.minX : page.canvasX);
       const rawMinY = Math.min(page.canvasY, annoBounds ? annoBounds.minY : page.canvasY);
       const rawMaxX = Math.max(page.canvasX + page.width,  annoBounds ? annoBounds.maxX : page.canvasX + page.width);
@@ -157,18 +169,54 @@ async function exportToPdf(onProgress, options = { mode: 'pages' }) {
 
     // Render the page background (PDF content + highlights + images + text boxes)
     // WITHOUT ink strokes — those are added as vector paths below.
-    const pngBytes = await renderPageToPng(page, pdfDoc, allAnnotations, exportBounds, true);
+    const pngBytes = await renderPageToPng(page, pdfDoc, pageAnnos, exportBounds, true);
 
     const img     = await output.embedPng(pngBytes);
     const pdfPage = output.addPage([ptWidth, ptHeight]);
     pdfPage.drawImage(img, { x: 0, y: 0, width: ptWidth, height: ptHeight });
 
     // Add ink strokes as vector PDF paths (infinitely sharp at any zoom).
-    const pageAnnos = allAnnotations.filter(a => a.pageId === page.id);
     addVectorInkToPdfPage(pdfPage, pageAnnos, originX, originY, ptHeight);
   }
 
   return output.save();
+}
+
+// ---------------------------------------------------------------------------
+// Page assignment by Y-proximity (export-time, ignores stored pageId)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the Y centre of an annotation in canvas space.
+ * For path-based annotations (draw, highlight) uses the average point Y.
+ * For box-based annotations uses canvasY + height/2.
+ */
+function _annotationCenterY(anno) {
+  if (anno.points && anno.points.length > 0) {
+    return anno.points.reduce((s, p) => s + p.y, 0) / anno.points.length;
+  }
+  return (anno.canvasY ?? 0) + (anno.height ?? 0) / 2;
+}
+
+/**
+ * Returns the page object whose vertical midpoint is nearest the annotation.
+ * This is used instead of the stored pageId so that margin annotations (which
+ * fall outside all page bounding boxes and default to page 0) are correctly
+ * assigned to the page they are visually beside.
+ *
+ * @param {object}   anno  — Annotation object
+ * @param {object[]} pages — Full page list from getPageList()
+ * @returns {object} Page descriptor
+ */
+function _nearestPage(anno, pages) {
+  const cy = _annotationCenterY(anno);
+  let nearest = pages[0];
+  let minDist = Infinity;
+  for (const page of pages) {
+    const d = Math.abs(cy - (page.canvasY + page.height / 2));
+    if (d < minDist) { minDist = d; nearest = page; }
+  }
+  return nearest;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,18 +227,16 @@ async function exportToPdf(onProgress, options = { mode: 'pages' }) {
  * Returns the bounding box (in canvas space) of all annotations for a page.
  * Used in canvas mode to determine how much to expand the export canvas.
  *
- * @param {object[]} annotations — All annotations in the document
- * @param {object}   page        — Page descriptor
+ * @param {object[]} pageAnnos — Annotations already filtered to this page
+ * @param {object}   page      — Page descriptor
  * @returns {{ minX:number, minY:number, maxX:number, maxY:number } | null}
  *   null if the page has no annotations.
  */
-function _getAnnotationBounds(annotations, page) {
+function _getAnnotationBounds(pageAnnos, page) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   let hasAny = false;
 
-  for (const a of annotations) {
-    if (a.pageId !== page.id) continue;
-
+  for (const a of pageAnnos) {
     if (a.points && a.points.length > 0) {
       // draw / highlight path — iterate all points, expand by half stroke width
       const pad = (a.strokeWidth ?? 0) / 2;
@@ -223,13 +269,13 @@ function _getAnnotationBounds(annotations, page) {
  *
  * @param {object} page              — Page descriptor from getPageList()
  * @param {PDFDocumentProxy|null} pdfDoc — PDF.js document proxy (null for blank-only docs)
- * @param {object[]} allAnnotations  — All annotations for the full document
+ * @param {object[]} pageAnnos       — Annotations already filtered to this page
  * @param {{ minX:number, minY:number, maxX:number, maxY:number } | null} exportBounds
  *   When non-null (canvas mode), the output canvas covers this region in canvas space
  *   rather than the page dimensions. The PDF page is composited at the correct offset.
  * @returns {Promise<Uint8Array>} PNG bytes at EXPORT_SCALE resolution
  */
-async function renderPageToPng(page, pdfDoc, allAnnotations, exportBounds = null, skipInk = false) {
+async function renderPageToPng(page, pdfDoc, pageAnnos, exportBounds = null, skipInk = false) {
   // Determine the canvas-space region that maps to the output image.
   // Pages mode: exactly the page rectangle.
   // Canvas mode: the pre-computed exportBounds (page ∪ annotations + padding).
@@ -280,19 +326,20 @@ async function renderPageToPng(page, pdfDoc, allAnnotations, exportBounds = null
   ctx.scale(EXPORT_SCALE, EXPORT_SCALE);
   ctx.translate(-originX, -originY);
 
-  const pageAnnos = allAnnotations.filter(a => a.pageId === page.id);
-
   // Pre-load all image elements (async, must complete before drawing)
   const imageCache = await preloadImages(pageAnnos);
 
-  // Draw in layer order: highlights → ink → images → text boxes.
+  // Draw in layer order: highlights → ink → images.
   // skipInk = true when ink is rendered separately as vector PDF paths.
   drawHighlights(ctx, pageAnnos);
   if (!skipInk) drawInkStrokes(ctx, pageAnnos);
   await drawImages(ctx, pageAnnos, imageCache);
-  drawTextBoxes(ctx, pageAnnos);
 
   ctx.restore();
+
+  // Text boxes are drawn outside the scale/translate block so that ctx.measureText()
+  // returns values in the same pixel space as our coordinate calculations.
+  drawTextBoxesPixel(ctx, pageAnnos, originX, originY, EXPORT_SCALE);
 
   // Export offscreen canvas to PNG bytes
   const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
@@ -423,15 +470,49 @@ async function drawImages(ctx, annos, imageCache) {
 }
 
 /**
- * Draws all text box annotations for a page.
+ * Draws all text box annotations in physical pixel space (no CTM active).
+ * Working directly in pixels avoids the measureText/scale mismatch where
+ * ctx.measureText() ignores the current transform but coordinates don't.
  *
- * @param {CanvasRenderingContext2D} ctx
- * @param {object[]} annos
+ * @param {CanvasRenderingContext2D} ctx   — context with no active transform
+ * @param {object[]}                annos
+ * @param {number}                  originX — canvas-space X of export region top-left
+ * @param {number}                  originY — canvas-space Y of export region top-left
+ * @param {number}                  scale   — export pixel scale (EXPORT_SCALE)
  */
-function drawTextBoxes(ctx, annos) {
+function drawTextBoxesPixel(ctx, annos, originX, originY, scale) {
   for (const anno of annos) {
-    if (anno.type !== 'note') continue;
-    drawTextBox(ctx, anno);
+    if (anno.type !== 'textBox' && anno.type !== 'note') continue;
+    const text = (anno.text ?? '').trim();
+    if (!text) continue;
+
+    const fontSize   = (anno.fontSize ?? 14) * scale;
+    const colour     = anno.colour ?? '#000000';
+    const px         = (anno.canvasX - originX) * scale;
+    const py         = (anno.canvasY - originY) * scale;
+    const pw         = anno.width  * scale;
+    const ph         = anno.height * scale;
+    const padding    = TEXT_BOX_PADDING * scale;
+    const maxWidth   = pw - padding * 2;
+    const lineHeight = fontSize * LINE_HEIGHT_RATIO;
+
+    ctx.save();
+    ctx.font         = `${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
+    ctx.fillStyle    = colour;
+    ctx.textBaseline = 'top';
+
+    const lines = wrapText(ctx, text, maxWidth);
+
+    let y        = py + padding;
+    const maxY   = py + ph;
+
+    for (const line of lines) {
+      if (y + lineHeight > maxY) break;
+      ctx.fillText(line, px + padding, y);
+      y += lineHeight;
+    }
+
+    ctx.restore();
   }
 }
 
@@ -508,41 +589,6 @@ function drawInkPath(ctx, points, baseWidth, colour) {
 }
 
 /**
- * Renders a text box annotation as plain text with word wrapping.
- * Uses the same font stack as the DOM text boxes.
- *
- * @param {CanvasRenderingContext2D} ctx
- * @param {object} anno — Note annotation with canvasX/Y, width, height, colour, fontSize, text
- */
-function drawTextBox(ctx, anno) {
-  const text     = (anno.text ?? '').trim();
-  if (!text) return;
-
-  const fontSize   = anno.fontSize ?? 14;
-  const colour     = anno.colour   ?? '#000000';
-  const maxWidth   = anno.width - TEXT_BOX_PADDING * 2;
-  const lineHeight = fontSize * LINE_HEIGHT_RATIO;
-
-  ctx.save();
-  ctx.font         = `${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
-  ctx.fillStyle    = colour;
-  ctx.textBaseline = 'top';
-
-  const lines = wrapText(ctx, text, maxWidth);
-
-  let y = anno.canvasY + TEXT_BOX_PADDING;
-  const maxY = anno.canvasY + anno.height;
-
-  for (const line of lines) {
-    if (y + lineHeight > maxY) break; // Clip to box height
-    ctx.fillText(line, anno.canvasX + TEXT_BOX_PADDING, y);
-    y += lineHeight;
-  }
-
-  ctx.restore();
-}
-
-/**
  * Wraps text to fit within maxWidth, splitting on whitespace and newlines.
  *
  * @param {CanvasRenderingContext2D} ctx — Needed for measureText()
@@ -563,7 +609,22 @@ function wrapText(ctx, text, maxWidth) {
         line = candidate;
       } else {
         if (line) lines.push(line);
-        line = word;
+        // If the word alone is too wide, break it character by character
+        if (ctx.measureText(word).width > maxWidth) {
+          let chunk = '';
+          for (const char of word) {
+            const next = chunk + char;
+            if (ctx.measureText(next).width <= maxWidth) {
+              chunk = next;
+            } else {
+              if (chunk) lines.push(chunk);
+              chunk = char;
+            }
+          }
+          line = chunk;
+        } else {
+          line = word;
+        }
       }
     }
     lines.push(line);

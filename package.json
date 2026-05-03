@@ -1,6 +1,6 @@
 {
   "name": "vellum",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "description": "A personal desktop app for annotating PDFs and taking notes",
   "main": "main.js",
   "scripts": {
