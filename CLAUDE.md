@@ -103,8 +103,6 @@ vellum/
 │   │   ├── library.js           # File library (pinned folders + recent)
 │   │   ├── floatingtoolbar.js   # Contextual floating toolbars
 │   │   ├── search.js            # PDF text search UI
-│   │   ├── handwritingSearch.js # Windows Ink handwriting search
-│   │   ├── inkHighlight.js      # Canvas highlight for search results
 │   │   ├── screenshot.js        # Screenshot capture
 │   │   └── shortcuts.js         # Keyboard shortcut registry
 │   │
@@ -132,8 +130,6 @@ Annotations file: `<filename>.annotations.json` in the same directory as the PDF
   "pdfPath": "/path/to/file.pdf",
   "pdfFingerprint": "sha256-of-first-8KB",
   "pageNotes": { "0": "notes text...", "1": "..." },
-  "pageInkText": { "0": "recognised handwriting text" },
-  "pageInkSegments": { "0": [{ "text": "word", "bounds": { "x":0,"y":0,"w":0,"h":0 } }] },
   "annotations": [ ...annotation objects... ]
 }
 ```
@@ -245,10 +241,6 @@ Select mode CSS hides all image handles with `pointer-events: none !important`. 
 ### Image `_applyImgStyle` must always run
 In `updatePositions()`, call `_applyImgStyle(el, anno)` unconditionally every frame — no guard on whether width/height changed. `cropX/Y` can change without dimensions changing and any guard misses those updates.
 
-### Handwriting recognition (Windows Ink)
-- `RecognitionFlags` must be set **before** `Strokes` on `RecognizerContext` — setting after throws "call is out of order".
-- Word clustering: use sort-by-Y-center + split-on-gap, not union-find. Union-find chains transitively (A→B→C merges everything).
-
 ### Two-page layout annotation positions
 `_recomputeAndShift()` snapshots both X and Y positions of all pages before and after layout change and shifts all annotations by the delta. Both axes matter — skipping Y causes annotations to drift vertically.
 
@@ -308,5 +300,9 @@ When Nico says "prepare for shipment" or "release", do the following in order:
 
 **Last updated:** 2026-05-03  
 **Version:** 1.4.6  
-**State:** Stable. Released.  
+**State:** Stable. Unreleased changes pending (no version bump yet).  
+**Pending release notes (to include in next version):**
+- Removed handwriting search entirely — Windows Ink (Tablet PC API, 2003) was too inaccurate and too slow to be usable. Cached `pageInkText`/`pageInkSegments` in existing annotation files are silently ignored on load.
+- Linux support groundwork: `fileAssociations` icon changed from `icon.ico` to `icon.png` so `npm run build:linux` produces a working AppImage on Ubuntu. Auto-update and file associations do not work on Linux (AppImage limitation) — manual install/update only. Build must be run on Linux (`npm install && npm run build:linux`), not cross-compiled from Windows.
+
 **Notes:** v1.4.6: fixed PDF export — side-margin annotations now export beside their correct page (Y-proximity assignment at export time); textboxes now appear in export (type check was wrong); textbox word-wrap fixed in export (pixel-space drawing avoids measureText/scale mismatch); long unbroken words now split mid-character at box edge. v1.4.5: fixed annotations appearing shifted when switching between files with different page layout states — twoPageMode and pairedPages were global (localStorage), so enabling "pages together" on one file would reposition pages in every other file on load. Layout state is now saved per-file and restored before recomputeLayout() on load. v1.4.4: fixed textbox styles (colour, font size, alignment) not applying on file load — `applyBodyStyle` was called before the body element was appended to its container, so `querySelector` returned null and the style was silently skipped; also fixed `_focusedAnnoId` not being cleared when an annotation is removed (undo/×/empty-box), and flush pending text save on blur to prevent content loss on fast document switch. v1.4.3 shipped: fixed critical data-loss bug — autosave race condition wiped annotation file on document switch. v1.4.2: PDF page removal + undo, page reorder undo, two-page anchor fix, ghost-page bug fix, in-app auto-update (electron-updater), Lukas' Extra eraser mode, size picker UX improvements, preview dots/rings, min size 0.1. `latest.yml` must be uploaded to GitHub releases alongside the installer or updates silently fail.

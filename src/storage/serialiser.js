@@ -17,13 +17,8 @@
  *     { "id": "pdf-1",   "kind": "pdf",   "pdfPageIndex": 1 }
  *   ],
  *   "pageNotes":   { "pdf-0": "text…", "blank-x": "text…" },
- *   "pageInkText": { "pdf-0": "velocity gradient laminar…" },
  *   "annotations": [ { …annotation objects with pageId field… } ]
  * }
- *
- * pageInkText — cache of Windows Ink handwriting recognition results, keyed by
- * pageId. Written by the search pipeline the first time a page is searched.
- * Invalidated (key deleted) by manager.js when a draw stroke on that page changes.
  *
  * v1 → v2 migration is handled in deserialise() transparently.
  *
@@ -45,27 +40,15 @@ const CURRENT_VERSION = 2;
  * @param {string}   fingerprint — SHA-256 hex digest of the PDF's first 8KB
  * @param {Array}    pageList    — Ordered page list from pageManager.getPageList()
  * @param {object[]} annotations — Array from annotationManager.toJSON()
- * @param {object}   pageNotes       — { [pageId]: text } from panel.getPageNotes()
- * @param {object}   pageInkText     — { [pageId]: string } handwriting recognition cache
- * @param {object}   pageInkSegments — { [pageId]: Array<{text,bounds}> } per-cluster bounds
+ * @param {object}   pageNotes   — { [pageId]: text } from panel.getPageNotes()
  * @returns {string} Pretty-printed JSON
  */
-function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, pageInkText = {}, pageInkSegments = {}, twoPageMode = false, pairedPages = {}) {
+function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, _inkText, _inkSegs, twoPageMode = false, pairedPages = {}) {
   // Strip runtime-only fields (canvasX, canvasY, width/height for PDF pages)
   // from the page list before saving — layout is recomputed at load time.
   const savedPages = pageList.map(p => p.kind === 'pdf'
     ? { id: p.id, kind: 'pdf', pdfPageIndex: p.pdfPageIndex }
     : { id: p.id, kind: 'blank', width: p.width, height: p.height, template: p.template ?? 'plain' }
-  );
-
-  // Only persist non-empty ink text entries to keep file size minimal
-  const inkTextToSave = Object.fromEntries(
-    Object.entries(pageInkText).filter(([, v]) => typeof v === 'string' && v.length > 0)
-  );
-
-  // Only persist segments for pages that have ink text
-  const inkSegmentsToSave = Object.fromEntries(
-    Object.entries(pageInkSegments).filter(([k, v]) => inkTextToSave[k] && Array.isArray(v) && v.length > 0)
   );
 
   // Only persist paired-page entries whose both sides are in the current page list
@@ -84,8 +67,6 @@ function serialise(pdfPath, fingerprint, pageList, annotations, pageNotes = {}, 
     pairedPages:       pairedPagesToSave,
     pages:             savedPages,
     pageNotes,
-    pageInkText:       inkTextToSave,
-    pageInkSegments:   inkSegmentsToSave,
     annotations,
   }, null, 2);
 }
@@ -133,12 +114,6 @@ function deserialise(jsonString) {
     pageNotes:      (data.pageNotes && typeof data.pageNotes === 'object')
                       ? data.pageNotes
                       : {},
-    pageInkText:     (data.pageInkText && typeof data.pageInkText === 'object')
-                       ? data.pageInkText
-                       : {},
-    pageInkSegments: (data.pageInkSegments && typeof data.pageInkSegments === 'object')
-                       ? data.pageInkSegments
-                       : {},
   };
 }
 

@@ -24,7 +24,7 @@ import {
   getPdfDoc, getPageList, goToPage, getCurrentPageId, pageExists, flashPage,
   loadLayoutState, getTwoPageMode, getPairedPages,
 } from './pages/pageManager.js';
-import { clear, loadFromJSON, toJSON, loadPageInkText, loadPageInkSegments, getPageInkText, getPageInkSegments, undo, redo } from './annotations/manager.js';
+import { clear, loadFromJSON, toJSON, undo, redo } from './annotations/manager.js';
 import { initAutosave, pauseSave, resumeSave }     from './storage/autosave.js';
 import { serialise, deserialise }                 from './storage/serialiser.js';
 import { initHighlight }                          from './annotations/highlight.js';
@@ -41,8 +41,6 @@ import { init as initPanel, loadPageNotes, getPageNotes, getCurrentPageIndex, to
 import { initLibrary, addToLibrary, setCurrentFile } from './ui/library.js';
 import { exportToPdf }                            from './export/pdfExport.js';
 import { initSearch, showSearch }                 from './ui/search.js';
-import { initHandwritingSearch, toggleHandwritingSearch } from './ui/handwritingSearch.js';
-import { showInkHighlights }                             from './ui/inkHighlight.js';
 import { search as searchText, clearCache as clearSearchCache } from './pdf/textSearch.js';
 
 // ---------------------------------------------------------------------------
@@ -99,7 +97,6 @@ initShortcuts({       // Wires up global keyboard shortcuts
   },
   togglePanel,
   openSearch:    showSearch,
-  openInkSearch: toggleHandwritingSearch,
 });
 initAutosave();       // Listens for changes, writes to disk
 initScreenshot();     // Creates screenshot overlay DOM, attaches listeners
@@ -107,12 +104,6 @@ initLibrary(openFromLibrary); // File library drawer
 initSearch({          // Search bar (Ctrl+F)
   onSearch: (query) => searchText(getPdfDoc(), getPageList(), query),
   onNavigate: (match) => goToPage(match.pageId),
-});
-initHandwritingSearch({ // Handwriting search panel (Ctrl+Shift+H)
-  onOpenVellum: (vellumPath, pageId, segments, keyword) => loadVellum(vellumPath).then(() => {
-    if (pageId) { goToPage(pageId); flashPage(pageId); }
-    if (segments?.length && keyword) showInkHighlights(segments, keyword);
-  }),
 });
 
 // If the app was launched by double-clicking a .vellum or .pdf file in
@@ -137,7 +128,6 @@ btnOpen.addEventListener('click', handleOpen);
 
 document.getElementById('btn-fit-page').addEventListener('click', fitPage);
 document.getElementById('btn-screenshot').addEventListener('click', activateScreenshot);
-document.getElementById('btn-ink-search').addEventListener('click', toggleHandwritingSearch);
 document.getElementById('btn-new-page').addEventListener('click', (e) => {
   addBlankPageWithPicker(e.currentTarget);
 });
@@ -337,8 +327,8 @@ async function backupCurrentNote() {
       getPageList(),
       toJSON(),
       getPageNotes(),
-      getPageInkText(),
-      getPageInkSegments(),
+      {},
+      {},
       getTwoPageMode(),
       getPairedPages(),
     );
@@ -475,8 +465,6 @@ async function tryLoadAnnotations(pdfPath) {
     }
 
     loadFromJSON(result.annotations);
-    loadPageInkText(result.pageInkText ?? {});
-    loadPageInkSegments(result.pageInkSegments ?? {});
     loadPageNotes(result.pageNotes);
   } catch (err) {
     console.error('Failed to load annotations:', err);

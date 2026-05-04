@@ -40,7 +40,7 @@
         "ext": "vellum",
         "name": "Vellum Note",
         "description": "Vellum annotated note",
-        "icon": "assets/icon.ico",
+        "icon": "assets/icon.png",
         "role": "Editor"
       }
     ]

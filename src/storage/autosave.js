@@ -21,7 +21,7 @@
 
 import { serialise }                                          from './serialiser.js';
 import { getCurrentPdfPath, getCurrentFingerprint, getPageList, getTwoPageMode, getPairedPages } from '../pages/pageManager.js';
-import { toJSON, getPageInkText, getPageInkSegments }         from '../annotations/manager.js';
+import { toJSON }                                              from '../annotations/manager.js';
 import { getPageNotes }                                       from '../ui/panel.js';
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ async function save() {
   const savePath    = await window.api.getAnnotationsPath(pdfPath);
 
   try {
-    const json = serialise(pdfPath, fingerprint, pageList, annotations, getPageNotes(), getPageInkText(), getPageInkSegments(), getTwoPageMode(), getPairedPages());
+    const json = serialise(pdfPath, fingerprint, pageList, annotations, getPageNotes(), {}, {}, getTwoPageMode(), getPairedPages());
     await window.api.writeFile(savePath, json);
     showSaved();
 

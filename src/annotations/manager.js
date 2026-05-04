@@ -16,8 +16,7 @@
  * This is unique enough for a local single-user app without needing a UUID lib.
  *
  * Exports: add(), remove(), update(), batchUpdate(), getByPage(), getAll(),
- *          loadFromJSON(), toJSON(), clear(), undo(), redo(),
- *          getPageInkText(), setPageInkText(), loadPageInkText(), isPageInkDirty(), clearPageInkDirty()
+ *          loadFromJSON(), toJSON(), clear(), undo(), redo()
  */
 
 'use strict';
@@ -28,29 +27,6 @@
 
 /** Master array of all annotation objects for the current document */
 let annotations = [];
-
-// ---------------------------------------------------------------------------
-// Handwriting recognition cache
-// ---------------------------------------------------------------------------
-
-/**
- * { [pageId]: string } — cached recognition text per page.
- * Persisted. Cleared when any draw stroke on the page changes.
- */
-let _pageInkText = {};
-
-/**
- * { [pageId]: Array<{text:string, bounds:{minX,maxX,minY,maxY}}> }
- * Per-cluster recognition segments for the page, used to highlight
- * matched areas on the canvas after a search.
- */
-let _pageInkSegments = {};
-
-/**
- * Set of pageIds whose draw strokes have changed since the last recognition run.
- * The search UI reads this to decide which pages need fresh recognition.
- */
-const _dirtyInkPages = new Set();
 
 // ---------------------------------------------------------------------------
 // Undo stack
@@ -86,23 +62,6 @@ let redoStack = [];
  * undoes atomically.
  */
 let _groupBuffer = null;
-
-// ---------------------------------------------------------------------------
-// Ink-cache invalidation
-// ---------------------------------------------------------------------------
-
-/**
- * Marks a page's ink recognition cache as stale if the annotation is a draw stroke.
- * Called on add, remove, and update so the search pipeline re-recognises that page.
- *
- * @param {object} annotation — the annotation being mutated
- */
-function _invalidateInkCache(annotation) {
-  if (annotation?.type !== 'draw' || !annotation.pageId) return;
-  _pageInkText[annotation.pageId]     = undefined;
-  _pageInkSegments[annotation.pageId] = undefined;
-  _dirtyInkPages.add(annotation.pageId);
-}
 
 // ---------------------------------------------------------------------------
 // ID generation
@@ -152,7 +111,6 @@ function add(partial) {
     updatedAt: now,
   };
   annotations.push(annotation);
-  _invalidateInkCache(annotation);
 
   // Record for undo — store full annotation so redo can re-insert it exactly.
   // If a group is open, collect into the buffer; otherwise push directly.
@@ -191,7 +149,6 @@ function remove(id) {
   }
 
   annotations = annotations.filter(a => a.id !== id);
-  _invalidateInkCache(target);
   emit();
 }
 
@@ -216,8 +173,6 @@ function update(id, changes) {
     createdAt: before.createdAt, // createdAt is immutable
     updatedAt: new Date().toISOString(),
   };
-  // Invalidate ink cache if the stroke points changed (not just position/colour)
-  if (changes.points !== undefined) _invalidateInkCache(annotations[idx]);
   emit();
 }
 
@@ -284,9 +239,6 @@ function clear() {
   annotations  = [];
   undoStack        = [];
   redoStack        = [];
-  _pageInkText     = {};
-  _pageInkSegments = {};
-  _dirtyInkPages.clear();
   if (hadContent) emit();
 }
 
@@ -526,72 +478,6 @@ function endUndoGroup() {
 }
 
 // ---------------------------------------------------------------------------
-// Ink recognition cache — public API
-// ---------------------------------------------------------------------------
-
-/**
- * Returns the full pageInkText map for serialisation.
- * @returns {{ [pageId]: string }}
- */
-function getPageInkText() {
-  return { ..._pageInkText };
-}
-
-/**
- * Restores the ink text cache from a loaded annotation file.
- * Called by app.js alongside loadFromJSON() when opening a document.
- *
- * @param {{ [pageId]: string }} map
- */
-function loadPageInkText(map) {
-  _pageInkText = (map && typeof map === 'object') ? { ...map } : {};
-  _dirtyInkPages.clear();
-}
-
-/**
- * Stores recognised ink text for a page (called by the search UI after recognition).
- * Clears the dirty flag for that page.
- *
- * @param {string} pageId
- * @param {string} text
- */
-function setPageInkText(pageId, text) {
-  _pageInkText[pageId] = text;
-  _dirtyInkPages.delete(pageId);
-}
-
-/**
- * Returns whether a page's draw strokes have changed since the last recognition run.
- *
- * @param {string} pageId
- * @returns {boolean}
- */
-function isPageInkDirty(pageId) {
-  return _dirtyInkPages.has(pageId);
-}
-
-/**
- * Manually clears the dirty flag for a page (e.g. after recognition is complete).
- *
- * @param {string} pageId
- */
-function clearPageInkDirty(pageId) {
-  _dirtyInkPages.delete(pageId);
-}
-
-function getPageInkSegments() {
-  return { ..._pageInkSegments };
-}
-
-function loadPageInkSegments(map) {
-  _pageInkSegments = (map && typeof map === 'object') ? { ...map } : {};
-}
-
-function setPageInkSegments(pageId, segments) {
-  _pageInkSegments[pageId] = segments;
-}
-
-// ---------------------------------------------------------------------------
 // Coordinate shifting (used when pages move due to insert / remove / reorder)
 // ---------------------------------------------------------------------------
 
@@ -651,4 +537,4 @@ function shiftAnnotationsByPageDelta(pageDeltas) {
   if (changed) emit();
 }
 
-export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo, beginUndoGroup, endUndoGroup, getPageInkText, loadPageInkText, setPageInkText, isPageInkDirty, clearPageInkDirty, getPageInkSegments, loadPageInkSegments, setPageInkSegments, shiftAnnotationsByPageDelta, pushPageUndo, removeAnnotationsSilent, restoreAnnotationsSilent };
+export { add, remove, update, batchUpdate, getByPage, getAll, loadFromJSON, toJSON, clear, undo, redo, beginUndoGroup, endUndoGroup, shiftAnnotationsByPageDelta, pushPageUndo, removeAnnotationsSilent, restoreAnnotationsSilent };
