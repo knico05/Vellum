@@ -18,7 +18,7 @@
   "build": {
     "appId": "com.knico05.vellum",
     "productName": "Vellum",
-    "artifactName": "Vellum-Setup.exe",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
     "directories": {
       "output": "dist"
     },
@@ -52,3 +52,4 @@
     "pdfjs-dist": "^4.10.38"
   }
 }
+
